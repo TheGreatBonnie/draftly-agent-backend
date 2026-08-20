@@ -5,7 +5,6 @@ description = "Autonomous documentation engineering platform"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "deepeval>=4.1.8",
     # Database
     "asyncpg>=0.30.0",
     # Web framework
@@ -32,7 +31,9 @@ dependencies = [
     "jwt>=1.4.0",
     "strands-agents>=1.52.0",
     "strands-agents-tools>=0.8.6",
-    "strands-agents-evals",
+    "strands-agents-evals>=1.1.1",
+    "psycopg[binary]>=3.3.4",
+    "psycopg2-binary>=2.9.12",
 ]
 
 [project.optional-dependencies]
@@ -67,6 +68,9 @@ ignore_missing_imports = true
 asyncio_mode = "auto"
 pythonpath = ["."]
 testpaths = ["tests"]
+markers = [
+    "integration: requires live NeonDB and model keys (run with DRAFTLY_LIVE=1)",
+]
 
 [dependency-groups]
 dev = [
