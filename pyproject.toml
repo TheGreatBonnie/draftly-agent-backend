@@ -1,7 +1,78 @@
 [project]
-name = "draftly-backend"
+name = "draftly-docs-agent"
 version = "0.1.0"
-description = "Add your description here"
+description = "Autonomous documentation engineering platform"
 readme = "README.md"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = [
+    "deepeval>=4.1.8",
+    # Database
+    "asyncpg>=0.30.0",
+    # Web framework
+    "fastapi>=0.115.0",
+    "uvicorn>=0.30.0",
+    # HTTP clients
+    "httpx>=0.27.0",
+    "trafilatura>=1.12",
+    "PyMuPDF>=1.24",
+    "slack-bolt>=1.20.0",
+    "slack-sdk>=3.30.0",
+    "discord.py>=2.4.0",
+    # Auth
+    "pyjwt>=2.8.0",
+    # Utilities
+    "pydantic>=2.9.0",
+    "pydantic-settings>=2.5.0",
+    "python-dotenv>=1.0.0",
+    "structlog>=24.0.0",
+    "python-multipart>=0.0.32",
+    "cryptography>=49.0.0",
+    "mcp>=1.0.0",
+    "croniter>=6.2.4",
+    "jwt>=1.4.0",
+    "strands-agents>=1.52.0",
+    "strands-agents-tools>=0.8.6",
+    "strands-agents-evals",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.24.0",
+    "pytest-xdist>=3.5.0",
+    "ruff>=0.6.0",
+    "mypy>=1.11.0",
+]
+
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP"]
+
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+explicit_package_bases = true
+
+[[tool.mypy.overrides]]
+module = ["slack_bolt.*", "slack_sdk.*", "discord.*", "mcp.*", "asyncpg.*", "fitz.*", "websockets.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+pythonpath = ["."]
+testpaths = ["tests"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.24.0",
+    "pytest-xdist>=3.5.0",
+    "ruff>=0.15.22",
+    "mypy>=1.11.0",
+]

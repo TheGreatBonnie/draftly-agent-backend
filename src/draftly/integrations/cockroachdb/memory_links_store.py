@@ -1,0 +1,43 @@
+from __future__ import annotations
+
+from typing import Any
+
+from integrations.cockroachdb.client import CockroachDBClient
+
+
+class MemoryLinksStore:
+    def __init__(
+        self,
+        client: CockroachDBClient | None = None,
+    ) -> None:
+        self.client = client or CockroachDBClient()
+
+    async def insert(
+        self,
+        *,
+        org_id: str,
+        source_memory_id: str,
+        target_memory_id: str,
+        relationship: str,
+        confidence: float = 0.5,
+    ) -> dict[str, Any]:
+        row = await self.client.fetch_one(
+            """
+            INSERT INTO memory_links (
+                org_id,
+                source_memory_id,
+                target_memory_id,
+                relationship,
+                confidence
+            )
+            VALUES ($1, $2, $3, $4, $5)
+            RETURNING id, org_id, source_memory_id, target_memory_id, relationship
+            """,
+            org_id,
+            source_memory_id,
+            target_memory_id,
+            relationship,
+            confidence,
+        )
+
+        return dict(row)
