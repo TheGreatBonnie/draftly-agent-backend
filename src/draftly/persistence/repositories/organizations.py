@@ -5,7 +5,7 @@ from typing import Any
 
 import structlog
 
-from integrations.cockroachdb.client import CockroachDBClient
+from draftly.integrations.database.client import DatabaseClient
 
 logger = structlog.get_logger()
 
@@ -14,16 +14,16 @@ async def update_org_github(
     *,
     org_id: str,
     github_org: str,
-    db: CockroachDBClient | None = None,
+    db: DatabaseClient | None = None,
 ) -> None:
     """Update organization's GitHub org."""
     if db is None:
-        from app.config import get_settings
-        from app.dependencies import build_dependencies
+        from draftly.app.config import get_settings
+        from draftly.app.dependencies import build_dependencies
 
         settings = get_settings()
         deps = build_dependencies(settings=settings)
-        db = deps.integrations.cockroachdb
+        db = deps.integrations.database
 
     await db.execute(
         "UPDATE organizations SET github_org = $1 WHERE clerk_org_id = $2",
@@ -35,16 +35,16 @@ async def update_org_github(
 async def get_org_by_clerk_id(
     *,
     clerk_org_id: str,
-    db: CockroachDBClient | None = None,
+    db: DatabaseClient | None = None,
 ) -> dict[str, Any] | None:
     """Find organization by Clerk org ID."""
     if db is None:
-        from app.config import get_settings
-        from app.dependencies import build_dependencies
+        from draftly.app.config import get_settings
+        from draftly.app.dependencies import build_dependencies
 
         settings = get_settings()
         deps = build_dependencies(settings=settings)
-        db = deps.integrations.cockroachdb
+        db = deps.integrations.database
 
     row = await db.fetch_one(
         (
@@ -60,16 +60,16 @@ async def get_org_by_clerk_id(
 async def get_org_by_github_org(
     *,
     github_org: str,
-    db: CockroachDBClient | None = None,
+    db: DatabaseClient | None = None,
 ) -> dict[str, Any] | None:
     """Find organization by GitHub org name."""
     if db is None:
-        from app.config import get_settings
-        from app.dependencies import build_dependencies
+        from draftly.app.config import get_settings
+        from draftly.app.dependencies import build_dependencies
 
         settings = get_settings()
         deps = build_dependencies(settings=settings)
-        db = deps.integrations.cockroachdb
+        db = deps.integrations.database
 
     row = await db.fetch_one(
         "SELECT clerk_org_id, clerk_org_name, github_org "
@@ -82,16 +82,16 @@ async def get_org_by_github_org(
 async def get_org_by_slack_team(
     *,
     team_id: str,
-    db: CockroachDBClient | None = None,
+    db: DatabaseClient | None = None,
 ) -> dict[str, Any] | None:
     """Find organization by Slack team ID."""
     if db is None:
-        from app.config import get_settings
-        from app.dependencies import build_dependencies
+        from draftly.app.config import get_settings
+        from draftly.app.dependencies import build_dependencies
 
         settings = get_settings()
         deps = build_dependencies(settings=settings)
-        db = deps.integrations.cockroachdb
+        db = deps.integrations.database
 
     row = await db.fetch_one(
         (
@@ -109,16 +109,16 @@ async def get_org_by_slack_team(
 async def get_org_by_discord_guild(
     *,
     guild_id: str,
-    db: CockroachDBClient | None = None,
+    db: DatabaseClient | None = None,
 ) -> dict[str, Any] | None:
     """Find organization by Discord guild ID."""
     if db is None:
-        from app.config import get_settings
-        from app.dependencies import build_dependencies
+        from draftly.app.config import get_settings
+        from draftly.app.dependencies import build_dependencies
 
         settings = get_settings()
         deps = build_dependencies(settings=settings)
-        db = deps.integrations.cockroachdb
+        db = deps.integrations.database
 
     row = await db.fetch_one(
         (
@@ -135,16 +135,16 @@ async def get_or_create_org_by_clerk(
     *,
     clerk_org_id: str,
     name: str,
-    db: CockroachDBClient | None = None,
+    db: DatabaseClient | None = None,
 ) -> str:
     """Get or create an organization from a Clerk webhook. Returns clerk_org_id."""
     if db is None:
-        from app.config import get_settings
-        from app.dependencies import build_dependencies
+        from draftly.app.config import get_settings
+        from draftly.app.dependencies import build_dependencies
 
         settings = get_settings()
         deps = build_dependencies(settings=settings)
-        db = deps.integrations.cockroachdb
+        db = deps.integrations.database
 
     existing = await db.fetch_one(
         "SELECT clerk_org_id FROM organizations WHERE clerk_org_id = $1",

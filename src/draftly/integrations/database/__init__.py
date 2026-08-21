@@ -1,9 +1,9 @@
-from .client import CockroachDBClient
-from .memory_store import CockroachMemoryStore
+from .client import DatabaseClient
+from .memory_store import DatabaseMemoryStore
 from .vector_search import VectorSearch
 
 __all__ = [
-    "CockroachDBClient",
-    "CockroachMemoryStore",
+    "DatabaseClient",
+    "DatabaseMemoryStore",
     "VectorSearch",
 ]

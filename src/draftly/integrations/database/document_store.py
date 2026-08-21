@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 from uuid import uuid4
 
-from integrations.cockroachdb.client import CockroachDBClient
+from draftly.integrations.database.client import DatabaseClient
 
 _DOCUMENT_COLUMNS = """
     id,
@@ -32,14 +32,14 @@ class DocumentStore:
     Async documentation persistence on the `documentation` table.
 
     Exposes both the repository/path API and the org-based API
-    previously spread across DocumentStore and CockroachDocumentsStore.
+    previously spread across DocumentStore and NeonDocumentsStore.
     """
 
     def __init__(
         self,
-        client: CockroachDBClient | None = None,
+        client: DatabaseClient | None = None,
     ) -> None:
-        self.client = client or CockroachDBClient()
+        self.client = client or DatabaseClient()
 
     # ------------------------------------------------------------------
     # Repository/path API

@@ -3,53 +3,33 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from app.composition.workflows import WorkflowRegistry
-from app.dependencies import ApplicationDependencies
-from app.workers.scheduler import DraftlyScheduler
-from app.workers.scheduler_adapter import SchedulerClientAdapter
-from app.workers.task_runner import TaskRunner
-from app.workers.worker import DraftlyWorker
-from integrations.scheduler.client import SchedulerClient
+from draftly.app.composition.workflows import ComposedWorkflows
+from draftly.app.dependencies import ApplicationDependencies
+from draftly.app.workers.scheduler import DraftlyScheduler
+from draftly.app.workers.scheduler_adapter import SchedulerClientAdapter
+from draftly.app.workers.task_runner import TaskRunner
+from draftly.app.workers.worker import DraftlyWorker
 
 logger = logging.getLogger(__name__)
 
 
+# Scheduled task name → WorkflowRegistry workflow name. Surface workflows
+# (github_pr / github_issue / slack_support / discord_support) are NOT
+# here: they run through the webhook → WorkflowRunner path (§7.4).
 TASK_REGISTRY: dict[str, str] = {
     "documentation.sync": "documentation_sync",
-    "documentation.generation": "documentation_generation",
-    "documentation.review": "documentation_review",
-    "documentation.health_check": "documentation_health_check",
-    "github.issue": "issue",
-    "github.pull_request": "pull_request",
-    "github.release": "release",
-    "github.repository_sync": "repository_sync",
-    "support.github": "github_support",
-    "support.slack": "slack_support",
-    "support.discord": "discord_support",
-    "support.escalation": "support_escalation",
+    "documentation.stale_scan": "documentation_audit",
+    "support.gap_scan": "feedback_loop",
     "evaluation.loop": "evaluation_loop",
-    "evaluation.regression": "regression_loop",
-    "evaluation.failure_recovery": "failure_recovery",
-    "documentation.stale_scan": "stale_docs_scan",
-    "support.gap_scan": "support_gap_scan",
-    "github.release_sync": "release_sync",
-    "review.expiry": "review_expiry",
 }
 
 
 def _wrap_workflow(
     workflow_func: Any,
-    dependencies: ApplicationDependencies,
+    context: Any,
 ) -> Any:
-    """Wrap a workflow function to create WorkflowContext on invocation."""
+    """Wrap a workflow function to run against the composed context."""
     async def handler(**kwargs: Any) -> Any:
-        from workflows.context import WorkflowContext
-
-        context = WorkflowContext(
-            repositories=dependencies.repositories,
-            memory=dependencies.memory,
-            evaluation=dependencies.evaluation,
-        )
         return await workflow_func(context, **kwargs)
 
     return handler
@@ -57,20 +37,25 @@ def _wrap_workflow(
 
 def build_task_runner(
     *,
-    workflows: WorkflowRegistry,
+    workflows: ComposedWorkflows,
     dependencies: ApplicationDependencies,
 ) -> TaskRunner:
     """
-    Build a TaskRunner with all workflow functions registered as named tasks.
+    Build a TaskRunner with all scheduled workflows registered as tasks.
 
-    Each workflow function is wrapped in a handler that constructs
-    a WorkflowContext from the application dependencies.
+    Each workflow function is bound to the composed ``WorkflowContext``
+    so handlers only receive job arguments.
     """
-    runner = TaskRunner()
+    del dependencies  # context already carries the repositories
 
-    for task_name, workflow_attr in TASK_REGISTRY.items():
-        workflow_func = getattr(workflows, workflow_attr)
-        runner.register(task_name, _wrap_workflow(workflow_func, dependencies))
+    runner = TaskRunner()
+    registry = workflows.registry
+
+    for task_name, workflow_name in TASK_REGISTRY.items():
+        workflow_func = registry.get(workflow_name)
+        if workflow_func is None:
+            raise ValueError(f"task {task_name} has no workflow {workflow_name}")
+        runner.register(task_name, _wrap_workflow(workflow_func, workflows.context))
         logger.debug("registered task task_name=%s", task_name)
 
     logger.info(
@@ -83,8 +68,8 @@ def build_task_runner(
 
 SCHEDULED_JOBS: list[dict[str, Any]] = [
     {
-        "id": "daily-health-check",
-        "name": "documentation.health_check",
+        "id": "documentation-sync",
+        "name": "documentation.sync",
         "schedule": "0 2 * * *",
         "arguments": {},
     },
@@ -101,15 +86,9 @@ SCHEDULED_JOBS: list[dict[str, Any]] = [
         "arguments": {},
     },
     {
-        "id": "release-sync",
-        "name": "github.release_sync",
-        "schedule": "0 1 * * *",
-        "arguments": {},
-    },
-    {
-        "id": "review-expiry",
-        "name": "review.expiry",
-        "schedule": "0 * * * *",
+        "id": "evaluation-loop",
+        "name": "evaluation.loop",
+        "schedule": "0 5 * * *",
         "arguments": {},
     },
 ]
@@ -118,54 +97,30 @@ SCHEDULED_JOBS: list[dict[str, Any]] = [
 def build_scheduler_client(
     *,
     task_runner: TaskRunner,
-) -> SchedulerClient:
-    """Register scheduled jobs with cron expressions."""
-    client = SchedulerClient()
+) -> Any:
+    """
+    Placeholder for the scheduled-job integration.
 
-    for job_config in SCHEDULED_JOBS:
-        task_name = job_config["name"]
-        task_args = job_config["arguments"]
+    Phase 6 replaces the removed scheduler integration with Strands
+    session/graph scheduling. Kept as a stub so ``build_worker``'s
+    signature stays stable.
+    """
 
-        if not task_runner.has_task(task_name):
-            raise ValueError(
-                f"Scheduled job {job_config['id']!r} references unknown task "
-                f"{task_name!r}; add it to TASK_REGISTRY or fix the job config"
-            )
+    del task_runner
 
-        def make_handler(name: str = task_name, args: dict = task_args):
-            async def handler(**kwargs: Any) -> Any:
-                return await task_runner.run(name, **args, **kwargs)
-            return handler  # type: ignore[return-value]
-
-        client.create(
-            job_id=job_config["id"],
-            name=task_name,
-            schedule=job_config["schedule"],
-            handler=make_handler(),
-            arguments=task_args,
-        )
-        logger.debug(
-            "registered scheduled job job_id=%s task=%s schedule=%s",
-            job_config["id"],
-            task_name,
-            job_config["schedule"],
-        )
-
-    logger.info("scheduler client built jobs=%d", len(SCHEDULED_JOBS))
-
-    return client
+    return None
 
 
 def build_worker(
     *,
     task_runner: TaskRunner,
-    scheduler_client: SchedulerClient,
+    scheduler_client: Any,
     interval_seconds: int = 30,
 ) -> DraftlyWorker:
     """
     Build the complete DraftlyWorker with its scheduler loop.
 
-    The scheduler polls the SchedulerClient (via SchedulerClientAdapter)
+    The scheduler polls the job registry (via SchedulerClientAdapter)
     for due jobs and dispatches them through the task runner.
     """
     adapter = SchedulerClientAdapter(scheduler_client)

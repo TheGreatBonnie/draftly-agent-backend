@@ -3,17 +3,17 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from integrations.cockroachdb.evaluations_store import (
-    CockroachEvaluationsStore,
+from draftly.integrations.database.evaluations_store import (
+    DatabaseEvaluationsStore,
 )
 
 
 class EvaluationRepository:
     def __init__(
         self,
-        store: CockroachEvaluationsStore | None = None,
+        store: DatabaseEvaluationsStore | None = None,
     ) -> None:
-        self.store = store or CockroachEvaluationsStore()
+        self.store = store or DatabaseEvaluationsStore()
 
     async def create(
         self,

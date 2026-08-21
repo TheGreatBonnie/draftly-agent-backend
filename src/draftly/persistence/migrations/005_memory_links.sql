@@ -9,7 +9,7 @@ CREATE TABLE IF NOT EXISTS memory_links (
         REFERENCES memory_items (id)
         ON DELETE CASCADE,
 
-    relationship STRING NOT NULL,
+    relationship TEXT NOT NULL,
 
     confidence FLOAT8 NOT NULL DEFAULT 0.5,
 
@@ -27,7 +27,7 @@ ON memory_links (target_memory_id);
 
 -- Add org_id for multi-tenant data isolation
 ALTER TABLE memory_links
-ADD COLUMN IF NOT EXISTS org_id STRING
+ADD COLUMN IF NOT EXISTS org_id TEXT
     REFERENCES organizations(clerk_org_id) ON DELETE CASCADE;
 
 CREATE INDEX IF NOT EXISTS idx_memory_links_org

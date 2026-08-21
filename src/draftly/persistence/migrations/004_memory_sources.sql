@@ -5,17 +5,17 @@ CREATE TABLE IF NOT EXISTS memory_sources (
         REFERENCES memory_items (id)
         ON DELETE CASCADE,
 
-    source_type STRING NOT NULL,
-    source_id STRING,
+    source_type TEXT NOT NULL,
+    source_id TEXT,
 
-    source_url STRING,
+    source_url TEXT,
 
-    repository STRING,
-    commit_sha STRING,
+    repository TEXT,
+    commit_sha TEXT,
 
-    content_hash STRING,
+    content_hash TEXT,
 
-    evidence STRING,
+    evidence TEXT,
 
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -25,7 +25,7 @@ ON memory_sources (memory_item_id);
 
 -- Add org_id for multi-tenant data isolation
 ALTER TABLE memory_sources
-ADD COLUMN IF NOT EXISTS org_id STRING
+ADD COLUMN IF NOT EXISTS org_id TEXT
     REFERENCES organizations(clerk_org_id) ON DELETE CASCADE;
 
 CREATE INDEX IF NOT EXISTS idx_memory_sources_org

@@ -1,21 +1,21 @@
 CREATE TABLE IF NOT EXISTS memory_items (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 
-    org_id STRING REFERENCES organizations(clerk_org_id) ON DELETE CASCADE,
+    org_id TEXT REFERENCES organizations(clerk_org_id) ON DELETE CASCADE,
 
-    namespace STRING NOT NULL,
-    memory_type STRING NOT NULL,
+    namespace TEXT NOT NULL,
+    memory_type TEXT NOT NULL,
 
-    content STRING NOT NULL,
-    summary STRING,
+    content TEXT NOT NULL,
+    summary TEXT,
 
-    status STRING NOT NULL DEFAULT 'active',
+    status TEXT NOT NULL DEFAULT 'active',
 
     importance FLOAT8 NOT NULL DEFAULT 0.5,
     confidence FLOAT8 NOT NULL DEFAULT 0.5,
 
-    source_type STRING,
-    source_id STRING,
+    source_type TEXT,
+    source_id TEXT,
 
     expires_at TIMESTAMPTZ,
     last_accessed_at TIMESTAMPTZ,

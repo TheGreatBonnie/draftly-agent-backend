@@ -9,7 +9,7 @@ import websockets
 from websockets.asyncio.client import ClientConnection
 from websockets.exceptions import ConnectionClosed
 
-from app.config import get_settings
+from draftly.app.config import get_settings
 
 logger = logging.getLogger(__name__)
 
@@ -178,7 +178,7 @@ class DiscordGateway:
             return
 
         if event == "MESSAGE_CREATE":
-            from integrations.discord.app import handle_message_create
+            from draftly.integrations.discord.app import handle_message_create
 
             await handle_message_create(data)
 

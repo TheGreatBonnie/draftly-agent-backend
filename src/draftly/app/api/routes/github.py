@@ -1,7 +1,6 @@
 from typing import Any
 
 import structlog
-from events.github_events import GitHubEventProcessor
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
@@ -14,6 +13,7 @@ from draftly.integrations.github.app_auth import (
     get_installation_token,
     verify_webhook_signature,
 )
+from draftly.review.models import ReviewDecision
 
 logger = structlog.get_logger()
 
@@ -209,15 +209,20 @@ async def github_webhook(
     if event_type == "installation":
         return await _handle_installation_event(payload)
 
-    # All other events → delegate to GitHubEventProcessor
-    # The processor translates raw GitHub events into Draftly events
-    # and publishes them to the EventBus for workflow handlers
-    processor = GitHubEventProcessor()
-    background_tasks.add_task(
-        processor.process,
-        event_type,
-        payload,
-    )
+    # Normalize the raw webhook, then hand the event to the workflow
+    # runner (§7.4): idempotency claim → per-run graph → outcome.
+    payload["delivery_id"] = delivery_id
+    app_state = getattr(request.app.state, "draftly", None)
+    if app_state is None or app_state.events is None:
+        raise HTTPException(status_code=503, detail="Runtime not started")
+
+    try:
+        event = await app_state.events.normalize_github(payload)
+    except ValueError as exc:
+        logger.warning("github_webhook_unhandled", error=str(exc))
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    background_tasks.add_task(app_state.workflows.runner.run, event)
 
     logger.info(
         "github_webhook_queued",
@@ -302,3 +307,95 @@ async def _handle_installation_event(payload: dict) -> WebhookResponse:
 
     logger.info("github_installation_unhandled_action", action=action)
     return WebhookResponse(status=f"Installation {action} (unhandled)")
+
+
+@router.post("/review/{run_id}")
+async def resume_review(
+    run_id: str,
+    decision: ReviewDecision,
+    request: Request,
+    _token: dict = Depends(get_verified_token),
+) -> dict[str, Any]:
+    """Resume a graph after human review (plan §9.1).
+
+    Loads the pending doc-review interrupt stored by the workflow runner,
+    records the decision, and — on approval — resumes the paused graph
+    with the strands interrupt-response payload.
+    """
+    app_state = getattr(request.app.state, "draftly", None)
+    if app_state is None:
+        raise HTTPException(status_code=503, detail="Runtime not started")
+
+    reviews_repo = getattr(
+        getattr(app_state.dependencies, "repositories", None), "reviews", None
+    )
+    if reviews_repo is None:
+        raise HTTPException(status_code=503, detail="Reviews store unavailable")
+
+    from draftly.review.service import ReviewService
+
+    service = ReviewService(repository=reviews_repo)
+    pending = await service.get_by_run_id(run_id)
+    if pending is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No pending review for run {run_id}",
+        )
+    # Trust the stored review identity over the client-supplied one.
+    decision.review_id = pending.review_id
+
+    outcome = await service.decide(decision)
+
+    if not decision.approved:
+        logger.info("review_rejected run_id=%s", run_id)
+        return {"status": "rejected", "run_id": run_id}
+
+    interrupt_id = pending.interrupt_id
+    if not interrupt_id:
+        raise HTTPException(
+            status_code=409,
+            detail="Review has no interrupt to resume",
+        )
+
+    context = getattr(app_state.workflows, "context", None)
+    surface = pending.workflow
+    if surface not in ("pull_request", "issue", "support"):
+        raise HTTPException(
+            status_code=409,
+            detail=f"Workflow {surface!r} is not resumable",
+        )
+
+    from draftly.integrations.strands.graph import build_graph_for_run
+
+    graph = build_graph_for_run(
+        run_id,
+        surface=surface,
+        tools_registry=getattr(context, "tools", None),
+        model=getattr(context, "model", None),
+        hooks=list(getattr(context, "hooks", []) or []),
+        storage_dir=getattr(context, "storage_dir", ".draftly/sessions"),
+        memory=getattr(context, "memory", None),
+    )
+    resume_input = service.approvals.build_resume_input(
+        interrupt_id,
+        {"approved": True, "comment": decision.comment},
+    )
+    try:
+        result = await graph.invoke_async(
+            resume_input,
+            invocation_state={"run_id": run_id},
+        )
+    except RuntimeError as exc:
+        logger.warning("review_resume_failed run_id=%s: %s", run_id, exc)
+        raise HTTPException(
+            status_code=409,
+            detail=f"Run {run_id} could not be resumed: {exc}",
+        ) from exc
+
+    status = str(getattr(result, "status", result))
+    logger.info("review_resumed run_id=%s status=%s", run_id, status)
+    return {
+        "status": status,
+        "run_id": run_id,
+        "review": outcome.get("review") if isinstance(outcome, dict) else None,
+    }

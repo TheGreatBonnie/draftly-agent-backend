@@ -1,6 +1,6 @@
-from integrations.discord.auth import DiscordAuth
-from integrations.discord.client import DiscordClient
-from integrations.discord.events import DiscordEventHandler
+from draftly.integrations.discord.auth import DiscordAuth
+from draftly.integrations.discord.client import DiscordClient
+from draftly.integrations.discord.events import DiscordEventHandler
 
 __all__ = [
     "DiscordAuth",

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Any, cast
 
-from integrations.cockroachdb.client import CockroachDBClient
+from draftly.integrations.database.client import DatabaseClient
 
 
 async def save_slack_workflow(
@@ -13,16 +13,16 @@ async def save_slack_workflow(
     channel_id: str,
     thread_ts: str,
     source_message: str,
-    db: CockroachDBClient | None = None,
+    db: DatabaseClient | None = None,
 ) -> str:
     """Save or update a Slack workflow record."""
     if db is None:
-        from app.config import get_settings
-        from app.dependencies import build_dependencies
+        from draftly.app.config import get_settings
+        from draftly.app.dependencies import build_dependencies
 
         settings = get_settings()
         deps = build_dependencies(settings=settings)
-        db = deps.integrations.cockroachdb
+        db = deps.integrations.database
 
     row = await db.fetch_one(
         """INSERT INTO slack_workflows
@@ -45,16 +45,16 @@ async def save_slack_workflow(
 
 async def list_slack_installations(
     *,
-    db: CockroachDBClient | None = None,
+    db: DatabaseClient | None = None,
 ) -> list[dict[str, Any]]:
     """List all Slack installations with org names."""
     if db is None:
-        from app.config import get_settings
-        from app.dependencies import build_dependencies
+        from draftly.app.config import get_settings
+        from draftly.app.dependencies import build_dependencies
 
         settings = get_settings()
         deps = build_dependencies(settings=settings)
-        db = deps.integrations.cockroachdb
+        db = deps.integrations.database
 
     rows = await db.fetch_all(
         """SELECT si.id::text, si.team_id, si.team_name, si.bot_user_id,
@@ -71,16 +71,16 @@ async def link_slack_installation(
     *,
     team_id: str,
     org_id: str,
-    db: CockroachDBClient | None = None,
+    db: DatabaseClient | None = None,
 ) -> None:
     """Link a Slack installation to a Clerk organization."""
     if db is None:
-        from app.config import get_settings
-        from app.dependencies import build_dependencies
+        from draftly.app.config import get_settings
+        from draftly.app.dependencies import build_dependencies
 
         settings = get_settings()
         deps = build_dependencies(settings=settings)
-        db = deps.integrations.cockroachdb
+        db = deps.integrations.database
 
     await db.execute(
         "UPDATE slack_installations SET org_id = $1 WHERE team_id = $2",
@@ -92,16 +92,16 @@ async def link_slack_installation(
 async def remove_slack_installation(
     *,
     team_id: str,
-    db: CockroachDBClient | None = None,
+    db: DatabaseClient | None = None,
 ) -> None:
     """Delete a Slack installation record."""
     if db is None:
-        from app.config import get_settings
-        from app.dependencies import build_dependencies
+        from draftly.app.config import get_settings
+        from draftly.app.dependencies import build_dependencies
 
         settings = get_settings()
         deps = build_dependencies(settings=settings)
-        db = deps.integrations.cockroachdb
+        db = deps.integrations.database
 
     await db.execute(
         "DELETE FROM slack_installations WHERE team_id = $1",

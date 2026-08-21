@@ -1,6 +1,8 @@
 import logging
 from collections.abc import Sequence
 
+from openai import OpenAI
+
 from .config import EmbeddingConfig
 from .health import (
     FAILURE_AUTH,
@@ -8,11 +10,47 @@ from .health import (
     ProviderHealthRegistry,
 )
 from .registry import ModelRegistry
-from .router import ModelRouter
 
-__all__ = ["EmbeddingRouter"]
+__all__ = ["EmbeddingRouter", "OpenAICompatibleEmbedder"]
 
 logger = logging.getLogger(__name__)
+
+
+class OpenAICompatibleEmbedder:
+    """
+    Minimal OpenAI-compatible embedding client.
+
+    Strands provides no embedding API, so Draftly talks to the
+    provider's ``/embeddings`` endpoint directly via the ``openai``
+    client. ``embed_query`` mirrors the LangChain interface so the
+    router's call sites stay stable.
+    """
+
+    def __init__(
+        self,
+        *,
+        api_key: str,
+        base_url: str | None,
+        model_id: str,
+        timeout: float = 60.0,
+    ) -> None:
+        self.model_id = model_id
+        self._client = OpenAI(
+            api_key=api_key,
+            base_url=base_url,
+            timeout=timeout,
+        )
+
+    def embed_query(
+        self,
+        text: str,
+    ) -> list[float]:
+        response = self._client.embeddings.create(
+            model=self.model_id,
+            input=text,
+        )
+
+        return response.data[0].embedding
 
 
 class EmbeddingRouter:
@@ -73,6 +111,8 @@ class EmbeddingRouter:
                 vector = embedder.embed_query(text)
 
             except Exception as exc:
+                from .router import ModelRouter
+
                 failure = ModelRouter._classify_failure(exc)
 
                 logger.warning(

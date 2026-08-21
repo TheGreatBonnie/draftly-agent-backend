@@ -8,9 +8,9 @@ import structlog
 from slack_bolt.app.async_app import AsyncApp
 from slack_sdk.web.async_client import AsyncWebClient
 
-from integrations.cockroachdb.client import CockroachDBClient
-from integrations.slack.conversation import ConversationStore
-from integrations.slack.installation_store import SlackInstallationStore
+from draftly.integrations.database.client import DatabaseClient
+from draftly.integrations.slack.conversation import ConversationStore
+from draftly.integrations.slack.installation_store import SlackInstallationStore
 
 logger = structlog.get_logger()
 
@@ -20,7 +20,7 @@ _MAX_PROCESSED_TS = 500
 
 
 class SlackAppDeps:
-    def __init__(self, db: CockroachDBClient) -> None:
+    def __init__(self, db: DatabaseClient) -> None:
         self.db = db
         self.conversation_store = ConversationStore()
         self.installation_store = SlackInstallationStore(db)
@@ -31,7 +31,7 @@ def build_slack_app(
     signing_secret: str | None = None,
     installation_store: SlackInstallationStore | None = None,
 ) -> AsyncApp:
-    from app.config import get_settings
+    from draftly.app.config import get_settings
 
     settings = get_settings()
 
@@ -103,8 +103,8 @@ async def _dispatch_message(event: dict, context: dict, deps: SlackAppDeps) -> N
 
     # Add eyes emoji reaction to acknowledge
     try:
-        from app.config import get_settings
-        from integrations.slack.client import SlackClient
+        from draftly.app.config import get_settings
+        from draftly.integrations.slack.client import SlackClient
 
         settings = get_settings()
         if settings.slack_bot_token:
@@ -114,7 +114,7 @@ async def _dispatch_message(event: dict, context: dict, deps: SlackAppDeps) -> N
         logger.warning("slack_reaction_failed", channel=channel, ts=ts)
 
     # Dispatch to EventBus via SlackEventProcessor
-    from events.slack_events import SlackEventProcessor
+    from draftly.events.slack_events import SlackEventProcessor
 
     processor = SlackEventProcessor()
     event_type = "app_mention" if text.startswith(f"<@{bot_user_id}>") else "message"
@@ -176,7 +176,7 @@ async def _handle_review_action(action: dict, action_id: str) -> None:
 
     try:
         # Get the ReviewDecisionService from app state
-        from app.main import app
+        from draftly.app.main import app
 
         review_decision = getattr(app.state.draftly, "review_decision", None)
         if review_decision is None:

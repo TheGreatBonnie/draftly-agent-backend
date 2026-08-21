@@ -10,7 +10,7 @@ from slack_sdk.oauth.installation_store.async_installation_store import (
 from slack_sdk.oauth.installation_store.models.bot import Bot
 from slack_sdk.oauth.installation_store.models.installation import Installation
 
-from integrations.cockroachdb.client import CockroachDBClient
+from draftly.integrations.database.client import DatabaseClient
 
 
 def _join_scopes(scopes: Any) -> str:
@@ -26,7 +26,7 @@ def _split_scopes(value: Any) -> list[str]:
 
 
 class SlackInstallationStore(AsyncInstallationStore):
-    def __init__(self, db: CockroachDBClient) -> None:
+    def __init__(self, db: DatabaseClient) -> None:
         self.db = db
 
     async def async_save(self, installation: Installation) -> None:

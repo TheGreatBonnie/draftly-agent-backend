@@ -79,7 +79,7 @@ async def clerk_webhook(request: Request) -> WebhookResponse:
 
         settings = get_settings()
         deps = build_dependencies(settings=settings)
-        db = deps.integrations.cockroachdb
+        db = deps.integrations.database
         await db.execute("DELETE FROM organizations WHERE clerk_org_id = $1", data["id"])
         logger.info("org_deleted_from_clerk", clerk_org_id=data["id"])
 
@@ -89,7 +89,7 @@ async def clerk_webhook(request: Request) -> WebhookResponse:
 
         settings = get_settings()
         deps = build_dependencies(settings=settings)
-        db = deps.integrations.cockroachdb
+        db = deps.integrations.database
         await db.execute(
             "UPDATE organizations SET clerk_org_name = $1 WHERE clerk_org_id = $2",
             data.get("name", ""),

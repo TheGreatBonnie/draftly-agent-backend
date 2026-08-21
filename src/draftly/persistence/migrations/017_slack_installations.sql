@@ -1,21 +1,21 @@
 CREATE TABLE IF NOT EXISTS slack_installations (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 
-    org_id STRING,
+    org_id TEXT,
 
-    team_id STRING NOT NULL,
+    team_id TEXT NOT NULL,
 
-    team_name STRING,
+    team_name TEXT,
 
-    bot_user_id STRING,
-    bot_token STRING NOT NULL,
-    bot_scopes STRING,
+    bot_user_id TEXT,
+    bot_token TEXT NOT NULL,
+    bot_scopes TEXT,
 
-    user_id STRING NOT NULL,
-    user_token STRING,
-    user_scopes STRING,
+    user_id TEXT NOT NULL,
+    user_token TEXT,
+    user_scopes TEXT,
 
-    token_type STRING,
+    token_type TEXT,
 
     installed_at TIMESTAMPTZ DEFAULT now(),
     updated_at TIMESTAMPTZ DEFAULT now() ON UPDATE now(),

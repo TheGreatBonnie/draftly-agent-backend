@@ -1,19 +1,19 @@
 CREATE TABLE IF NOT EXISTS documentation (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 
-    org_id STRING REFERENCES organizations(clerk_org_id) ON DELETE CASCADE,
-    repository STRING,
+    org_id TEXT REFERENCES organizations(clerk_org_id) ON DELETE CASCADE,
+    repository TEXT,
 
-    path STRING NOT NULL,
-    title STRING,
-    content STRING NOT NULL,
+    path TEXT NOT NULL,
+    title TEXT,
+    content TEXT NOT NULL,
 
-    document_type STRING NOT NULL DEFAULT 'general',
+    document_type TEXT NOT NULL DEFAULT 'general',
 
     version INT8 NOT NULL DEFAULT 1,
-    commit_sha STRING,
+    commit_sha TEXT,
 
-    status STRING NOT NULL DEFAULT 'draft',
+    status TEXT NOT NULL DEFAULT 'draft',
 
     metadata JSONB NOT NULL DEFAULT '{}'::JSONB,
 
@@ -23,7 +23,7 @@ CREATE TABLE IF NOT EXISTS documentation (
     broken_links BOOL NOT NULL DEFAULT false,
     unsupported_claims BOOL NOT NULL DEFAULT false,
 
-    source_hash STRING,
+    source_hash TEXT,
     last_verified_at TIMESTAMPTZ,
 
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),

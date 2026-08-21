@@ -7,7 +7,7 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
-from domain.github.events import (
+from draftly.events.github.events import (
     GitHubEvent,
     GitHubIssueEvent,
     GitHubPullRequestEvent,

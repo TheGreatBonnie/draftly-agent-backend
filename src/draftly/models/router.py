@@ -1,6 +1,6 @@
 import logging
 
-from langchain_core.language_models import BaseChatModel
+from strands.models.model import Model
 
 from .config import ModelConfig
 from .health import (
@@ -37,7 +37,7 @@ class ModelRouter:
     def resolve(
         self,
         policy: RoutingPolicy,
-    ) -> BaseChatModel:
+    ) -> Model:
         """
         Select and instantiate the best healthy model for ``policy``.
 
@@ -156,7 +156,7 @@ class ModelRouter:
     def resolve_model(
         self,
         model_name: str,
-    ) -> BaseChatModel:
+    ) -> Model:
 
         config = self.registry.get_model(
             model_name
@@ -181,7 +181,7 @@ class ModelRouter:
     def resolve_capability(
         self,
         capability: str,
-    ) -> BaseChatModel:
+    ) -> Model:
         """
         Resolve the highest-priority healthy model that supports
         the requested capability.

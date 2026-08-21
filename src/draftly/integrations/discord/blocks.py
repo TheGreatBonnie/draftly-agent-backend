@@ -4,7 +4,7 @@ from __future__ import annotations
 import secrets
 from typing import Any
 
-from integrations.discord.interactions import store_interaction_token
+from draftly.integrations.discord.interactions import store_interaction_token
 
 
 def _truncate_draft(content: str, max_chars: int = 500) -> str:

@@ -1,11 +1,11 @@
 CREATE TABLE IF NOT EXISTS github_installations (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 
-    org_id STRING REFERENCES organizations(clerk_org_id) ON DELETE CASCADE,
+    org_id TEXT REFERENCES organizations(clerk_org_id) ON DELETE CASCADE,
 
     installation_id INT NOT NULL UNIQUE,
 
-    github_org STRING NOT NULL,
+    github_org TEXT NOT NULL,
 
     repositories JSONB DEFAULT '[]'::JSONB,
 

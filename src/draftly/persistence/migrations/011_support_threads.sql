@@ -1,20 +1,20 @@
 CREATE TABLE IF NOT EXISTS support_threads (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 
-    thread_id STRING NOT NULL,
-    org_id STRING REFERENCES organizations(clerk_org_id) ON DELETE CASCADE,
+    thread_id TEXT NOT NULL,
+    org_id TEXT REFERENCES organizations(clerk_org_id) ON DELETE CASCADE,
 
-    platform STRING NOT NULL,
+    platform TEXT NOT NULL,
 
-    external_id STRING,
-    channel_id STRING NOT NULL,
-    channel_name STRING,
-    root_message_id STRING,
+    external_id TEXT,
+    channel_id TEXT NOT NULL,
+    channel_name TEXT,
+    root_message_id TEXT,
 
-    question STRING,
-    answer STRING,
+    question TEXT,
+    answer TEXT,
 
-    status STRING NOT NULL DEFAULT 'open',
+    status TEXT NOT NULL DEFAULT 'open',
     resolved BOOL NOT NULL DEFAULT false,
 
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -26,22 +26,22 @@ CREATE TABLE IF NOT EXISTS support_threads (
 );
 
 CREATE TABLE IF NOT EXISTS support_messages (
-    message_id STRING NOT NULL,
-    platform STRING NOT NULL,
+    message_id TEXT NOT NULL,
+    platform TEXT NOT NULL,
 
-    channel_id STRING NOT NULL,
-    channel_name STRING,
+    channel_id TEXT NOT NULL,
+    channel_name TEXT,
 
-    author_id STRING,
-    author_name STRING,
+    author_id TEXT,
+    author_name TEXT,
 
-    content STRING NOT NULL,
+    content TEXT NOT NULL,
 
-    thread_id STRING,
+    thread_id TEXT,
 
     timestamp TIMESTAMPTZ NOT NULL,
 
-    url STRING,
+    url TEXT,
 
     raw JSONB,
 
@@ -59,7 +59,7 @@ ON support_messages (timestamp DESC);
 
 -- Add org_id for multi-tenant data isolation on messages
 ALTER TABLE support_messages
-ADD COLUMN IF NOT EXISTS org_id STRING
+ADD COLUMN IF NOT EXISTS org_id TEXT
     REFERENCES organizations(clerk_org_id) ON DELETE CASCADE;
 
 CREATE INDEX IF NOT EXISTS idx_support_messages_org_id

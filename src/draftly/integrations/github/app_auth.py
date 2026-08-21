@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import hashlib
-import hmac
 import os
 import time
 from pathlib import Path
@@ -11,7 +9,7 @@ import httpx
 import jwt
 import structlog
 
-from app.config import get_settings
+from draftly.app.config import get_settings
 
 logger = structlog.get_logger()
 
@@ -65,18 +63,20 @@ def verify_webhook_signature(payload: bytes, signature: str) -> bool:
     if not signature:
         return False
 
+    secret = _get_webhook_secret()
+    if not secret:
+        return False
+
+    from draftly.security.webhook_verification import (
+        WebhookVerificationError,
+        WebhookVerifier,
+    )
+
     try:
-        sha_name, signature_val = signature.split("=")
-        if sha_name != "sha256":
-            return False
-
-        secret = _get_webhook_secret()
-        if not secret:
-            return False
-
-        mac = hmac.new(secret.encode(), msg=payload, digestmod=hashlib.sha256)
-        return hmac.compare_digest(mac.hexdigest(), signature_val)
-    except (ValueError, AttributeError):
+        return WebhookVerifier(github_secret=secret).verify_github(
+            payload, signature
+        )
+    except WebhookVerificationError:
         return False
 
 

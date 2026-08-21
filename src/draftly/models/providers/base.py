@@ -1,8 +1,11 @@
+"""Provider abstraction used by Draftly's model registry."""
+
+from __future__ import annotations
+
 from abc import ABC, abstractmethod
 from typing import Any
 
-from langchain_core.embeddings import Embeddings
-from langchain_core.language_models import BaseChatModel
+from strands.models.model import Model
 
 from ..config import EmbeddingConfig, ModelConfig, ProviderConfig
 
@@ -27,16 +30,16 @@ class ModelProvider(ABC):
     def create_model(
         self,
         config: ModelConfig,
-    ) -> BaseChatModel:
+    ) -> Model:
         """
-        Create a LangChain-compatible chat model.
+        Create a Strands-compatible chat model.
         """
 
     def create_embedder(
         self,
         config: EmbeddingConfig,
-    ) -> Embeddings:
-        """Create a LangChain-compatible embedding model."""
+    ) -> Any:
+        """Create an OpenAI-compatible embedding client."""
         raise NotImplementedError(
             f"Provider '{self.name}' does not support embeddings."
         )

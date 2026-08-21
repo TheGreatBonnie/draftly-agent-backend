@@ -1,23 +1,23 @@
 CREATE TABLE IF NOT EXISTS events (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 
-    org_id STRING REFERENCES organizations(clerk_org_id) ON DELETE CASCADE,
+    org_id TEXT REFERENCES organizations(clerk_org_id) ON DELETE CASCADE,
 
-    event_id STRING NOT NULL,
-    event_type STRING NOT NULL,
+    event_id TEXT NOT NULL,
+    event_type TEXT NOT NULL,
 
-    aggregate_type STRING,
+    aggregate_type TEXT,
     aggregate_id UUID,
 
-    source STRING NOT NULL DEFAULT 'github',
-    repository STRING,
-    actor STRING,
+    source TEXT NOT NULL DEFAULT 'github',
+    repository TEXT,
+    actor TEXT,
 
     payload JSONB NOT NULL DEFAULT '{}'::JSONB,
 
     occurred_at TIMESTAMPTZ NOT NULL,
     processed_at TIMESTAMPTZ,
-    status STRING NOT NULL DEFAULT 'pending',
+    status TEXT NOT NULL DEFAULT 'pending',
 
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
 

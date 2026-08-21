@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 
-from domain.support.models import SupportMessage
+from draftly.support.models import SupportMessage
 
 
 class SlackEventHandler:

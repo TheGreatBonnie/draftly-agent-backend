@@ -1,0 +1,36 @@
+{
+  "name": "documentation",
+  "description": "Golden cases for documentation answers (plan §8.2)",
+  "cases": [
+    {
+      "name": "retry-configuration",
+      "input": "How do I configure transaction retries in the client library?",
+      "expected_output": "Enable automatic retries with SET SESSION characteristics and backoff via retry_count; see transactions guide.",
+      "metadata": {
+        "evidence": [
+          {"id": "docs/transactions", "topic": "retries", "url": "https://example.com/docs/transactions"}
+        ]
+      }
+    },
+    {
+      "name": "connection-limits",
+      "input": "What is the maximum number of concurrent connections?",
+      "expected_output": "The default connection limit is 25 per node; scale with connection pooling.",
+      "metadata": {
+        "evidence": [
+          {"id": "docs/networking", "topic": "connections", "url": "https://example.com/docs/networking"}
+        ]
+      }
+    },
+    {
+      "name": "backup-schedule",
+      "input": "How often are automated backups taken?",
+      "expected_output": "Automated backups run daily with a 7-day retention window.",
+      "metadata": {
+        "evidence": [
+          {"id": "docs/backup", "topic": "backups", "url": "https://example.com/docs/backup"}
+        ]
+      }
+    }
+  ]
+}

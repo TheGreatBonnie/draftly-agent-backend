@@ -1,6 +1,23 @@
 
-from pydantic import AliasChoices, Field  # ty: ignore[unresolved-import]
-from pydantic_settings import BaseSettings, SettingsConfigDict  # ty: ignore[unresolved-import]
+from pydantic import AliasChoices, BaseModel, Field
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class StrandsConfig(BaseModel):
+    """
+    Strands agents runtime configuration.
+
+    ``review_policy`` controls when the human-in-the-loop review node
+    gates a run: ``"always"``, ``"risky"`` (only high-risk payloads), or
+    ``"never"``.
+    """
+
+    graph_id: str = "draftly-main-graph"
+    session_storage_dir: str = ".draftly/sessions"
+    max_node_executions: int = 10
+    execution_timeout: int = 600
+    node_timeout: int = 180
+    review_policy: str = "always"  # "always" | "risky" | "never"
 
 
 class Settings(BaseSettings):
@@ -80,23 +97,43 @@ class Settings(BaseSettings):
     discord_app_id: str | None = None
     discord_guild_id: str | None = None
 
-    # ------------------------------------------------------------------
-    # CockroachDB
+# ------------------------------------------------------------------
+    # Database (NeonDB / Postgres)
     # ------------------------------------------------------------------
 
     database_url: str = Field(
-        default="postgresql://localhost:26257/draftly",
-        validation_alias=AliasChoices("COCKROACHDB_URL", "DATABASE_URL"),
+        default="postgresql://localhost:5432/draftly",
+        validation_alias=AliasChoices(
+            "NEON_DATABASE_URL",
+            "DATABASE_URL",
+        ),
     )
 
     database_pool_min_size: int = 2
     database_pool_max_size: int = 10
 
     # ------------------------------------------------------------------
-    # DeepEval
+    # Strands (agents runtime)
     # ------------------------------------------------------------------
 
-    deepeval_api_key: str | None = None
+    strands_graph_id: str = "draftly-main-graph"
+    strands_session_storage_dir: str = ".draftly/sessions"
+    strands_max_node_executions: int = 10
+    strands_execution_timeout: int = 600
+    strands_node_timeout: int = 180
+    strands_review_policy: str = "always"  # "always" | "risky" | "never"
+
+    @property
+    def strands(self) -> StrandsConfig:
+        """Return the Strands runtime config derived from settings."""
+        return StrandsConfig(
+            graph_id=self.strands_graph_id,
+            session_storage_dir=self.strands_session_storage_dir,
+            max_node_executions=self.strands_max_node_executions,
+            execution_timeout=self.strands_execution_timeout,
+            node_timeout=self.strands_node_timeout,
+            review_policy=self.strands_review_policy,
+        )
 
     # ------------------------------------------------------------------
     # Workers

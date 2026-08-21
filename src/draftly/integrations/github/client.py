@@ -120,6 +120,133 @@ class GitHubClient:
 
         return response.json()
 
+    async def _request_text(
+        self,
+        method: str,
+        path: str,
+        *,
+        params: dict[str, Any] | None = None,
+        json: dict[str, Any] | None = None,
+        accept: str | None = None,
+    ) -> str:
+        url = f"{self.BASE_URL}{path}"
+
+        headers = self.auth.headers()
+        if accept:
+            headers = {**headers, "Accept": accept}
+
+        async with httpx.AsyncClient(
+            timeout=self.timeout,
+        ) as client:
+            response = await client.request(
+                method,
+                url,
+                headers=headers,
+                params=params,
+                json=json,
+            )
+
+        response.raise_for_status()
+
+        return response.text
+
+    async def get_pull_request_diff(
+        self,
+        repository: str,
+        pull_request_number: int,
+    ) -> str:
+        return await self._request_text(
+            "GET",
+            f"/repos/{repository}/pulls/{pull_request_number}",
+            accept="application/vnd.github.v3.diff",
+        )
+
+    async def get_pull_request_files(
+        self,
+        repository: str,
+        pull_request_number: int,
+    ) -> list[dict[str, Any]]:
+        return cast(list[dict[str, Any]], await self._request(
+            "GET",
+            f"/repos/{repository}/pulls/{pull_request_number}/files",
+        ))
+
+    async def create_ref(
+        self,
+        repository: str,
+        name: str,
+        sha: str,
+    ) -> dict[str, Any]:
+        return cast(dict[str, Any], await self._request(
+            "POST",
+            f"/repos/{repository}/git/refs",
+            json={
+                "ref": f"refs/heads/{name}",
+                "sha": sha,
+            },
+        ))
+
+    async def create_commit_and_tree(
+        self,
+        repository: str,
+        branch: str,
+        message: str,
+        files: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        branch_ref = cast(dict[str, Any], await self._request(
+            "GET",
+            f"/repos/{repository}/git/ref/heads/{branch}",
+        ))
+        branch_sha = cast(str, branch_ref["object"]["sha"])
+
+        tree = cast(dict[str, Any], await self._request(
+            "POST",
+            f"/repos/{repository}/git/trees",
+            json={
+                "base_tree": branch_sha,
+                "tree": [
+                    {
+                        "path": file["path"],
+                        "mode": file.get("mode", "100644"),
+                        "type": "blob",
+                        "content": file["content"],
+                    }
+                    for file in files
+                ],
+            },
+        ))
+        tree_sha = cast(str, tree["sha"])
+
+        commit = cast(dict[str, Any], await self._request(
+            "POST",
+            f"/repos/{repository}/git/commits",
+            json={
+                "message": message,
+                "tree": tree_sha,
+                "parents": [branch_sha],
+            },
+        ))
+
+        await self._request(
+            "PATCH",
+            f"/repos/{repository}/git/refs/heads/{branch}",
+            json={"sha": commit["sha"]},
+        )
+
+        return commit
+
+    async def create_comment(
+        self,
+        repository: str,
+        pull_request_number: int,
+        body: str,
+    ) -> dict[str, Any]:
+        return cast(dict[str, Any], await self._request(
+            "POST",
+            f"/repos/{repository}/issues/{pull_request_number}/comments",
+            json={"body": body},
+        ))
+
     async def get_issue(
         self,
         repository: str,

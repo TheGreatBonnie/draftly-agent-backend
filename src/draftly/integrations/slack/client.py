@@ -143,6 +143,27 @@ class SlackClient:
 
         return await self._request("POST", "chat.postMessage", json=payload)
 
+    async def get_conversation_thread(
+        self,
+        channel_id: str,
+        thread_ts: str,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        data = await self._request(
+            "GET",
+            "conversations.replies",
+            params={
+                "channel": channel_id,
+                "ts": thread_ts,
+                "limit": limit,
+            },
+        )
+
+        return cast(
+            list[dict[str, Any]],
+            data.get("messages", []),
+        )
+
     async def add_reaction(
         self,
         channel_id: str,

@@ -2,15 +2,15 @@ from __future__ import annotations
 
 from typing import Any
 
-from integrations.cockroachdb.jobs_store import CockroachJobsStore
+from draftly.integrations.database.jobs_store import DatabaseJobsStore
 
 
 class JobRepositoryImpl:
     def __init__(
         self,
-        store: CockroachJobsStore | None = None,
+        store: DatabaseJobsStore | None = None,
     ) -> None:
-        self.store = store or CockroachJobsStore()
+        self.store = store or DatabaseJobsStore()
 
     async def get(self, *, job_id: str) -> dict[str, Any] | None:
         return await self.store.get(job_id=job_id)

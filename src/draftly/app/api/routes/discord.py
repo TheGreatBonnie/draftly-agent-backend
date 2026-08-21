@@ -4,7 +4,6 @@ from __future__ import annotations
 import json
 import logging
 
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
@@ -44,18 +43,16 @@ STATUS_LABEL = {
 
 def _verify_signature(body: bytes, timestamp: str, signature: str) -> bool:
     """Verify Ed25519 signature from Discord."""
-    public_key_hex = settings.discord_public_key
-    if not public_key_hex:
-        return False
+    from draftly.security.webhook_verification import (
+        WebhookVerificationError,
+        WebhookVerifier,
+    )
 
     try:
-        public_key_bytes = bytes.fromhex(public_key_hex)
-        public_key = Ed25519PublicKey.from_public_bytes(public_key_bytes)
-        message = timestamp.encode() + body
-        signature_bytes = bytes.fromhex(signature)
-        public_key.verify(signature_bytes, message)
-        return True
-    except Exception:
+        return WebhookVerifier(
+            discord_public_key=settings.discord_public_key
+        ).verify_discord(body, timestamp, signature)
+    except (WebhookVerificationError, ValueError):
         return False
 
 
@@ -237,7 +234,7 @@ async def link_discord(
 
     settings = get_settings()
     deps = build_dependencies(settings=settings)
-    db = deps.integrations.cockroachdb
+    db = deps.integrations.database
 
     await db.execute(
         "UPDATE organizations SET discord_guild_id = $1 WHERE clerk_org_id = $2",
@@ -259,7 +256,7 @@ async def discord_status(token: dict = Depends(get_verified_token)) -> dict:
 
     settings = get_settings()
     deps = build_dependencies(settings=settings)
-    db = deps.integrations.cockroachdb
+    db = deps.integrations.database
 
     row = await db.fetch_one(
         "SELECT discord_guild_id FROM organizations WHERE clerk_org_id = $1",
@@ -285,7 +282,7 @@ async def discord_channels(token: dict = Depends(get_verified_token)) -> dict:
 
     settings = get_settings()
     deps = build_dependencies(settings=settings)
-    db = deps.integrations.cockroachdb
+    db = deps.integrations.database
 
     row = await db.fetch_one(
         "SELECT discord_guild_id FROM organizations WHERE clerk_org_id = $1",
@@ -331,7 +328,7 @@ async def get_trigger_channels(token: dict = Depends(get_verified_token)) -> dic
 
     settings = get_settings()
     deps = build_dependencies(settings=settings)
-    db = deps.integrations.cockroachdb
+    db = deps.integrations.database
 
     row = await db.fetch_one(
         "SELECT discord_trigger_channels FROM organizations WHERE clerk_org_id = $1",
@@ -357,7 +354,7 @@ async def set_trigger_channels(
 
     settings = get_settings()
     deps = build_dependencies(settings=settings)
-    db = deps.integrations.cockroachdb
+    db = deps.integrations.database
 
     await db.execute(
         "UPDATE organizations SET discord_trigger_channels = $1 WHERE clerk_org_id = $2",
@@ -379,7 +376,7 @@ async def unlink_discord(token: dict = Depends(get_verified_token)) -> dict[str,
 
     settings = get_settings()
     deps = build_dependencies(settings=settings)
-    db = deps.integrations.cockroachdb
+    db = deps.integrations.database
 
     await db.execute(
         "UPDATE organizations "

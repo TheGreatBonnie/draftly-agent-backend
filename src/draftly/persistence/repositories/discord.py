@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import cast
 
-from integrations.cockroachdb.client import CockroachDBClient
+from draftly.integrations.database.client import DatabaseClient
 
 
 async def save_discord_workflow(
@@ -14,16 +14,16 @@ async def save_discord_workflow(
     message_id: str,
     thread_id: str,
     source_message: str,
-    db: CockroachDBClient | None = None,
+    db: DatabaseClient | None = None,
 ) -> str:
     """Save or update a Discord workflow record."""
     if db is None:
-        from app.config import get_settings
-        from app.dependencies import build_dependencies
+        from draftly.app.config import get_settings
+        from draftly.app.dependencies import build_dependencies
 
         settings = get_settings()
         deps = build_dependencies(settings=settings)
-        db = deps.integrations.cockroachdb
+        db = deps.integrations.database
 
     row = await db.fetch_one(
         """INSERT INTO discord_workflows

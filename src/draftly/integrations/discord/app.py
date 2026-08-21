@@ -8,7 +8,7 @@ from typing import Any
 import httpx
 import structlog
 
-from app.config import get_settings
+from draftly.app.config import get_settings
 
 logger = structlog.get_logger()
 
@@ -53,8 +53,8 @@ async def handle_message_create(data: dict[str, Any], *, app_state: Any = None) 
     3. @mention the bot
     4. Are in a configured trigger channel (or no channels configured = no trigger)
     """
-    from integrations.discord.gateway import gateway
-    from integrations.shared.org_resolution import get_org_by_discord_guild
+    from draftly.integrations.discord.gateway import gateway
+    from draftly.integrations.shared.org_resolution import get_org_by_discord_guild
 
     guild_id = data.get("guild_id", "")
     channel_id = data.get("channel_id", "")
@@ -131,7 +131,7 @@ async def handle_message_create(data: dict[str, Any], *, app_state: Any = None) 
     # Create a thread on the user's message for the pipeline to reply in
     reply_to = channel_id
     try:
-        from integrations.discord.client import DiscordClient
+        from draftly.integrations.discord.client import DiscordClient
 
         client = DiscordClient()
         new_thread = await client.create_thread(channel_id, message_id, "Documentation Request")
@@ -176,7 +176,7 @@ async def _dispatch_to_event_bus(
     data: dict[str, Any],
 ) -> None:
     """Dispatch Discord message to EventBus via DiscordEventProcessor."""
-    from events.discord_events import DiscordEventProcessor
+    from draftly.events.discord_events import DiscordEventProcessor
 
     processor = DiscordEventProcessor()
     asyncio.create_task(

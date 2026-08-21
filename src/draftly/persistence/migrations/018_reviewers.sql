@@ -1,14 +1,14 @@
 CREATE TABLE IF NOT EXISTS reviewers (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 
-    org_id STRING REFERENCES organizations(clerk_org_id) ON DELETE CASCADE,
+    org_id TEXT REFERENCES organizations(clerk_org_id) ON DELETE CASCADE,
 
-    name STRING NOT NULL,
+    name TEXT NOT NULL,
 
-    email STRING,
-    slack_user_id STRING,
-    discord_user_id STRING,
-    clerk_user_id STRING,
+    email TEXT,
+    slack_user_id TEXT,
+    discord_user_id TEXT,
+    clerk_user_id TEXT,
 
     notify_slack BOOL DEFAULT true,
     notify_discord BOOL DEFAULT false,

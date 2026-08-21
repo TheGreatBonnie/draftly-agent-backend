@@ -9,9 +9,9 @@ from typing import Any, cast
 import asyncpg
 
 
-class CockroachDBClient:
+class DatabaseClient:
     """
-    Async CockroachDB connection manager backed by an asyncpg pool.
+    Async NeonDB (Postgres) connection manager backed by an asyncpg pool.
 
     Mirrors agent/src/database.py: one lazy pool, serializable
     transactions, and conn-scoped helpers for use inside a
@@ -28,7 +28,7 @@ class CockroachDBClient:
     ) -> None:
         self.database_url = (
             database_url
-            or os.environ.get("COCKROACHDB_URL")
+            or os.environ.get("NEON_DATABASE_URL")
             or os.environ["DATABASE_URL"]
         )
         self.pool_min_size = pool_min_size
@@ -111,7 +111,7 @@ class CockroachDBClient:
     async def transaction(
         self,
         *,
-        isolation: str = "serializable",
+        isolation: str = "read_committed",
     ) -> AsyncIterator[asyncpg.Connection]:
         conn = await self._acquire()
 

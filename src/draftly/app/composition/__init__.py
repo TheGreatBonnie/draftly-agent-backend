@@ -18,13 +18,13 @@ or integrations/.
 from .agents import AgentRegistry, build_agents
 from .events import EventComposition, build_event_system
 from .tools import ToolRegistry, build_tools
-from .workflows import WorkflowRegistry, build_workflows
+from .workflows import ComposedWorkflows, build_workflows
 
 __all__ = [
     "AgentRegistry",
+    "ComposedWorkflows",
     "EventComposition",
     "ToolRegistry",
-    "WorkflowRegistry",
     "build_agents",
     "build_event_system",
     "build_tools",

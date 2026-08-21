@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Any
 
-from integrations.cockroachdb.client import CockroachDBClient
+from draftly.integrations.database.client import DatabaseClient
 
 _MEMORY_COLUMNS = """
     mi.id,
@@ -30,9 +30,9 @@ class VectorSearch:
 
     def __init__(
         self,
-        client: CockroachDBClient | None = None,
+        client: DatabaseClient | None = None,
     ) -> None:
-        self.client = client or CockroachDBClient()
+        self.client = client or DatabaseClient()
 
     async def search(
         self,

@@ -1,12 +1,20 @@
+"""NVIDIA NIM provider (OpenAI-compatible endpoints)."""
+
+from __future__ import annotations
+
 from typing import Any
 
-from langchain_nvidia_ai_endpoints import ChatNVIDIA
+from strands.models import OpenAIModel
+from strands.models.model import Model
 
 from ..config import EmbeddingConfig, ModelConfig
 from .base import ModelProvider
 
 
 class NvidiaProvider(ModelProvider):
+    """Provider for NVIDIA NIM / integrated.api.nvidia.com."""
+
+    DEFAULT_BASE_URL = "https://integrate.api.nvidia.com/v1"
 
     @property
     def name(self) -> str:
@@ -15,40 +23,35 @@ class NvidiaProvider(ModelProvider):
     def create_model(
         self,
         config: ModelConfig,
-    ) -> ChatNVIDIA:
-
+    ) -> Model:
         if not self.config.api_key:
-            raise ValueError(
-                "NVIDIA_API_KEY is not configured."
-            )
+            raise ValueError("NVIDIA_API_KEY is not configured.")
 
-        # LangSmith cost tracking: ls_provider and ls_model_name are set via
-        # run metadata in the middleware layer, not model kwargs.
-        return ChatNVIDIA(
-            model=config.model_id,
-            nvidia_api_key=self.config.api_key,
-            base_url=self.config.base_url
-            or "https://integrate.api.nvidia.com/v1",
-            temperature=config.temperature,
-            max_completion_tokens=config.max_tokens,
-            timeout=self.config.timeout,
-            model_kwargs={"max_retries": self.config.max_retries},
+        return OpenAIModel(
+            model_id=config.model_id,
+            client_args={
+                "api_key": self.config.api_key,
+                "base_url": self.config.base_url or self.DEFAULT_BASE_URL,
+                "timeout": self.config.timeout,
+                "max_retries": self.config.max_retries,
+            },
+            params={
+                "temperature": config.temperature,
+                "max_tokens": config.max_tokens,
+            },
         )
 
     def create_embedder(
         self,
         config: EmbeddingConfig,
     ) -> Any:
+        from ..embeddings import OpenAICompatibleEmbedder
         if not self.config.api_key:
-            raise ValueError(
-                "NVIDIA_API_KEY is not configured."
-            )
+            raise ValueError("NVIDIA_API_KEY is not configured.")
 
-        from langchain_nvidia_ai_endpoints import NVIDIAEmbeddings
-
-        return NVIDIAEmbeddings(
-            model=config.model_id,
+        return OpenAICompatibleEmbedder(
             api_key=self.config.api_key,
-            base_url=self.config.base_url
-            or "https://integrate.api.nvidia.com/v1",
+            base_url=self.config.base_url or self.DEFAULT_BASE_URL,
+            model_id=config.model_id,
+            timeout=self.config.timeout,
         )

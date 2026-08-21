@@ -4,7 +4,7 @@ from collections.abc import Sequence
 from typing import Any
 from uuid import uuid4
 
-from integrations.cockroachdb.client import CockroachDBClient
+from draftly.integrations.database.client import DatabaseClient
 
 _MEMORY_COLUMNS = """
     id,
@@ -24,16 +24,16 @@ _MEMORY_COLUMNS = """
 """
 
 
-class CockroachMemoryStore:
+class DatabaseMemoryStore:
     """
     Async memory store backed by memory_items + memory_embeddings.
     """
 
     def __init__(
         self,
-        client: CockroachDBClient | None = None,
+        client: DatabaseClient | None = None,
     ) -> None:
-        self.client = client or CockroachDBClient()
+        self.client = client or DatabaseClient()
 
     async def insert(
         self,

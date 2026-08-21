@@ -5,12 +5,12 @@ CREATE TABLE IF NOT EXISTS memory_feedback (
         REFERENCES memory_items (id)
         ON DELETE CASCADE,
 
-    feedback_type STRING NOT NULL,
-    source STRING,
+    feedback_type TEXT NOT NULL,
+    source TEXT,
 
     score FLOAT8 NOT NULL DEFAULT 0.5,
 
-    comment STRING,
+    comment TEXT,
 
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
 
@@ -23,7 +23,7 @@ ON memory_feedback (memory_item_id);
 
 -- Add org_id for multi-tenant data isolation
 ALTER TABLE memory_feedback
-ADD COLUMN IF NOT EXISTS org_id STRING
+ADD COLUMN IF NOT EXISTS org_id TEXT
     REFERENCES organizations(clerk_org_id) ON DELETE CASCADE;
 
 CREATE INDEX IF NOT EXISTS idx_memory_feedback_org

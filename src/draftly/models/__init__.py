@@ -4,13 +4,12 @@ from .config import (
     ModelConfig,
     ProviderConfig,
 )
-from .embeddings import EmbeddingRouter
+from .embeddings import EmbeddingRouter, OpenAICompatibleEmbedder
 from .factory import build_agent_policies, build_embedding_router, build_model_router
 from .health import (
     ProviderHealth,
     ProviderHealthRegistry,
 )
-from .middleware import create_model_router_middleware
 from .policies import (
     AgentModelPolicy,
     RoutingPolicy,
@@ -27,11 +26,11 @@ __all__ = [
     "ModelConfig",
     "ModelRegistry",
     "ModelRouter",
+    "OpenAICompatibleEmbedder",
     "ProviderConfig",
     "ProviderHealth",
     "ProviderHealthRegistry",
     "RoutingPolicy",
     "build_embedding_router",
     "build_model_router",
-    "create_model_router_middleware",
 ]

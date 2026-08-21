@@ -5,9 +5,9 @@ CREATE TABLE IF NOT EXISTS memory_access_log (
         REFERENCES memory_items (id)
         ON DELETE CASCADE,
 
-    agent STRING,
-    workflow STRING,
-    query STRING,
+    agent TEXT,
+    workflow TEXT,
+    query TEXT,
 
     similarity_score FLOAT8,
     rank INT8,
@@ -21,7 +21,7 @@ ON memory_access_log (memory_item_id);
 
 -- Add org_id for multi-tenant data isolation
 ALTER TABLE memory_access_log
-ADD COLUMN IF NOT EXISTS org_id STRING
+ADD COLUMN IF NOT EXISTS org_id TEXT
     REFERENCES organizations(clerk_org_id) ON DELETE CASCADE;
 
 CREATE INDEX IF NOT EXISTS idx_memory_access_log_org

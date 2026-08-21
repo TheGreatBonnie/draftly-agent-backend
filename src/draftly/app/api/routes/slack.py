@@ -8,7 +8,7 @@ from slack_bolt.adapter.fastapi.async_handler import AsyncSlackRequestHandler
 
 from draftly.app.api.auth import get_verified_token
 from draftly.app.config import get_settings
-from draftly.integrations.cockroachdb.client import CockroachDBClient
+from draftly.integrations.database.client import DatabaseClient
 from draftly.integrations.slack.app import SlackAppDeps, build_slack_app, register_handlers
 from draftly.integrations.slack.installation_store import SlackInstallationStore
 
@@ -27,7 +27,7 @@ def _get_handler() -> AsyncSlackRequestHandler:
     global _slack_app, _handler
     if _handler is None:
         settings = get_settings()
-        db = CockroachDBClient(database_url=settings.database_url)
+        db = DatabaseClient(database_url=settings.database_url)
         installation_store = SlackInstallationStore(db)
         _slack_app = build_slack_app(
             signing_secret=settings.slack_signing_secret,
@@ -91,7 +91,7 @@ async def slack_oauth_callback(code: str, state: str = "") -> RedirectResponse:
     """Exchange authorization code for tokens and save installation."""
     from slack_sdk.oauth.installation_store.models.installation import Installation
 
-    from draftly.integrations.cockroachdb.client import CockroachDBClient
+    from draftly.integrations.database.client import DatabaseClient
     from draftly.integrations.slack.installation_store import SlackInstallationStore
 
     if not settings.slack_client_id or not settings.slack_client_secret:
@@ -128,7 +128,7 @@ async def slack_oauth_callback(code: str, state: str = "") -> RedirectResponse:
         token_type="bot",
     )
 
-    db = CockroachDBClient(database_url=settings.database_url)
+    db = DatabaseClient(database_url=settings.database_url)
     await db.start()
     store = SlackInstallationStore(db)
     await store.async_save(installation)

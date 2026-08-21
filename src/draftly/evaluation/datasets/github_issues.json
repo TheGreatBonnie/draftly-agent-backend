@@ -1,0 +1,26 @@
+{
+  "name": "github_issues",
+  "description": "Golden cases for GitHub issue responses (plan §8.2)",
+  "cases": [
+    {
+      "name": "migration-lock-timeout",
+      "input": "Schema change hangs with a lock timeout on large tables.",
+      "expected_output": "Use the online schema change path; large backfills must set a higher statement timeout.",
+      "metadata": {
+        "evidence": [
+          {"id": "docs/schema-changes", "topic": "migrations", "url": "https://example.com/docs/schema-changes"}
+        ]
+      }
+    },
+    {
+      "name": "pagination-blank-page",
+      "input": "Keyset pagination returns an empty page after the first fetch.",
+      "expected_output": "Order by the same unique key used for the cursor; mixed orderings break keyset pagination.",
+      "metadata": {
+        "evidence": [
+          {"id": "docs/pagination", "topic": "pagination", "url": "https://example.com/docs/pagination"}
+        ]
+      }
+    }
+  ]
+}

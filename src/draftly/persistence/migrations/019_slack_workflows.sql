@@ -1,15 +1,15 @@
 CREATE TABLE IF NOT EXISTS slack_workflows (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 
-    org_id STRING REFERENCES organizations(clerk_org_id) ON DELETE CASCADE,
+    org_id TEXT REFERENCES organizations(clerk_org_id) ON DELETE CASCADE,
 
-    workflow_id STRING NOT NULL UNIQUE,
+    workflow_id TEXT NOT NULL UNIQUE,
 
-    channel_id STRING NOT NULL,
-    thread_ts STRING,
-    source_message STRING,
+    channel_id TEXT NOT NULL,
+    thread_ts TEXT,
+    source_message TEXT,
 
-    status STRING NOT NULL DEFAULT 'pending',
+    status TEXT NOT NULL DEFAULT 'pending',
 
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()

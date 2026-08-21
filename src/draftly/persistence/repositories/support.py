@@ -3,22 +3,22 @@ from __future__ import annotations
 from collections.abc import Sequence
 from datetime import datetime
 
-from domain.support.events import SupportEvent
-from domain.support.models import (
+from draftly.integrations.database.client import DatabaseClient
+from draftly.support.events import SupportEvent
+from draftly.support.models import (
     SupportMessage,
     SupportThread,
 )
-from integrations.cockroachdb.client import CockroachDBClient
 
 
 class SupportRepository:
     """
-    CockroachDB repository for support conversations,
+    NeonDB repository for support conversations,
     messages, threads, and support events.
     """
 
-    def __init__(self, database: CockroachDBClient | None = None):
-        self.database = database or CockroachDBClient()
+    def __init__(self, database: DatabaseClient | None = None):
+        self.database = database or DatabaseClient()
 
     # ---------------------------------------------------------
     # Messages

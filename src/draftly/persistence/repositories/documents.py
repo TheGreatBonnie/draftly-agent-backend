@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from domain.documentation.repositories import DocumentationRepository
-from integrations.cockroachdb.document_store import DocumentStore
+from draftly.documentation.repositories import DocumentationRepository
+from draftly.integrations.database.document_store import DocumentStore
 
 
 class DocumentRepository(DocumentationRepository):

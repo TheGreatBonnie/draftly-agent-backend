@@ -2,13 +2,23 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
-from integrations.scheduler.client import ScheduledJob, SchedulerClient
-
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class ScheduledJob:
+    """Minimal scheduled-job record (scheduler integration was removed)."""
+
+    id: str
+    name: str
+    schedule: str
+    handler: Callable[..., Any]
+    next_run_at: datetime | None = None
+    arguments: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -21,14 +31,14 @@ class DueJob:
 
 class SchedulerClientAdapter:
     """
-    Adapt SchedulerClient to the JobRegistry interface expected by
-    DraftlyScheduler (get_due_jobs).
+    Adapt a job registry to the interface expected by DraftlyScheduler
+    (get_due_jobs).
 
     Computes next_run_at from cron schedules using croniter if available,
     otherwise relies on caller-provided next_run_at.
     """
 
-    def __init__(self, client: SchedulerClient) -> None:
+    def __init__(self, client: Any) -> None:
         self._client = client
 
     def get_due_jobs(self) -> list[DueJob]:

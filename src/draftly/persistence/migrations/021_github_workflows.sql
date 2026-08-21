@@ -1,16 +1,16 @@
 CREATE TABLE IF NOT EXISTS github_workflows (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 
-    org_id STRING REFERENCES organizations(clerk_org_id) ON DELETE CASCADE,
+    org_id TEXT REFERENCES organizations(clerk_org_id) ON DELETE CASCADE,
 
-    workflow_id STRING NOT NULL UNIQUE,
+    workflow_id TEXT NOT NULL UNIQUE,
 
     installation_id INT NOT NULL,
-    owner STRING NOT NULL,
-    repo STRING NOT NULL,
+    owner TEXT NOT NULL,
+    repo TEXT NOT NULL,
     issue_number INT8 NOT NULL,
 
-    status STRING NOT NULL DEFAULT 'pending',
+    status TEXT NOT NULL DEFAULT 'pending',
 
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),

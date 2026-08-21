@@ -1,19 +1,19 @@
 from __future__ import annotations
 
-from domain.delivery.models import (
+from draftly.delivery.models import (
     CommitResult,
     DeliveryPlan,
     PullRequestResult,
 )
-from integrations.cockroachdb.client import CockroachDBClient
+from draftly.integrations.database.client import DatabaseClient
 
 
 class DeliveryRepository:
     def __init__(
         self,
-        client: CockroachDBClient | None = None,
+        client: DatabaseClient | None = None,
     ) -> None:
-        self.client = client or CockroachDBClient()
+        self.client = client or DatabaseClient()
 
     async def save_plan(
         self,

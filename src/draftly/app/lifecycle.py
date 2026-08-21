@@ -14,20 +14,13 @@ from fastapi import FastAPI
 from draftly.app.composition.agents import AgentRegistry, build_agents
 from draftly.app.composition.events import EventComposition, build_event_system
 from draftly.app.composition.tools import ToolRegistry, build_tools
-from draftly.app.composition.workflows import WorkflowRegistry, build_workflows
+from draftly.app.composition.workflows import ComposedWorkflows, build_workflows
 from draftly.app.config import Settings, get_settings
 from draftly.app.dependencies import (
     ApplicationDependencies,
     build_dependencies,
 )
 from draftly.app.workers.worker import DraftlyWorker
-
-try:
-    from langgraph.checkpoint_postgres.aio import (  # ty: ignore[unresolved-import]
-        AsyncPostgresSaver,  # type: ignore[import-not-found]
-    )
-except Exception:
-    AsyncPostgresSaver = None
 
 logger = logging.getLogger(__name__)
 
@@ -46,16 +39,15 @@ class DraftlyApplication:
 
     tools: ToolRegistry
     agents: AgentRegistry | None = None
-    workflows: WorkflowRegistry | None = None
+    workflows: ComposedWorkflows | None = None
     events: EventComposition | None = None
 
     worker: DraftlyWorker | None = None
-    checkpointer: Any = None
+    session_manager: Any = None
 
     review_notification: Any = None
     review_decision: Any = None
 
-    _checkpointer_cm: Any = None
     _started: bool = False
     _gateway_task: Any = None
     _slack_task: Any = None
@@ -176,37 +168,37 @@ class DraftlyApplication:
             self.dependencies.evaluation,
         )
 
-        # Initialize LangGraph checkpointer for HITL
-        if AsyncPostgresSaver is not None and self.checkpointer is None:
-            try:
-                self._checkpointer_cm = AsyncPostgresSaver.from_conn_string(
-                    self.settings.database_url,
-                )
-                self.checkpointer = await self._checkpointer_cm.__aenter__()
-                await self.checkpointer.setup()
-                logger.info("checkpointer_initialized")
-            except Exception:
-                logger.warning("checkpointer_init_failed", exc_info=True)
+        # Session manager (Strands) is initialized in Phase 4 once
+        # the session store is implemented.
 
     async def _build_agents_and_workflows(self) -> None:
-        """Build agents and workflows after checkpointer is initialized."""
+        """Build agents and workflows after session manager is ready."""
         self.agents = build_agents(
             models=self.dependencies.models,
             tools=self.tools,
-            checkpointer=self.checkpointer,
+            session_manager=self.session_manager,
         )
 
-        # self.workflows = build_workflows(
-        #     agents=self.agents,
-        #     tools=self.tools,
-        #     repositories=self.dependencies.repositories,
-        #     memory=self.dependencies.memory,
-        #     evaluation=self.dependencies.evaluation,
-        # )
+        memory_service = self._build_memory_service()
+        feedback_service = self._build_feedback_service()
+        audit_repo = self._build_audit_repo()
 
-        # self.events = build_event_system(
-        #     workflows=self.workflows,
-        # )
+        self.workflows = build_workflows(
+            agents=self.agents,
+            tools=self.tools,
+            repositories=self.dependencies.repositories,
+            memory=memory_service,
+            evaluation=self.dependencies.evaluation,
+            feedback=feedback_service,
+            config=self.settings,
+            model=self._resolve_runtime_model(),
+            hooks=[],
+            audit_repo=audit_repo,
+        )
+
+        self.events = build_event_system(
+            workflows=self.workflows,
+        )
 
         # Build worker after workflows are ready
         if self.settings.worker_enabled:
@@ -230,21 +222,66 @@ class DraftlyApplication:
                 scheduler_client=scheduler_client,
             )
 
+    def _build_memory_service(self) -> Any:
+        """Build the §8.1 memory service over the persistence repo."""
+        try:
+            from draftly.memory import DomainMemoryRepository, MemoryService
+
+            return MemoryService(
+                repository=DomainMemoryRepository(
+                    self.dependencies.repositories.memory
+                )
+            )
+        except Exception as exc:
+            logger.warning("memory_service_unavailable: %s", exc)
+            return None
+
+    def _build_feedback_service(self) -> Any:
+        """Build the §8.5 feedback service over the support repo."""
+        try:
+            from draftly.feedback import FeedbackService
+
+            return FeedbackService(
+                support_repository=self.dependencies.repositories.support
+            )
+        except Exception as exc:
+            logger.warning("feedback_service_unavailable: %s", exc)
+            return None
+
+    def _build_audit_repo(self) -> Any:
+        """Build the §10.2 agent-run audit repository over NeonDB."""
+        try:
+            from draftly.persistence.repositories.agent_runs import (
+                AgentRunsRepository,
+            )
+
+            return AgentRunsRepository(self.dependencies.database)
+        except Exception as exc:
+            logger.warning("audit_repo_unavailable: %s", exc)
+            return None
+
+    def _resolve_runtime_model(self) -> Any:
+        """Resolve one concrete strands Model for graph agents.
+
+        Returns None in offline mode (no provider keys): graphs then run
+        only with injected/deterministic models (tests, CI).
+        """
+        try:
+            from draftly.integrations.strands.models import (
+                resolve_concrete_model,
+            )
+
+            return resolve_concrete_model(self.dependencies.models.router)
+        except Exception as exc:
+            logger.warning("runtime_model_unavailable: %s", exc)
+            return None
+
     async def _stop_infrastructure(self) -> None:
         """
         Stop infrastructure services.
 
         Infrastructure is stopped in reverse dependency order.
         """
-
-        if self.checkpointer is not None:
-            try:
-                await self._checkpointer_cm.__aexit__(None, None, None)
-            except Exception:
-                logger.exception("checkpointer_shutdown_failed")
-            finally:
-                self.checkpointer = None
-                self._checkpointer_cm = None
 
         await self._maybe_stop(
             self.dependencies.evaluation,

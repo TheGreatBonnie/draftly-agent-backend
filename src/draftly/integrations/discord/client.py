@@ -118,6 +118,17 @@ class DiscordClient:
             },
         ))
 
+    async def get_thread(
+        self,
+        channel_id: str,
+        thread_id: str,
+    ) -> dict[str, Any]:
+        """Fetch a thread channel by ID."""
+        return cast(dict[str, Any], await self._request(
+            "GET",
+            f"/channels/{thread_id}",
+        ))
+
     async def send_thread_message(
         self,
         thread_id: str,

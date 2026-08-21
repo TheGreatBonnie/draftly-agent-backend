@@ -4,22 +4,22 @@ from __future__ import annotations
 import json
 from typing import Any, cast
 
-from integrations.cockroachdb.client import CockroachDBClient
+from draftly.integrations.database.client import DatabaseClient
 
 
 async def get_org_by_github_org(
     *,
     github_org: str,
-    db: CockroachDBClient | None = None,
+    db: DatabaseClient | None = None,
 ) -> dict[str, Any] | None:
     """Find organization by GitHub org name."""
     if db is None:
-        from app.config import get_settings
-        from app.dependencies import build_dependencies
+        from draftly.app.config import get_settings
+        from draftly.app.dependencies import build_dependencies
 
         settings = get_settings()
         deps = build_dependencies(settings=settings)
-        db = deps.integrations.cockroachdb
+        db = deps.integrations.database
 
     row = await db.fetch_one(
         "SELECT clerk_org_id, clerk_org_name, github_org FROM organizations WHERE github_org = $1",
@@ -40,16 +40,16 @@ async def store_github_installation(
     installation_id: int,
     github_org: str,
     repositories: list[dict[str, Any]] | None = None,
-    db: CockroachDBClient | None = None,
+    db: DatabaseClient | None = None,
 ) -> str:
     """Store or update a GitHub App installation."""
     if db is None:
-        from app.config import get_settings
-        from app.dependencies import build_dependencies
+        from draftly.app.config import get_settings
+        from draftly.app.dependencies import build_dependencies
 
         settings = get_settings()
         deps = build_dependencies(settings=settings)
-        db = deps.integrations.cockroachdb
+        db = deps.integrations.database
 
     existing = await db.fetch_one(
         "SELECT id::text FROM github_installations WHERE installation_id = $1",
@@ -82,16 +82,16 @@ async def store_github_installation(
 async def remove_github_installation(
     *,
     installation_id: int,
-    db: CockroachDBClient | None = None,
+    db: DatabaseClient | None = None,
 ) -> None:
     """Delete a GitHub App installation record."""
     if db is None:
-        from app.config import get_settings
-        from app.dependencies import build_dependencies
+        from draftly.app.config import get_settings
+        from draftly.app.dependencies import build_dependencies
 
         settings = get_settings()
         deps = build_dependencies(settings=settings)
-        db = deps.integrations.cockroachdb
+        db = deps.integrations.database
 
     await db.execute(
         "DELETE FROM github_installations WHERE installation_id = $1",
@@ -101,16 +101,16 @@ async def remove_github_installation(
 
 async def list_github_installations(
     *,
-    db: CockroachDBClient | None = None,
+    db: DatabaseClient | None = None,
 ) -> list[dict[str, Any]]:
     """List all GitHub App installations with org names."""
     if db is None:
-        from app.config import get_settings
-        from app.dependencies import build_dependencies
+        from draftly.app.config import get_settings
+        from draftly.app.dependencies import build_dependencies
 
         settings = get_settings()
         deps = build_dependencies(settings=settings)
-        db = deps.integrations.cockroachdb
+        db = deps.integrations.database
 
     rows = await db.fetch_all(
         """SELECT gi.id::text, gi.installation_id, gi.github_org, gi.repositories,
@@ -136,16 +136,16 @@ async def store_github_workflow(
     owner: str,
     repo: str,
     issue_number: int,
-    db: CockroachDBClient | None = None,
+    db: DatabaseClient | None = None,
 ) -> str:
     """Store a GitHub workflow for tracking."""
     if db is None:
-        from app.config import get_settings
-        from app.dependencies import build_dependencies
+        from draftly.app.config import get_settings
+        from draftly.app.dependencies import build_dependencies
 
         settings = get_settings()
         deps = build_dependencies(settings=settings)
-        db = deps.integrations.cockroachdb
+        db = deps.integrations.database
 
     row = await db.fetch_one(
         """INSERT INTO github_workflows
@@ -171,16 +171,16 @@ async def save_github_workflow(
     owner: str,
     repo: str,
     issue_number: int,
-    db: CockroachDBClient | None = None,
+    db: DatabaseClient | None = None,
 ) -> str:
     """Save or update a GitHub workflow status."""
     if db is None:
-        from app.config import get_settings
-        from app.dependencies import build_dependencies
+        from draftly.app.config import get_settings
+        from draftly.app.dependencies import build_dependencies
 
         settings = get_settings()
         deps = build_dependencies(settings=settings)
-        db = deps.integrations.cockroachdb
+        db = deps.integrations.database
 
     row = await db.fetch_one(
         """INSERT INTO github_workflows
@@ -207,16 +207,16 @@ async def get_github_workflow_by_issue(
     owner: str,
     repo: str,
     issue_number: int,
-    db: CockroachDBClient | None = None,
+    db: DatabaseClient | None = None,
 ) -> dict[str, Any] | None:
     """Get workflow by GitHub issue identifiers."""
     if db is None:
-        from app.config import get_settings
-        from app.dependencies import build_dependencies
+        from draftly.app.config import get_settings
+        from draftly.app.dependencies import build_dependencies
 
         settings = get_settings()
         deps = build_dependencies(settings=settings)
-        db = deps.integrations.cockroachdb
+        db = deps.integrations.database
 
     row = await db.fetch_one(
         """SELECT id::text, workflow_id, installation_id, owner, repo, issue_number, status
@@ -234,16 +234,16 @@ async def update_github_workflow_status(
     *,
     workflow_id: str,
     status: str,
-    db: CockroachDBClient | None = None,
+    db: DatabaseClient | None = None,
 ) -> None:
     """Update workflow status."""
     if db is None:
-        from app.config import get_settings
-        from app.dependencies import build_dependencies
+        from draftly.app.config import get_settings
+        from draftly.app.dependencies import build_dependencies
 
         settings = get_settings()
         deps = build_dependencies(settings=settings)
-        db = deps.integrations.cockroachdb
+        db = deps.integrations.database
 
     await db.execute(
         """UPDATE github_workflows

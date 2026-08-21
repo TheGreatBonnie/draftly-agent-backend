@@ -4,7 +4,7 @@ from starlette.middleware.base import (
 )
 from starlette.responses import JSONResponse
 
-from app.config import get_settings
+from draftly.app.config import get_settings
 
 
 class APIKeyMiddleware(BaseHTTPMiddleware):

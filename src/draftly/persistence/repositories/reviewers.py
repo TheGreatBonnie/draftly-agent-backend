@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
-from integrations.cockroachdb.client import CockroachDBClient
+from draftly.integrations.database.client import DatabaseClient
 
 logger = logging.getLogger(__name__)
 
@@ -28,10 +28,10 @@ class ReviewerRecord:
 
 
 class ReviewersRepository:
-    """CockroachDB repository for reviewer CRUD operations."""
+    """NeonDB repository for reviewer CRUD operations."""
 
-    def __init__(self, database: CockroachDBClient | None = None):
-        self.database = database or CockroachDBClient()
+    def __init__(self, database: DatabaseClient | None = None):
+        self.database = database or DatabaseClient()
 
     # ── Read ──────────────────────────────────────────────────
 

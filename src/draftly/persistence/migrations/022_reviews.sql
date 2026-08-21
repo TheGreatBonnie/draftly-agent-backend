@@ -2,23 +2,23 @@
 CREATE TABLE IF NOT EXISTS reviews (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 
-    org_id STRING NOT NULL,
+    org_id TEXT NOT NULL,
 
-    thread_id STRING NOT NULL,
+    thread_id TEXT NOT NULL,
 
-    workflow STRING NOT NULL,
+    workflow TEXT NOT NULL,
 
-    tool_name STRING NOT NULL,
+    tool_name TEXT NOT NULL,
 
     tool_args JSONB NOT NULL DEFAULT '{}'::JSONB,
 
-    action_description STRING,
+    action_description TEXT,
 
-    status STRING NOT NULL DEFAULT 'pending',
+    status TEXT NOT NULL DEFAULT 'pending',
 
-    reviewer_id STRING,
+    reviewer_id TEXT,
 
-    decision STRING,
+    decision TEXT,
 
     decision_comment TEXT,
 

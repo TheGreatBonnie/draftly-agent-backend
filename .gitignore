@@ -66,3 +66,7 @@ temp/
 
 # UV
 .uv/
+
+graphify-out/
+# Draftly runtime state
+.draftly/

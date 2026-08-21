@@ -7,13 +7,12 @@ from dataclasses import dataclass
 from typing import Any
 
 from draftly.app.config import Settings
-from draftly.integrations.cockroachdb.client import CockroachDBClient
-from draftly.integrations.cockroachdb.document_store import DocumentStore
-from draftly.integrations.cockroachdb.evaluations_store import CockroachEvaluationsStore
-from draftly.integrations.cockroachdb.jobs_store import CockroachJobsStore
-from draftly.integrations.cockroachdb.memory_store import CockroachMemoryStore
-from draftly.integrations.cockroachdb.vector_search import VectorSearch
-from draftly.integrations.deepeval.client import DeepEvalClient
+from draftly.integrations.database.client import DatabaseClient
+from draftly.integrations.database.document_store import DocumentStore
+from draftly.integrations.database.evaluations_store import DatabaseEvaluationsStore
+from draftly.integrations.database.jobs_store import DatabaseJobsStore
+from draftly.integrations.database.memory_store import DatabaseMemoryStore
+from draftly.integrations.database.vector_search import VectorSearch
 from draftly.integrations.discord.auth import DiscordAuth
 from draftly.integrations.discord.client import DiscordClient
 from draftly.integrations.discord.gateway import DiscordGateway
@@ -136,11 +135,11 @@ class IntegrationDependencies:
     Integrations encapsulate provider-specific APIs.
     """
 
-    cockroachdb: CockroachDBClient
+    database: DatabaseClient
     github: GitHubClient
     slack: SlackClient
     discord: DiscordClient
-    deepeval: DeepEvalClient
+    evaluation_client: Any = None
     slack_app: Any | None = None
     discord_gateway: Any | None = None
 
@@ -152,7 +151,7 @@ def build_integrations(
     Construct Draftly's external service integrations.
     """
 
-    cockroachdb = CockroachDBClient(
+    database = DatabaseClient(
         database_url=settings.database_url,
     )
 
@@ -181,7 +180,8 @@ def build_integrations(
         ),
     )
 
-    deepeval = DeepEvalClient()
+    # Evaluation client (Strands Evals) is wired in Phase 7 (§8.2).
+    evaluation_client = None
 
 # Build Slack Bolt app if tokens are present
     slack_app = None
@@ -189,7 +189,7 @@ def build_integrations(
         slack_app = build_slack_app(
             signing_secret=settings.slack_signing_secret,
             installation_store=SlackInstallationStore(
-                CockroachDBClient(database_url=settings.database_url),
+                DatabaseClient(database_url=settings.database_url),
             ),
         )
 
@@ -199,11 +199,11 @@ def build_integrations(
         discord_gateway = DiscordGateway()
 
     return IntegrationDependencies(
-        cockroachdb=cockroachdb,
+        database=database,
         github=github,
         slack=slack,
         discord=discord,
-        deepeval=deepeval,
+        evaluation_client=evaluation_client,
         slack_app=slack_app,
         discord_gateway=discord_gateway,
     )
@@ -236,7 +236,7 @@ class RepositoryDependencies:
 
 
 def build_repositories(
-    database: CockroachDBClient,
+    database: DatabaseClient,
 ) -> RepositoryDependencies:
     """
     Construct all Draftly persistence repositories.
@@ -251,7 +251,7 @@ def build_repositories(
     )
 
     memory = MemoryRepository(
-        store=CockroachMemoryStore(
+        store=DatabaseMemoryStore(
             client=database,
         ),
         vector_search=VectorSearch(
@@ -266,7 +266,7 @@ def build_repositories(
     )
 
     evaluations = EvaluationRepository(
-        store=CockroachEvaluationsStore(
+        store=DatabaseEvaluationsStore(
             client=database,
         ),
     )
@@ -276,7 +276,7 @@ def build_repositories(
     )
 
     jobs = JobRepositoryImpl(
-        store=CockroachJobsStore(
+        store=DatabaseJobsStore(
             client=database,
         ),
     )
@@ -310,13 +310,13 @@ def build_repositories(
         # def build_memory(
         #     *,
         #     repository: MemoryRepository,
-        #     cockroachdb: CockroachDBClient | None = None,
+        #     database: DatabaseClient | None = None,
         # ) -> MemoryManager:
         #     """
         #     Construct Draftly's agentic memory subsystem.
 
         #     The memory manager sits above persistence and the
-        #     CockroachDB integration layer.
+        #     NeonDB integration layer.
 
         #     Dependency direction:
 
@@ -326,10 +326,10 @@ def build_repositories(
         #              ↓
         #         persistence/repositories/memory.py
         #              ↓
-        #         integrations/cockroachdb/
+        #         integrations/database/
         #     """
 
-        #     del cockroachdb  # noqa: ARG001 — injected for interface stability only
+        #     del database  # noqa: ARG001 — injected for interface stability only
 
         #     embedder = build_memory_embedder()
 
@@ -347,17 +347,19 @@ def build_repositories(
 @dataclass(slots=True)
 class EvaluationDependencies:
     """
-    DeepEval/evaluation dependencies used by Draftly's
+    Evaluation dependencies used by Draftly's
     evaluation workflows and evaluation tools.
+
+    ``client`` is the Strands Evals integration, wired in Phase 7 (§8.2).
     """
 
-    client: DeepEvalClient
     repository: EvaluationRepository
+    client: Any = None
 
 
 def build_evaluation(
     *,
-    client: DeepEvalClient,
+    client: Any = None,
     repository: EvaluationRepository,
 ) -> EvaluationDependencies:
     """
@@ -399,12 +401,12 @@ class ApplicationDependencies:
     evaluation: EvaluationDependencies
 
     @property
-    def database(self) -> CockroachDBClient:
+    def database(self) -> DatabaseClient:
         """
-        Convenience access to the CockroachDB integration.
+        Convenience access to the NeonDB integration.
         """
 
-        return self.integrations.cockroachdb
+        return self.integrations.database
 
     @property
     def github(self) -> GitHubClient:
@@ -431,12 +433,13 @@ class ApplicationDependencies:
         return self.integrations.discord
 
     @property
-    def deepeval(self) -> DeepEvalClient:
+    def evaluation_client(self) -> Any:
         """
-        Convenience access to DeepEval integration.
+        Convenience access to the Strands Evals integration
+        (wired in Phase 7).
         """
 
-        return self.integrations.deepeval
+        return self.integrations.evaluation_client
 
 
 # ============================================================
@@ -489,7 +492,7 @@ def build_dependencies(
     # --------------------------------------------------------
 
     repositories = build_repositories(
-        database=integrations.cockroachdb,
+        database=integrations.database,
     )
 
     # --------------------------------------------------------
@@ -498,7 +501,7 @@ def build_dependencies(
 
     # memory = build_memory(
     #     repository=repositories.memory,
-    #     cockroachdb=integrations.cockroachdb,
+    #     database=integrations.database,
     # )
 
     # --------------------------------------------------------
@@ -506,7 +509,7 @@ def build_dependencies(
     # --------------------------------------------------------
 
     evaluation = build_evaluation(
-        client=integrations.deepeval,
+        client=integrations.evaluation_client,
         repository=repositories.evaluations,
     )
 

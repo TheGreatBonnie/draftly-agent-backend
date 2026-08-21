@@ -1,0 +1,26 @@
+{
+  "name": "support",
+  "description": "Golden cases for support answers (plan §8.2)",
+  "cases": [
+    {
+      "name": "auth-token-expiry",
+      "input": "My API token stopped working after 30 minutes, why?",
+      "expected_output": "Tokens expire after 30 minutes by default; refresh using the refresh endpoint.",
+      "metadata": {
+        "evidence": [
+          {"id": "docs/auth", "topic": "tokens", "url": "https://example.com/docs/auth"}
+        ]
+      }
+    },
+    {
+      "name": "ssl-handshake-failure",
+      "input": "Clients fail with SSL handshake errors after certificate rotation.",
+      "expected_output": "Update the trusted root CA bundle; rotated certificates chain to the new root.",
+      "metadata": {
+        "evidence": [
+          {"id": "docs/tls", "topic": "certificates", "url": "https://example.com/docs/tls"}
+        ]
+      }
+    }
+  ]
+}

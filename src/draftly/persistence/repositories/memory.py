@@ -3,17 +3,17 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Any
 
-from integrations.cockroachdb.memory_store import CockroachMemoryStore
-from integrations.cockroachdb.vector_search import VectorSearch
+from draftly.integrations.database.memory_store import DatabaseMemoryStore
+from draftly.integrations.database.vector_search import VectorSearch
 
 
 class MemoryRepository:
     def __init__(
         self,
-        store: CockroachMemoryStore | None = None,
+        store: DatabaseMemoryStore | None = None,
         vector_search: VectorSearch | None = None,
     ) -> None:
-        self.store = store or CockroachMemoryStore()
+        self.store = store or DatabaseMemoryStore()
         self.vector_search = vector_search or VectorSearch()
 
     async def create(
@@ -96,7 +96,7 @@ class MemoryRepository:
         workflow: str | None = None,
         used: bool = False,
     ) -> dict[str, Any]:
-        from integrations.cockroachdb.memory_access_log_store import (
+        from draftly.integrations.database.memory_access_log_store import (
             MemoryAccessLogStore,
         )
 
@@ -123,7 +123,7 @@ class MemoryRepository:
         score: float = 0.5,
         comment: str | None = None,
     ) -> dict[str, Any]:
-        from integrations.cockroachdb.memory_feedback_store import (
+        from draftly.integrations.database.memory_feedback_store import (
             MemoryFeedbackStore,
         )
 

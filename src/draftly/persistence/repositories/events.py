@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Sequence
-from datetime import datetime
+from datetime import UTC, datetime
+from typing import Any
 
-from domain.github.events import GitHubEvent
-from integrations.cockroachdb.client import CockroachDBClient
+from draftly.events.github.events import GitHubEvent
+from draftly.integrations.database.client import DatabaseClient
 
 
 class EventRepository:
@@ -15,8 +17,8 @@ class EventRepository:
     It does not know how GitHub's API works.
     """
 
-    def __init__(self, database: CockroachDBClient | None = None):
-        self.database = database or CockroachDBClient()
+    def __init__(self, database: DatabaseClient | None = None):
+        self.database = database or DatabaseClient()
 
     async def save_event(
         self,
@@ -189,3 +191,89 @@ class EventRepository:
             )
             for row in rows
         ]
+
+    # ========================================================
+    # Runner support (plan §7.4): idempotency + status marking
+    # ========================================================
+
+    async def try_claim(
+        self,
+        event_id: str,
+        *,
+        source: str = "github",
+        event_type: str = "unknown",
+        repository: str | None = None,
+        actor: str | None = None,
+        payload: dict[str, Any] | None = None,
+        org_id: str | None = None,
+        occurred_at: datetime | None = None,
+    ) -> bool:
+        """Atomically claim an event for processing.
+
+        INSERT .. ON CONFLICT DO NOTHING RETURNING makes the
+        duplicate-replay check and the insert a single atomic step:
+        True ⇒ this caller owns the run; False ⇒ someone else already
+        recorded it.
+        """
+        query = """
+        INSERT INTO events (
+            event_id, org_id, event_type, source, repository,
+            actor, payload, occurred_at, status
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7::JSONB, $8, 'running')
+        ON CONFLICT (event_id) DO NOTHING
+        RETURNING event_id
+        """
+
+        row = await self.database.fetch_one(
+            query,
+            event_id,
+            org_id,
+            event_type,
+            source,
+            repository,
+            actor,
+            json.dumps(payload or {}),
+            occurred_at or datetime.now(UTC),
+        )
+
+        return row is not None
+
+    async def find_by_event_id(self, event_id: str) -> dict[str, Any] | None:
+        """Look up any recorded event by its unique event_id."""
+        query = """
+        SELECT event_id, event_type, source, status, processed_at
+        FROM events
+        WHERE event_id = $1
+        """
+
+        row = await self.database.fetch_one(query, event_id)
+        if row is None:
+            return None
+
+        return {
+            "event_id": str(row["event_id"]),
+            "event_type": str(row["event_type"]),
+            "source": str(row["source"]),
+            "status": str(row["status"]),
+            "processed_at": row.get("processed_at"),
+        }
+
+    async def mark_status(
+        self,
+        event_id: str,
+        status: str,
+    ) -> None:
+        """Record a terminal/in-flight run status on the event row."""
+        query = """
+        UPDATE events
+        SET status = $2, processed_at = $3
+        WHERE event_id = $1
+        """
+
+        await self.database.execute(
+            query,
+            event_id,
+            status,
+            datetime.now(UTC),
+        )

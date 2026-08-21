@@ -1,19 +1,19 @@
 CREATE TABLE IF NOT EXISTS embeddings (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 
-    org_id STRING REFERENCES organizations(clerk_org_id) ON DELETE CASCADE,
+    org_id TEXT REFERENCES organizations(clerk_org_id) ON DELETE CASCADE,
 
-    content_type STRING NOT NULL,
-    content_id STRING NOT NULL,
+    content_type TEXT NOT NULL,
+    content_id TEXT NOT NULL,
 
-    workflow_id STRING,
+    workflow_id TEXT,
 
-    embedding VECTOR(3072) NOT NULL,
+    embedding vector(3072) NOT NULL,
 
     metadata JSONB NOT NULL DEFAULT '{}'::JSONB,
 
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE VECTOR INDEX IF NOT EXISTS embeddings_embedding_idx
-ON embeddings (embedding vector_cosine_ops);
+CREATE INDEX IF NOT EXISTS embeddings_embedding_idx
+ON embeddings USING hnsw (embedding vector_cosine_ops);

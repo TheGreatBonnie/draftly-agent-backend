@@ -2,16 +2,16 @@ from datetime import datetime
 from typing import Any
 from uuid import uuid4
 
-from integrations.cockroachdb.client import CockroachDBClient
+from draftly.integrations.database.client import DatabaseClient
 
 
-class CockroachEvaluationsStore:
+class DatabaseEvaluationsStore:
 
     def __init__(
         self,
-        client: CockroachDBClient | None = None,
+        client: DatabaseClient | None = None,
     ) -> None:
-        self.client = client or CockroachDBClient()
+        self.client = client or DatabaseClient()
 
     async def insert(
         self,

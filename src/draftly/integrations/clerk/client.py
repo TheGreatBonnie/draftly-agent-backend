@@ -4,7 +4,7 @@ from __future__ import annotations
 import httpx
 import structlog
 
-from app.config import get_settings
+from draftly.app.config import get_settings
 
 logger = structlog.get_logger()
 

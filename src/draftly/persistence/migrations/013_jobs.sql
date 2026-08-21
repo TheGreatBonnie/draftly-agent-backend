@@ -1,11 +1,11 @@
 CREATE TABLE IF NOT EXISTS jobs (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 
-    org_id STRING REFERENCES organizations(clerk_org_id) ON DELETE CASCADE,
+    org_id TEXT REFERENCES organizations(clerk_org_id) ON DELETE CASCADE,
 
-    job_type STRING NOT NULL,
+    job_type TEXT NOT NULL,
 
-    status STRING NOT NULL DEFAULT 'pending',
+    status TEXT NOT NULL DEFAULT 'pending',
 
     scheduled_for TIMESTAMPTZ,
 
@@ -16,8 +16,8 @@ CREATE TABLE IF NOT EXISTS jobs (
 
     payload JSONB NOT NULL DEFAULT '{}'::JSONB,
 
-    name STRING NOT NULL DEFAULT '',
-    schedule STRING NOT NULL DEFAULT '',
+    name TEXT NOT NULL DEFAULT '',
+    schedule TEXT NOT NULL DEFAULT '',
     configuration JSONB NOT NULL DEFAULT '{}'::JSONB,
 
     last_run_at TIMESTAMPTZ,
@@ -25,7 +25,7 @@ CREATE TABLE IF NOT EXISTS jobs (
 
     result JSONB,
 
-    error STRING,
+    error TEXT,
 
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()

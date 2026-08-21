@@ -11,6 +11,8 @@ from .policies import (
     validate_fallback_chain,
 )
 from .providers import (
+    BedrockProvider,
+    MantleProvider,
     NvidiaProvider,
     OpenRouterProvider,
     OrcaRouterProvider,
@@ -116,6 +118,28 @@ def build_model_router() -> ModelRouter:
                     "OPENROUTER_BASE_URL"
                 ),
                 priority=40,
+            )
+        )
+    )
+
+    registry.register_provider(
+        BedrockProvider(
+            ProviderConfig(
+                name="bedrock",
+                api_key=None,  # Uses IAM role/credentials
+                base_url=os.getenv("AWS_REGION", "us-east-1"),
+                priority=5,  # High priority for Bedrock models
+            )
+        )
+    )
+
+    registry.register_provider(
+        MantleProvider(
+            ProviderConfig(
+                name="mantle",
+                api_key=os.getenv("MANTLE_API_KEY"),
+                base_url=os.getenv("MANTLE_ENDPOINT_URL"),
+                priority=3,  # Highest priority for Mantle models
             )
         )
     )
@@ -362,6 +386,245 @@ def build_model_router() -> ModelRouter:
         )
     )
 
+    # Bedrock models
+    registry.register_model(
+        ModelConfig(
+            name="reasoning-bedrock-nova",
+            provider="bedrock",
+            model_id=_resolve_model_id(
+                "BEDROCK_NOVA_REASONING_MODEL",
+                default="amazon.nova-pro-v1:0",
+            ),
+            capabilities=(
+                "reasoning",
+                "tool_calling",
+                "structured_output",
+            ),
+            priority=5,
+            max_tokens=4096,
+        )
+    )
+
+    registry.register_model(
+        ModelConfig(
+            name="fast-bedrock-nova",
+            provider="bedrock",
+            model_id=_resolve_model_id(
+                "BEDROCK_NOVA_FAST_MODEL",
+                default="amazon.nova-micro-v1:0",
+            ),
+            capabilities=(
+                "tool_calling",
+                "structured_output",
+            ),
+            priority=5,
+            max_tokens=4096,
+        )
+    )
+
+    registry.register_model(
+        ModelConfig(
+            name="reasoning-bedrock-claude",
+            provider="bedrock",
+            model_id=_resolve_model_id(
+                "BEDROCK_CLAUDE_REASONING_MODEL",
+                "BEDROCK_CLAUDE_SONNET_4_MODEL",
+                default="global.anthropic.claude-sonnet-4-6",
+            ),
+            capabilities=(
+                "reasoning",
+                "tool_calling",
+                "structured_output",
+            ),
+            priority=5,
+            max_tokens=8192,
+        )
+    )
+
+    registry.register_model(
+        ModelConfig(
+            name="fast-bedrock-claude",
+            provider="bedrock",
+            model_id=_resolve_model_id(
+                "BEDROCK_CLAUDE_FAST_MODEL",
+                "BEDROCK_CLAUDE_HAIKU_MODEL",
+                default="global.anthropic.claude-3-5-haiku-20241022-v1:0",
+            ),
+            capabilities=(
+                "tool_calling",
+                "structured_output",
+            ),
+            priority=5,
+            max_tokens=4096,
+        )
+    )
+
+    # Mantle models (OpenAI-compatible on Bedrock)
+    # Note: GPT-5.6 models require inference profile ARNs
+    # OSS models (gpt-oss-120b/20b) are ON_DEMAND but may need model access enabled
+    # Other models (Kimi, GLM, Minimax, Mistral) work on Mantle with Chat Completions API
+    registry.register_model(
+        ModelConfig(
+            name="reasoning-mantle-gpt",
+            provider="mantle",
+            model_id=_resolve_model_id(
+                "MANTLE_REASONING_MODEL",
+                "NEMOTRON_3_ULTRA_MODEL",
+                default="arn:aws:bedrock:us-east-1:145776961336:inference-profile/global.openai.gpt-5.6-luna",
+            ),
+            capabilities=(
+                "reasoning",
+                "tool_calling",
+                "structured_output",
+            ),
+            priority=3,
+            max_tokens=8192,
+        )
+    )
+
+    registry.register_model(
+        ModelConfig(
+            name="fast-mantle-gpt",
+            provider="mantle",
+            model_id=_resolve_model_id(
+                "MANTLE_FAST_MODEL",
+                "LAGUNA_MODEL",
+                default="arn:aws:bedrock:us-east-1:145776961336:inference-profile/global.openai.gpt-5.6-terra",
+            ),
+            capabilities=(
+                "tool_calling",
+                "structured_output",
+            ),
+            priority=3,
+            max_tokens=4096,
+        )
+    )
+
+    # Mantle models (available on Mantle endpoint with Chat Completions API)
+    registry.register_model(
+        ModelConfig(
+            name="reasoning-mantle-kimi-k2-thinking",
+            provider="mantle",
+            model_id=_resolve_model_id(
+                "MANTLE_KIMI_K2_THINKING_MODEL",
+                default="moonshotai.kimi-k2-thinking",
+            ),
+            capabilities=(
+                "reasoning",
+                "tool_calling",
+                "structured_output",
+            ),
+            priority=3,
+            max_tokens=8192,
+        )
+    )
+
+    registry.register_model(
+        ModelConfig(
+            name="reasoning-mantle-kimi-k2-5",
+            provider="mantle",
+            model_id=_resolve_model_id(
+                "MANTLE_KIMI_K2_5_MODEL",
+                default="moonshotai.kimi-k2.5",
+            ),
+            capabilities=(
+                "reasoning",
+                "tool_calling",
+                "structured_output",
+            ),
+            priority=3,
+            max_tokens=8192,
+        )
+    )
+
+    registry.register_model(
+        ModelConfig(
+            name="reasoning-mantle-glm-5",
+            provider="mantle",
+            model_id=_resolve_model_id(
+                "MANTLE_GLM_5_MODEL",
+                default="zai.glm-5",
+            ),
+            capabilities=(
+                "reasoning",
+                "tool_calling",
+                "structured_output",
+            ),
+            priority=3,
+            max_tokens=8192,
+        )
+    )
+
+    registry.register_model(
+        ModelConfig(
+            name="reasoning-mantle-glm-4-7",
+            provider="mantle",
+            model_id=_resolve_model_id(
+                "MANTLE_GLM_4_7_MODEL",
+                default="zai.glm-4.7",
+            ),
+            capabilities=(
+                "reasoning",
+                "tool_calling",
+                "structured_output",
+            ),
+            priority=3,
+            max_tokens=8192,
+        )
+    )
+
+    registry.register_model(
+        ModelConfig(
+            name="fast-mantle-minimax-m2",
+            provider="mantle",
+            model_id=_resolve_model_id(
+                "MANTLE_MINIMAX_M2_MODEL",
+                default="minimax.minimax-m2",
+            ),
+            capabilities=(
+                "tool_calling",
+                "structured_output",
+            ),
+            priority=3,
+            max_tokens=4096,
+        )
+    )
+
+    registry.register_model(
+        ModelConfig(
+            name="fast-mantle-minimax-m2-5",
+            provider="mantle",
+            model_id=_resolve_model_id(
+                "MANTLE_MINIMAX_M2_5_MODEL",
+                default="minimax.minimax-m2.5",
+            ),
+            capabilities=(
+                "tool_calling",
+                "structured_output",
+            ),
+            priority=3,
+            max_tokens=4096,
+        )
+    )
+
+    registry.register_model(
+        ModelConfig(
+            name="reasoning-mantle-mistral-large-3",
+            provider="mantle",
+            model_id=_resolve_model_id(
+                "MANTLE_MISTRAL_LARGE_3_MODEL",
+                default="mistral.mistral-large-3-675b-instruct",
+            ),
+            capabilities=(
+                "reasoning",
+                "tool_calling",
+                "structured_output",
+            ),
+            priority=3,
+            max_tokens=8192,
+        )
+    )
+
     return ModelRouter(
         registry=registry,
         health=health,
@@ -402,6 +665,8 @@ PROVIDER_CLASSES = {
     "nvidia": NvidiaProvider,
     "requesty": RequestyProvider,
     "orcarouter": OrcaRouterProvider,
+    "bedrock": BedrockProvider,
+    "mantle": MantleProvider,
 }
 
 ROLE_OUTPUT_TOKENS: dict[str, int] = {

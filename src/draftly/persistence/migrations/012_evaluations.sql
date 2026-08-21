@@ -1,27 +1,27 @@
 CREATE TABLE IF NOT EXISTS evaluations (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 
-    org_id STRING REFERENCES organizations(clerk_org_id) ON DELETE CASCADE,
+    org_id TEXT REFERENCES organizations(clerk_org_id) ON DELETE CASCADE,
 
-    evaluation_type STRING NOT NULL,
+    evaluation_type TEXT NOT NULL,
 
-    run_id STRING,
-    case_id STRING,
-    metric STRING,
+    run_id TEXT,
+    case_id TEXT,
+    metric TEXT,
 
-    target_type STRING,
+    target_type TEXT,
     target_id UUID,
 
     score FLOAT8,
     threshold FLOAT8,
     passed BOOL NOT NULL DEFAULT false,
 
-    status STRING NOT NULL DEFAULT 'completed',
+    status TEXT NOT NULL DEFAULT 'completed',
 
     metrics JSONB NOT NULL DEFAULT '{}'::JSONB,
     failures JSONB NOT NULL DEFAULT '[]'::JSONB,
 
-    trace_id STRING,
+    trace_id TEXT,
 
     started_at TIMESTAMPTZ,
     completed_at TIMESTAMPTZ,

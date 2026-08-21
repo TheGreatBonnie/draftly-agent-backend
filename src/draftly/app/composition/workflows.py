@@ -1,116 +1,110 @@
-"""
-Draftly workflow composition.
+"""Draftly workflow composition (plan §7.3).
 
-This module provides a registry of all Draftly workflow functions.
-Workflows are async functions that accept a WorkflowContext and
-workflow-specific parameters.
+Builds the ``WorkflowRegistry`` with every surface and scheduled
+workflow, plus the shared ``WorkflowRunner`` used by webhook routes.
 """
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+import logging
+from dataclasses import dataclass, field
 from typing import Any
-
-from workflows import (
-    escalate_support,
-    run_daily_health_check,
-    run_discord_support,
-    run_documentation_generation,
-    run_documentation_health_check,
-    run_documentation_review,
-    run_documentation_sync,
-    run_evaluation_failure_recovery,
-    run_evaluation_loop,
-    run_github_issue_workflow,
-    run_github_support,
-    run_pull_request_workflow,
-    run_regression_loop,
-    run_release_sync,
-    run_release_workflow,
-    run_repository_sync,
-    run_slack_support,
-    run_stale_docs_scan,
-    run_support_gap_scan,
-)
-from workflows.scheduled import run_review_expiry
 
 from .agents import AgentRegistry
 from .tools import ToolRegistry
 
-WorkflowFunc = Callable[..., Awaitable[Any]]
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
-class WorkflowRegistry:
-    """
-    Registry of all existing Draftly workflows.
+class ComposedWorkflows:
+    """The workflow runtime handed to the application lifecycle."""
 
-    Each attribute is an async function that accepts a WorkflowContext
-    and workflow-specific parameters, returning a WorkflowResult.
-    """
-
-    documentation_sync: WorkflowFunc
-    documentation_generation: WorkflowFunc
-    documentation_review: WorkflowFunc
-    documentation_health_check: WorkflowFunc
-
-    github_support: WorkflowFunc
-    slack_support: WorkflowFunc
-    discord_support: WorkflowFunc
-    support_escalation: WorkflowFunc
-
-    pull_request: WorkflowFunc
-    release: WorkflowFunc
-    issue: WorkflowFunc
-    repository_sync: WorkflowFunc
-
-    evaluation_loop: WorkflowFunc
-    regression_loop: WorkflowFunc
-    failure_recovery: WorkflowFunc
-
-    daily_health_check: WorkflowFunc
-    stale_docs_scan: WorkflowFunc
-    support_gap_scan: WorkflowFunc
-    release_sync: WorkflowFunc
-    review_expiry: WorkflowFunc
+    registry: Any = None
+    runner: Any = None
+    context: Any = None
+    tasks: dict[str, Any] = field(default_factory=dict)
 
 
 def build_workflows(
     *,
-    agents: AgentRegistry,
-    tools: ToolRegistry,
-    repositories: Any,
-    memory: Any,
-    evaluation: Any,
-) -> WorkflowRegistry:
-    """
-    Build Draftly's workflow registry.
+    agents: AgentRegistry | None = None,
+    tools: ToolRegistry | None = None,
+    repositories: Any = None,
+    memory: Any = None,
+    evaluation: Any = None,
+    feedback: Any = None,
+    config: Any = None,
+    model: Any = None,
+    hooks: list[Any] | None = None,
+    audit_repo: Any = None,
+) -> ComposedWorkflows:
+    """Compose the workflow registry, context, and runner."""
+    del agents  # graphs build agents per-run via build_graph_for_run
 
-    Returns a registry of async workflow functions. The workflows
-    themselves are imported from the workflows/ package and are
-    called with a WorkflowContext at runtime.
-    """
+    from draftly.workflows.context import WorkflowContext
+    from draftly.workflows.documentation.documentation_audit import (
+        run_documentation_audit,
+    )
+    from draftly.workflows.documentation.documentation_sync import (
+        run_documentation_sync,
+    )
+    from draftly.workflows.documentation.github_pr_workflow import (
+        run_pull_request_workflow,
+    )
+    from draftly.workflows.documentation.github_release_workflow import (
+        run_release_workflow,
+    )
+    from draftly.workflows.evaluation.documentation_evaluation import (
+        run_evaluation_loop,
+    )
+    from draftly.workflows.feedback.documentation_feedback_loop import (
+        run_feedback_loop,
+    )
+    from draftly.workflows.github.issue_resolution import (
+        run_github_issue_workflow,
+    )
+    from draftly.workflows.registry import WorkflowRegistry
+    from draftly.workflows.runner import WorkflowRunner
+    from draftly.workflows.support.discord_support_workflow import (
+        run_discord_support,
+    )
+    from draftly.workflows.support.slack_support_workflow import run_slack_support
 
-    return WorkflowRegistry(
-        documentation_sync=run_documentation_sync,
-        documentation_generation=run_documentation_generation,
-        documentation_review=run_documentation_review,
-        documentation_health_check=run_documentation_health_check,
-        github_support=run_github_support,
-        slack_support=run_slack_support,
-        discord_support=run_discord_support,
-        support_escalation=escalate_support,
-        pull_request=run_pull_request_workflow,
-        release=run_release_workflow,
-        issue=run_github_issue_workflow,
-        repository_sync=run_repository_sync,
-        evaluation_loop=run_evaluation_loop,
-        regression_loop=run_regression_loop,
-        failure_recovery=run_evaluation_failure_recovery,
-        daily_health_check=run_daily_health_check,
-        stale_docs_scan=run_stale_docs_scan,
-        support_gap_scan=run_support_gap_scan,
-        release_sync=run_release_sync,
-        review_expiry=run_review_expiry,
+    context = WorkflowContext(
+        repositories=repositories,
+        memory=memory,
+        evaluation=evaluation,
+        feedback=feedback,
+        config=config,
+        tools=tools,
+        model=model,
+        hooks=list(hooks or []),
+        audit_repo=audit_repo,
+        storage_dir=getattr(
+            getattr(config, "strands", None),
+            "session_storage_dir",
+            ".draftly/sessions",
+        ),
+    )
+
+    registry = WorkflowRegistry()
+    registry.register("github_pr", run_pull_request_workflow)
+    registry.register("github_release", run_release_workflow)
+    registry.register("github_issue", run_github_issue_workflow)
+    registry.register("slack_support", run_slack_support)
+    registry.register("discord_support", run_discord_support)
+    registry.register("documentation_sync", run_documentation_sync)
+    registry.register("documentation_audit", run_documentation_audit)
+    registry.register("feedback_loop", run_feedback_loop)
+    registry.register("evaluation_loop", run_evaluation_loop)
+
+    runner = WorkflowRunner(context)
+
+    logger.info("workflow registry built workflows=%d", len(registry.names()))
+
+    return ComposedWorkflows(
+        registry=registry,
+        runner=runner,
+        context=context,
     )
