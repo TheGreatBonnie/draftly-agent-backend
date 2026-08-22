@@ -1,4 +1,5 @@
 """Clerk Management API client for server-side org and member operations."""
+
 from __future__ import annotations
 
 import httpx
@@ -35,13 +36,15 @@ async def list_org_members(org_id: str) -> list[dict]:
     members = []
     for m in data.get("data", []):
         public = m.get("public_user_data", {})
-        members.append({
-            "membership_id": m.get("id"),
-            "user_id": public.get("user_id", ""),
-            "email": public.get("identifier", ""),
-            "role": m.get("role", ""),
-            "role_name": m.get("role_name", ""),
-        })
+        members.append(
+            {
+                "membership_id": m.get("id"),
+                "user_id": public.get("user_id", ""),
+                "email": public.get("identifier", ""),
+                "role": m.get("role", ""),
+                "role_name": m.get("role_name", ""),
+            }
+        )
 
     logger.info("clerk_org_members_listed", org_id=org_id, count=len(members))
     return members

@@ -8,10 +8,7 @@ from .auth import DiscordAuth
 
 
 class DiscordClient:
-
-    BASE_URL = (
-        "https://discord.com/api/v10"
-    )
+    BASE_URL = "https://discord.com/api/v10"
 
     def __init__(
         self,
@@ -30,10 +27,7 @@ class DiscordClient:
         json: dict[str, Any] | None = None,
     ) -> Any:
 
-        async with httpx.AsyncClient(
-            timeout=self.timeout
-        ) as client:
-
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
             response = await client.request(
                 method,
                 f"{self.BASE_URL}{path}",
@@ -55,10 +49,7 @@ class DiscordClient:
     ) -> list[dict[str, Any]]:
 
         if not channel_id:
-            raise ValueError(
-                "Discord message search requires "
-                "a channel_id in this example."
-            )
+            raise ValueError("Discord message search requires a channel_id in this example.")
 
         messages = await self._request(
             "GET",
@@ -90,17 +81,18 @@ class DiscordClient:
         thread_id: str | None = None,
     ) -> dict[str, Any]:
 
-        target_channel = (
-            thread_id or channel_id
-        )
+        target_channel = thread_id or channel_id
 
-        return cast(dict[str, Any], await self._request(
-            "POST",
-            f"/channels/{target_channel}/messages",
-            json={
-                "content": message,
-            },
-        ))
+        return cast(
+            dict[str, Any],
+            await self._request(
+                "POST",
+                f"/channels/{target_channel}/messages",
+                json={
+                    "content": message,
+                },
+            ),
+        )
 
     async def create_thread(
         self,
@@ -109,14 +101,17 @@ class DiscordClient:
         name: str,
     ) -> dict[str, Any]:
         """Create a public thread from an existing message."""
-        return cast(dict[str, Any], await self._request(
-            "POST",
-            f"/channels/{channel_id}/messages/{message_id}/threads",
-            json={
-                "name": name,
-                "auto_archive_duration": 60,
-            },
-        ))
+        return cast(
+            dict[str, Any],
+            await self._request(
+                "POST",
+                f"/channels/{channel_id}/messages/{message_id}/threads",
+                json={
+                    "name": name,
+                    "auto_archive_duration": 60,
+                },
+            ),
+        )
 
     async def get_thread(
         self,
@@ -124,10 +119,13 @@ class DiscordClient:
         thread_id: str,
     ) -> dict[str, Any]:
         """Fetch a thread channel by ID."""
-        return cast(dict[str, Any], await self._request(
-            "GET",
-            f"/channels/{thread_id}",
-        ))
+        return cast(
+            dict[str, Any],
+            await self._request(
+                "GET",
+                f"/channels/{thread_id}",
+            ),
+        )
 
     async def send_thread_message(
         self,
@@ -143,11 +141,14 @@ class DiscordClient:
             payload["embeds"] = embeds
         if components:
             payload["components"] = components
-        return cast(dict[str, Any], await self._request(
-            "POST",
-            f"/channels/{thread_id}/messages",
-            json=payload,
-        ))
+        return cast(
+            dict[str, Any],
+            await self._request(
+                "POST",
+                f"/channels/{thread_id}/messages",
+                json=payload,
+            ),
+        )
 
     async def add_reaction(
         self,
@@ -159,10 +160,13 @@ class DiscordClient:
         import urllib.parse
 
         encoded_emoji = urllib.parse.quote(emoji)
-        return cast(dict[str, Any], await self._request(
-            "PUT",
-            f"/channels/{channel_id}/messages/{message_id}/reactions/{encoded_emoji}/@me",
-        ))
+        return cast(
+            dict[str, Any],
+            await self._request(
+                "PUT",
+                f"/channels/{channel_id}/messages/{message_id}/reactions/{encoded_emoji}/@me",
+            ),
+        )
 
     async def edit_message(
         self,
@@ -181,8 +185,11 @@ class DiscordClient:
             payload["embeds"] = embeds
         if components is not None:
             payload["components"] = components
-        return cast(dict[str, Any], await self._request(
-            "PATCH",
-            f"/channels/{channel_id}/messages/{message_id}",
-            json=payload,
-        ))
+        return cast(
+            dict[str, Any],
+            await self._request(
+                "PATCH",
+                f"/channels/{channel_id}/messages/{message_id}",
+                json=payload,
+            ),
+        )

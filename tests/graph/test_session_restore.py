@@ -18,9 +18,7 @@ from draftly.integrations.strands.graph import (
 from tests.graph.conftest import PR_TASK
 
 
-async def test_interrupted_state_restores_on_rebuild(
-    model, tools, tmp_sessions
-) -> None:
+async def test_interrupted_state_restores_on_rebuild(model, tools, tmp_sessions) -> None:
     run_id = "sess-1"
 
     first = build_graph_for_run(
@@ -64,9 +62,7 @@ async def test_interrupted_state_restores_on_rebuild(
     assert [n.node_id for n in resumed.execution_order][-1] == "deliver"
 
 
-async def test_resume_requires_interrupt_response_format(
-    model, tools, tmp_sessions
-) -> None:
+async def test_resume_requires_interrupt_response_format(model, tools, tmp_sessions) -> None:
     """Resuming an activated interrupt with a plain string is a TypeError."""
     run_id = "sess-2"
 

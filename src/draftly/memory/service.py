@@ -101,9 +101,7 @@ class MemoryService:
             limit=5,
             min_similarity=min_similarity,
         )
-        target_id = merge_target_id or (
-            duplicates[0]["id"] if duplicates else None
-        )
+        target_id = merge_target_id or (duplicates[0]["id"] if duplicates else None)
         if not target_id:
             return None
 
@@ -111,9 +109,7 @@ class MemoryService:
         if not existing:
             return None
 
-        reinforced_importance = min(
-            1.0, float(existing.get("importance", 0.5)) + 0.1
-        )
+        reinforced_importance = min(1.0, float(existing.get("importance", 0.5)) + 0.1)
         return await self.repository.update(
             target_id,
             importance=reinforced_importance,
@@ -124,7 +120,5 @@ class MemoryService:
         items = await self.repository.list_namespace(namespace)
         return {
             "total": len(items),
-            "high_importance": sum(
-                1 for i in items if float(i.get("importance", 0)) >= 0.8
-            ),
+            "high_importance": sum(1 for i in items if float(i.get("importance", 0)) >= 0.8),
         }

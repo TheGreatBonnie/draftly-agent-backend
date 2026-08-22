@@ -12,9 +12,36 @@ from draftly.feedback.models import (
 )
 
 STOPWORDS = {
-    "the", "a", "an", "and", "or", "to", "of", "in", "for", "on", "is",
-    "are", "with", "how", "do", "does", "i", "my", "we", "our", "it",
-    "when", "what", "why", "can", "there", "way", "get", "use", "using",
+    "the",
+    "a",
+    "an",
+    "and",
+    "or",
+    "to",
+    "of",
+    "in",
+    "for",
+    "on",
+    "is",
+    "are",
+    "with",
+    "how",
+    "do",
+    "does",
+    "i",
+    "my",
+    "we",
+    "our",
+    "it",
+    "when",
+    "what",
+    "why",
+    "can",
+    "there",
+    "way",
+    "get",
+    "use",
+    "using",
 }
 
 
@@ -26,10 +53,7 @@ class GapDetector:
 
     @staticmethod
     def _keywords(text: str, limit: int = 4) -> list[str]:
-        words = [
-            w for w in re.findall(r"[a-z][a-z0-9_-]{2,}", text.lower())
-            if w not in STOPWORDS
-        ]
+        words = [w for w in re.findall(r"[a-z][a-z0-9_-]{2,}", text.lower()) if w not in STOPWORDS]
         return words[:limit]
 
     def topic_for(self, item: FeedbackItem) -> str:
@@ -70,9 +94,7 @@ class GapDetector:
                     occurrences=cluster.size,
                     severity=round(severity, 2),
                     platforms=cluster.platforms,
-                    sample_questions=[
-                        i.content for i in cluster.items[:5]
-                    ],
+                    sample_questions=[i.content for i in cluster.items[:5]],
                 )
             )
         candidates.sort(key=lambda c: (-c.severity, -c.occurrences))

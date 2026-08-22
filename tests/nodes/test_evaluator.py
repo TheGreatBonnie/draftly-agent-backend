@@ -20,9 +20,7 @@ def _blocks(
         {"text": "Original Task: task"},
         {"text": "\nInputs from previous nodes:"},
         {"text": "\nFrom research:"},
-        {
-            "text": f"  - Agent: {_json(evidence or [])}"
-        },
+        {"text": f"  - Agent: {_json(evidence or [])}"},
         {"text": f"\nFrom {source}:"},
         {"text": f"  - WriterAgent: {_json({'draft': draft})}"},
     ]
@@ -62,8 +60,7 @@ class TestEvaluatorNode:
     async def test_passing_draft(self) -> None:
         evidence = [{"id": "doc-1", "topic": "neon"}]
         draft = (
-            "Neon is a serverless Postgres platform. doc-1 "
-            "doc-1 doc-1 doc-1 doc-1 doc-1 neon " * 12
+            "Neon is a serverless Postgres platform. doc-1 doc-1 doc-1 doc-1 doc-1 doc-1 neon " * 12
         )
         node = EvaluatorNode()
         result = await node.invoke_async(_blocks(evidence, draft))
@@ -81,15 +78,11 @@ class TestEvaluatorNode:
         blocks = _blocks([], "tiny")
 
         first = await node.invoke_async(blocks)
-        first_data = json.loads(
-            first.results["evaluate"].result.message["content"][0]["text"]
-        )
+        first_data = json.loads(first.results["evaluate"].result.message["content"][0]["text"])
         assert first_data["passed"] is False
 
         second = await node.invoke_async(blocks)
-        second_data = json.loads(
-            second.results["evaluate"].result.message["content"][0]["text"]
-        )
+        second_data = json.loads(second.results["evaluate"].result.message["content"][0]["text"])
         assert second_data["passed"] is True  # iteration >= max_iterations
         assert second_data["iteration"] == 2
 
@@ -99,9 +92,7 @@ class TestEvaluatorNode:
         draft = "Answer text neon doc-1 " * 30
         node = EvaluatorNode()
         result = await node.invoke_async(_blocks(evidence, draft, source="answer"))
-        payload = json.loads(
-            result.results["evaluate"].result.message["content"][0]["text"]
-        )
+        payload = json.loads(result.results["evaluate"].result.message["content"][0]["text"])
         assert payload["score"] >= 0.7
 
     @pytest.mark.asyncio
@@ -117,9 +108,7 @@ class TestEvaluatorNode:
         ]
         node = EvaluatorNode()
         result = await node.invoke_async(blocks)
-        payload = json.loads(
-            result.results["evaluate"].result.message["content"][0]["text"]
-        )
+        payload = json.loads(result.results["evaluate"].result.message["content"][0]["text"])
         assert payload["passed"] is False
         assert payload["score"] < 0.7
 

@@ -30,27 +30,39 @@ class TestRunAuditLoggerFlush:
         repo = FakeAgentRunsRepo()
         hook = RunAuditLogger(repo)
 
-        state = {"run_id": "run-42", "source": "github",
-                 "event_type": "pull_request.opened", "project_id": "org-1"}
+        state = {
+            "run_id": "run-42",
+            "source": "github",
+            "event_type": "pull_request.opened",
+            "project_id": "org-1",
+        }
         hook.run_start(SimpleNamespace(invocation_state=state))
 
-        hook.node_start(SimpleNamespace(
-            invocation_state=state, node_id="classify"))
-        hook.node_end(SimpleNamespace(
-            invocation_state=state, node_id="classify",
-            result=SimpleNamespace(status="COMPLETED")))
+        hook.node_start(SimpleNamespace(invocation_state=state, node_id="classify"))
+        hook.node_end(
+            SimpleNamespace(
+                invocation_state=state,
+                node_id="classify",
+                result=SimpleNamespace(status="COMPLETED"),
+            )
+        )
 
-        hook.node_start(SimpleNamespace(
-            invocation_state=state, node_id="context"))
-        hook.node_end(SimpleNamespace(
-            invocation_state=state, node_id="context",
-            result=SimpleNamespace(status="COMPLETED")))
+        hook.node_start(SimpleNamespace(invocation_state=state, node_id="context"))
+        hook.node_end(
+            SimpleNamespace(
+                invocation_state=state,
+                node_id="context",
+                result=SimpleNamespace(status="COMPLETED"),
+            )
+        )
 
-        hook.tool_end(SimpleNamespace(
-            invocation_state=state,
-            tool_use={"name": "search_docs"},
-            result={"status": "success"},
-        ))
+        hook.tool_end(
+            SimpleNamespace(
+                invocation_state=state,
+                tool_use={"name": "search_docs"},
+                result={"status": "success"},
+            )
+        )
 
         hook.run_end(SimpleNamespace(invocation_state=state))
         await _await_pending()
@@ -60,7 +72,9 @@ class TestRunAuditLoggerFlush:
         assert repo.runs[0]["org_id"] == "org-1"
         # one row per node + one per tool call
         assert [s["name"] for s in repo.steps] == [
-            "classify", "context", "search_docs",
+            "classify",
+            "context",
+            "search_docs",
         ]
         assert repo.steps[0]["kind"] == "node"
         assert repo.steps[2]["kind"] == "tool"
@@ -71,11 +85,12 @@ class TestRunAuditLoggerFlush:
         hook = RunAuditLogger(repo)
         state = {"run_id": "run-7"}
 
-        hook.node_start(SimpleNamespace(
-            invocation_state=state, node_id="evaluate"))
-        hook.node_end(SimpleNamespace(
-            invocation_state=state, node_id="evaluate",
-            result=SimpleNamespace(status="FAILED")))
+        hook.node_start(SimpleNamespace(invocation_state=state, node_id="evaluate"))
+        hook.node_end(
+            SimpleNamespace(
+                invocation_state=state, node_id="evaluate", result=SimpleNamespace(status="FAILED")
+            )
+        )
         hook.run_end(SimpleNamespace(invocation_state=state))
         await _await_pending()
 
@@ -97,11 +112,14 @@ class TestRunAuditLoggerFlush:
         hook = RunAuditLogger(None)
         state = {"run_id": "run-11"}
         hook.run_start(SimpleNamespace(invocation_state=state))
-        hook.node_start(SimpleNamespace(
-            invocation_state=state, node_id="classify"))
-        hook.node_end(SimpleNamespace(
-            invocation_state=state, node_id="classify",
-            result=SimpleNamespace(status="COMPLETED")))
+        hook.node_start(SimpleNamespace(invocation_state=state, node_id="classify"))
+        hook.node_end(
+            SimpleNamespace(
+                invocation_state=state,
+                node_id="classify",
+                result=SimpleNamespace(status="COMPLETED"),
+            )
+        )
         hook.run_end(SimpleNamespace(invocation_state=state))
         await _await_pending()
 
@@ -109,9 +127,6 @@ class TestRunAuditLoggerFlush:
 async def _await_pending() -> None:
     """Await fire-and-forget flush tasks scheduled by run_end."""
     current = asyncio.current_task()
-    pending = [
-        t for t in asyncio.all_tasks()
-        if t is not current and not t.done()
-    ]
+    pending = [t for t in asyncio.all_tasks() if t is not current and not t.done()]
     if pending:
         await asyncio.gather(*pending)

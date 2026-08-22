@@ -63,8 +63,7 @@ class MemoryRanking:
     ) -> list[dict[str, Any]]:
         """Return records ordered by composite score, highest first."""
         scored = [
-            (self.score(record, float(record.get("similarity", 0.0))), record)
-            for record in records
+            (self.score(record, float(record.get("similarity", 0.0))), record) for record in records
         ]
         scored.sort(key=lambda pair: pair[0], reverse=True)
         return [record for _, record in scored[:limit]]

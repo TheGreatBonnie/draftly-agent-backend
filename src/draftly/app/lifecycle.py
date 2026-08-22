@@ -228,9 +228,7 @@ class DraftlyApplication:
             from draftly.memory import DomainMemoryRepository, MemoryService
 
             return MemoryService(
-                repository=DomainMemoryRepository(
-                    self.dependencies.repositories.memory
-                )
+                repository=DomainMemoryRepository(self.dependencies.repositories.memory)
             )
         except Exception as exc:
             logger.warning("memory_service_unavailable: %s", exc)
@@ -241,9 +239,7 @@ class DraftlyApplication:
         try:
             from draftly.feedback import FeedbackService
 
-            return FeedbackService(
-                support_repository=self.dependencies.repositories.support
-            )
+            return FeedbackService(support_repository=self.dependencies.repositories.support)
         except Exception as exc:
             logger.warning("feedback_service_unavailable: %s", exc)
             return None

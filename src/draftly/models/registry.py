@@ -1,4 +1,3 @@
-
 from .config import EmbeddingConfig, ModelConfig
 from .providers.base import ModelProvider
 
@@ -24,10 +23,7 @@ class ModelRegistry:
         model: ModelConfig,
     ) -> None:
         if model.provider not in self._providers:
-            raise ValueError(
-                f"Provider '{model.provider}' "
-                "must be registered before its models."
-            )
+            raise ValueError(f"Provider '{model.provider}' must be registered before its models.")
 
         self._models[model.name] = model
 
@@ -37,8 +33,7 @@ class ModelRegistry:
     ) -> None:
         if model.provider not in self._providers:
             raise ValueError(
-                f"Provider '{model.provider}' "
-                "must be registered before its embedding models."
+                f"Provider '{model.provider}' must be registered before its embedding models."
             )
 
         self._embedding_models[model.name] = model
@@ -46,11 +41,7 @@ class ModelRegistry:
     def list_embedding_models(
         self,
     ) -> list[EmbeddingConfig]:
-        return [
-            model
-            for model in self._embedding_models.values()
-            if model.enabled
-        ]
+        return [model for model in self._embedding_models.values() if model.enabled]
 
     def get_model(
         self,
@@ -58,9 +49,7 @@ class ModelRegistry:
     ) -> ModelConfig:
 
         if name not in self._models:
-            raise KeyError(
-                f"Unknown Draftly model: {name}"
-            )
+            raise KeyError(f"Unknown Draftly model: {name}")
 
         return self._models[name]
 
@@ -70,9 +59,7 @@ class ModelRegistry:
     ) -> ModelProvider:
 
         if name not in self._providers:
-            raise KeyError(
-                f"Unknown model provider: {name}"
-            )
+            raise KeyError(f"Unknown model provider: {name}")
 
         return self._providers[name]
 
@@ -81,18 +68,10 @@ class ModelRegistry:
         capability: str | None = None,
     ) -> list[ModelConfig]:
 
-        models = [
-            model
-            for model in self._models.values()
-            if model.enabled
-        ]
+        models = [model for model in self._models.values() if model.enabled]
 
         if capability:
-            models = [
-                model
-                for model in models
-                if capability in model.capabilities
-            ]
+            models = [model for model in models if capability in model.capabilities]
 
         return sorted(
             models,

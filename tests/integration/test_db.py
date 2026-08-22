@@ -15,9 +15,7 @@ async def test_memory_semantic_search_round_trip(db, requires_live):
     from draftly.memory.models.base import MemoryItem
     from draftly.persistence.repositories.memory import MemoryRepository
 
-    repo = MemoryRepository(
-        store=DatabaseMemoryStore(db), vector_search=VectorSearch(db)
-    )
+    repo = MemoryRepository(store=DatabaseMemoryStore(db), vector_search=VectorSearch(db))
     service = MemoryService(repository=DomainMemoryRepository(repo))
 
     record = await service.remember(

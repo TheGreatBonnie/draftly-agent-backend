@@ -118,9 +118,7 @@ def build_issue_graph(
     builder.add_edge("impact", "update", condition=route_to_update)
     builder.add_edge("impact", "create", condition=route_to_create)
 
-    evaluator = EvaluatorNode(
-        "evaluate", max_iterations=evaluator_max_iterations
-    )
+    evaluator = EvaluatorNode("evaluate", max_iterations=evaluator_max_iterations)
     builder.add_node(evaluator, "evaluate")
     builder.add_edge("answer", "evaluate", condition=generated)
     builder.add_edge("update", "evaluate", condition=generated)

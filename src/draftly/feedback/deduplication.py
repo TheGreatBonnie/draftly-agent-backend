@@ -19,17 +19,14 @@ class DeduplicationService:
         return re.sub(r"\s+", " ", text.lower().strip())
 
     def similarity(self, a: str, b: str) -> float:
-        return SequenceMatcher(
-            None, self.normalize(a), self.normalize(b)
-        ).ratio()
+        return SequenceMatcher(None, self.normalize(a), self.normalize(b)).ratio()
 
     def deduplicate(self, items: list[FeedbackItem]) -> list[FeedbackItem]:
         """Keep the first of every near-duplicate group."""
         kept: list[FeedbackItem] = []
         for item in items:
             if not any(
-                self.similarity(item.content, other.content)
-                >= self.similarity_threshold
+                self.similarity(item.content, other.content) >= self.similarity_threshold
                 for other in kept
             ):
                 kept.append(item)

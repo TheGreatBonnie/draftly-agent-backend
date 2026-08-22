@@ -82,10 +82,7 @@ route_to_create = route_to_create_of()
 
 def generated(state: GraphState) -> bool:
     """Any of answer/update/create has produced output."""
-    return any(
-        nid in state.results
-        for nid in ("answer", "update", "create")
-    )
+    return any(nid in state.results for nid in ("answer", "update", "create"))
 
 
 def needs_revision(state: GraphState) -> bool:
@@ -129,8 +126,7 @@ def all_dependencies_complete(required: list[str]):
 
     def check(state: GraphState) -> bool:
         return all(
-            nid in state.results
-            and state.results[nid].status == Status.COMPLETED
+            nid in state.results and state.results[nid].status == Status.COMPLETED
             for nid in required
         )
 

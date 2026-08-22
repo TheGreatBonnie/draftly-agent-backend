@@ -39,9 +39,7 @@ class MemoryRetrieval:
                 record.get("embedding"), self.repository.embeddings.embed(query)
             )
         if min_similarity > 0:
-            candidates = [
-                r for r in candidates if r["similarity"] >= min_similarity
-            ]
+            candidates = [r for r in candidates if r["similarity"] >= min_similarity]
         return self.ranking.rank(candidates, limit=limit)
 
     async def retrieve_multi(

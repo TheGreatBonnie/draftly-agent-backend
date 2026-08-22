@@ -27,8 +27,18 @@ class FakeMemoryRepository:
         self.items: dict[str, dict] = {}
         self._next = 0
 
-    async def create(self, *, namespace, content, memory_type, importance,
-                     metadata, embedding, org_id=None, confidence=0.5):
+    async def create(
+        self,
+        *,
+        namespace,
+        content,
+        memory_type,
+        importance,
+        metadata,
+        embedding,
+        org_id=None,
+        confidence=0.5,
+    ):
         self._next += 1
         record = {
             "id": f"mem-{self._next}",
@@ -50,14 +60,20 @@ class FakeMemoryRepository:
 
     async def semantic_search(self, *, namespace, embedding, limit=10):
         found = [
-            {**r, "similarity": 0.5}
-            for r in self.items.values()
-            if r["namespace"] == namespace
+            {**r, "similarity": 0.5} for r in self.items.values() if r["namespace"] == namespace
         ]
         return found[:limit]
 
-    async def update(self, *, memory_id, content=None, importance=None,
-                     confidence=None, metadata=None, embedding=None):
+    async def update(
+        self,
+        *,
+        memory_id,
+        content=None,
+        importance=None,
+        confidence=None,
+        metadata=None,
+        embedding=None,
+    ):
         record = self.items.get(memory_id)
         if not record:
             return None
@@ -130,9 +146,7 @@ class TestMemoryService:
         first = await service.remember(
             Question(namespace="questions", content="How do I rotate keys?")
         )
-        await service.remember(
-            Question(namespace="questions", content="How do I rotate keys?")
-        )
+        await service.remember(Question(namespace="questions", content="How do I rotate keys?"))
 
         result = await service.consolidate(
             namespace="questions",
@@ -147,9 +161,7 @@ class TestMemoryService:
 
     async def test_remember_knowledge_and_feedback_namespaces(self) -> None:
         service, repo = make_service()
-        await service.remember(
-            Knowledge(namespace="knowledge", content="TLS certs rotate at 90d")
-        )
+        await service.remember(Knowledge(namespace="knowledge", content="TLS certs rotate at 90d"))
         assert len(await repo.list_namespace(namespace="knowledge")) == 1
 
     def test_hash_embedder_is_deterministic_and_normalized(self) -> None:

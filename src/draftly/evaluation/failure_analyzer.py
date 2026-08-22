@@ -47,9 +47,7 @@ class FailureAnalyzer:
         for failure in failures:
             reason = str(failure.get("reason", ""))
             category = self.categorize(reason)
-            analysis.categories[category] = (
-                analysis.categories.get(category, 0) + 1
-            )
+            analysis.categories[category] = analysis.categories.get(category, 0) + 1
             analysis.items.append(
                 {
                     "case": failure.get("case") or failure.get("index"),

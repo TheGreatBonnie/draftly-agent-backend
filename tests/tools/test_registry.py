@@ -46,6 +46,4 @@ def test_group_names_do_not_collide_within_a_group() -> None:
         registry.github_delivery,
     ):
         names = [tool.tool_name for tool in group]
-        assert len(names) == len(set(names)), (
-            f"duplicate tool names in group: {names}"
-        )
+        assert len(names) == len(set(names)), f"duplicate tool names in group: {names}"

@@ -1,0 +1,78 @@
+# Bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# Type checking
+.mypy_cache/
+.dmypy.json
+
+# Linting
+.ruff_cache/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# Docker
+docker-compose.override.yml
+
+# Logs
+*.log
+logs/
+
+# Terraform
+*.tfstate
+*.tfstate.*
+.terraform/
+
+# Git
+.git/
+.gitignore
+
+# Documentation (build outputs)
+docs/_build/
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# UV
+uv.lock
+
+# Project-specific
+.graphify-out/
+.simulation/
+context/
+infra/
+scripts/
+tests/

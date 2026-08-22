@@ -71,20 +71,15 @@ class ModelRouter:
         attempts = 0
 
         for config in ordered:
-
             if attempts >= policy.max_attempts:
                 break
 
-            provider_health = self.health.get(
-                config.provider
-            )
+            provider_health = self.health.get(config.provider)
 
             if not provider_health.available():
                 continue
 
-            provider = self.registry.get_provider(
-                config.provider
-            )
+            provider = self.registry.get_provider(config.provider)
 
             if not provider.is_enabled():
                 continue
@@ -99,10 +94,7 @@ class ModelRouter:
             )
 
             try:
-
-                model = provider.create_model(
-                    config
-                )
+                model = provider.create_model(config)
 
                 provider_health.record_success()
 
@@ -115,7 +107,6 @@ class ModelRouter:
                 return model
 
             except Exception as exc:
-
                 failure = self._classify_failure(exc)
 
                 logger.warning(
@@ -145,12 +136,8 @@ class ModelRouter:
                 if not policy.allow_fallback:
                     raise
 
-        raise RuntimeError(
-            "No healthy Draftly model was available."
-        ) from (
-            errors[-1]
-            if errors
-            else None
+        raise RuntimeError("No healthy Draftly model was available.") from (
+            errors[-1] if errors else None
         )
 
     def resolve_model(
@@ -158,23 +145,14 @@ class ModelRouter:
         model_name: str,
     ) -> Model:
 
-        config = self.registry.get_model(
-            model_name
-        )
+        config = self.registry.get_model(model_name)
 
-        provider_health = self.health.get(
-            config.provider
-        )
+        provider_health = self.health.get(config.provider)
 
         if not provider_health.available():
-            raise RuntimeError(
-                f"Provider '{config.provider}' "
-                "is currently unavailable."
-            )
+            raise RuntimeError(f"Provider '{config.provider}' is currently unavailable.")
 
-        provider = self.registry.get_provider(
-            config.provider
-        )
+        provider = self.registry.get_provider(config.provider)
 
         return provider.create_model(config)
 
@@ -223,10 +201,7 @@ class ModelRouter:
         policy: RoutingPolicy,
     ) -> bool:
 
-        return all(
-            capability in model.capabilities
-            for capability in policy.required_capabilities
-        )
+        return all(capability in model.capabilities for capability in policy.required_capabilities)
 
     @staticmethod
     def _order_candidates(
@@ -241,23 +216,13 @@ class ModelRouter:
         """
 
         chain = policy.fallback_chain or FALLBACKS.get(
-            policy.required_capabilities[0]
-            if policy.required_capabilities
-            else "",
+            policy.required_capabilities[0] if policy.required_capabilities else "",
             (),
         )
 
-        preferred = {
-            name: index
-            for index, name
-            in enumerate(policy.preferred_models)
-        }
+        preferred = {name: index for index, name in enumerate(policy.preferred_models)}
 
-        chain_index = {
-            provider: index
-            for index, provider
-            in enumerate(chain)
-        }
+        chain_index = {provider: index for index, provider in enumerate(chain)}
 
         return sorted(
             candidates,
@@ -289,22 +254,13 @@ class ModelRouter:
         name = type(exc).__name__.lower()
         message = str(exc).lower()
 
-        if (
-            "auth" in name
-            or "401" in message
-            or "api key" in message
-            or "unauthorized" in message
-        ):
+        if "auth" in name or "401" in message or "api key" in message or "unauthorized" in message:
             return FAILURE_AUTH
 
         if "429" in message or "rate" in message or "limit" in message:
             return FAILURE_RATE_LIMIT
 
-        if (
-            "503" in message
-            or "unavailable" in message
-            or "overloaded" in message
-        ):
+        if "503" in message or "unavailable" in message or "overloaded" in message:
             return FAILURE_UNAVAILABLE
 
         if "400" in message or "invalid" in message or "bad request" in message:

@@ -27,10 +27,7 @@ class SlackClient:
         json: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
 
-        async with httpx.AsyncClient(
-            timeout=self.timeout
-        ) as client:
-
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
             response = await client.request(
                 method,
                 f"{self.BASE_URL}/{endpoint}",
@@ -44,10 +41,7 @@ class SlackClient:
         data = cast(dict[str, Any], response.json())
 
         if not data.get("ok"):
-            raise RuntimeError(
-                f"Slack API error: "
-                f"{data.get('error', 'unknown error')}"
-            )
+            raise RuntimeError(f"Slack API error: {data.get('error', 'unknown error')}")
 
         return data
 
@@ -62,10 +56,7 @@ class SlackClient:
         search_query = query
 
         if channel_id:
-            search_query = (
-                f"{query} "
-                f"in:{channel_id}"
-            )
+            search_query = f"{query} in:{channel_id}"
 
         data = await self._request(
             "GET",

@@ -40,9 +40,7 @@ class ModelProvider(ABC):
         config: EmbeddingConfig,
     ) -> Any:
         """Create an OpenAI-compatible embedding client."""
-        raise NotImplementedError(
-            f"Provider '{self.name}' does not support embeddings."
-        )
+        raise NotImplementedError(f"Provider '{self.name}' does not support embeddings.")
 
     def is_enabled(self) -> bool:
         return self.config.enabled

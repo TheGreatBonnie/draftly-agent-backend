@@ -29,6 +29,7 @@ def _wrap_workflow(
     context: Any,
 ) -> Any:
     """Wrap a workflow function to run against the composed context."""
+
     async def handler(**kwargs: Any) -> Any:
         return await workflow_func(context, **kwargs)
 

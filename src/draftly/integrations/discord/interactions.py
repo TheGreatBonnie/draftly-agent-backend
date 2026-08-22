@@ -1,4 +1,5 @@
 """Interaction token store for Discord review actions."""
+
 from __future__ import annotations
 
 _token_map: dict[str, str] = {}

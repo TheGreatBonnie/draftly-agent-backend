@@ -39,9 +39,7 @@ async def _run_to_interrupt(model, tools, tmp_sessions, run_id: str):
     return graph, result
 
 
-async def test_gate_interrupts_before_delivery(
-    model, tools, tmp_sessions
-) -> None:
+async def test_gate_interrupts_before_delivery(model, tools, tmp_sessions) -> None:
     _, result = await _run_to_interrupt(model, tools, tmp_sessions, "gate-1")
     interrupt_id = _interrupt_id(result)
 
@@ -51,9 +49,7 @@ async def test_gate_interrupts_before_delivery(
     assert interrupt_id.startswith("v1:before_node_call:")
 
 
-async def test_resume_with_approval_completes_delivery(
-    model, tools, tmp_sessions
-) -> None:
+async def test_resume_with_approval_completes_delivery(model, tools, tmp_sessions) -> None:
     _, first = await _run_to_interrupt(model, tools, tmp_sessions, "gate-2")
     interrupt_id = _interrupt_id(first)
 
@@ -81,9 +77,7 @@ async def test_resume_with_approval_completes_delivery(
     assert order[-1] == "deliver"
 
 
-async def test_rejection_cancels_node_and_raises(
-    model, tools, tmp_sessions
-) -> None:
+async def test_rejection_cancels_node_and_raises(model, tools, tmp_sessions) -> None:
     _, first = await _run_to_interrupt(model, tools, tmp_sessions, "gate-3")
     interrupt_id = _interrupt_id(first)
 
@@ -108,9 +102,7 @@ async def test_rejection_cancels_node_and_raises(
         )
 
 
-async def test_policy_never_skips_the_gate(
-    model, tools, tmp_sessions
-) -> None:
+async def test_policy_never_skips_the_gate(model, tools, tmp_sessions) -> None:
     graph = build_graph_for_run(
         "gate-4",
         surface="pull_request",

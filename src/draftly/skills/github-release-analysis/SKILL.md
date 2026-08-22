@@ -1,6 +1,10 @@
 ---
 name: github-release-analysis
-description: Analyzes GitHub releases for breaking changes, new features, and deprecations that require documentation updates.
+description: Analyzes GitHub releases for breaking changes, new features, and deprecations that require documentation updates. Use when a release is published.
+allowed-tools: semantic_search keyword_search hybrid_search read_file
+metadata:
+  references: 2
+  assets: 0
 ---
 
 # GitHub Release Analysis
@@ -23,3 +27,21 @@ Turn a GitHub release into a documentation change plan.
 
 - Breaking changes always require review before delivery.
 - Include migration paths in generated docs, never just removals.
+- The release payload arrives via the webhook event — if release notes are
+  empty, say so and fall back to the tagged commits rather than inventing
+  changes.
+- One release can yield several affected documents; group them in a single
+  analysis.
+
+## Output
+
+An `EventClassification` (`change_type`, `urgency`, `reason` derived from the
+release) plus an `ImpactAnalysis` (`action`, `affected_documents[]`,
+`rationale`, `evidence[]`) covering all sections of the release notes.
+
+## References
+
+Read on demand with your file tools — load only when needed:
+
+- `references/changelog-rules.md` — release note section parsing and keywords; apply in step 2
+- `references/release-impact-rules.md` — release signal to impact/action/urgency mapping; apply in step 4

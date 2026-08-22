@@ -54,18 +54,11 @@ class CapabilityMatcher:
     ) -> bool:
         model_capabilities = set(model.capabilities)
 
-        return all(
-            capability in model_capabilities
-            for capability in required
-        )
+        return all(capability in model_capabilities for capability in required)
 
     def filter(
         self,
         models: Iterable[ModelConfig],
         *required: str,
     ) -> list[ModelConfig]:
-        return [
-            model
-            for model in models
-            if self.supports(model, *required)
-        ]
+        return [model for model in models if self.supports(model, *required)]

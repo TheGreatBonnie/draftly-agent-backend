@@ -116,10 +116,7 @@ async def link_github(
     try:
         install_token = await get_installation_token(request.installation_id)
         repos = await get_installation_repositories(install_token)
-        repositories = [
-            {"full_name": repo["full_name"], "id": repo["id"]}
-            for repo in repos
-        ]
+        repositories = [{"full_name": repo["full_name"], "id": repo["id"]} for repo in repos]
     except Exception as e:
         logger.warning(
             "github_link_failed_fetch_repos",
@@ -326,9 +323,7 @@ async def resume_review(
     if app_state is None:
         raise HTTPException(status_code=503, detail="Runtime not started")
 
-    reviews_repo = getattr(
-        getattr(app_state.dependencies, "repositories", None), "reviews", None
-    )
+    reviews_repo = getattr(getattr(app_state.dependencies, "repositories", None), "reviews", None)
     if reviews_repo is None:
         raise HTTPException(status_code=503, detail="Reviews store unavailable")
 

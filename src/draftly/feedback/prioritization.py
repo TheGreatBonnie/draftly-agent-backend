@@ -36,7 +36,5 @@ class GapPrioritizer:
         *,
         limit: int | None = None,
     ) -> list[DocumentationGapCandidate]:
-        ranked = sorted(
-            candidates, key=self.score, reverse=True
-        )
+        ranked = sorted(candidates, key=self.score, reverse=True)
         return ranked[:limit] if limit else ranked

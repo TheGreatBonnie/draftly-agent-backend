@@ -1,4 +1,5 @@
 """Discord interactive components: review cards, embeds, and action components."""
+
 from __future__ import annotations
 
 import secrets
@@ -32,9 +33,7 @@ def build_discord_review_card(
     embed: dict[str, Any] = {
         "title": "Documentation Review Required",
         "description": (
-            f"**Title:** {title}\n"
-            f"**Source:** {source}\n"
-            f"**Confidence:** {confidence:.0%}"
+            f"**Title:** {title}\n**Source:** {source}\n**Confidence:** {confidence:.0%}"
         ),
         "color": 49407,
         "fields": [

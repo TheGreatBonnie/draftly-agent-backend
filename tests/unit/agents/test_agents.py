@@ -109,18 +109,26 @@ def test_surface_agents_construct(stub_model: StubModel) -> None:
         assert isinstance(agent, Agent)
         assert agent.name
 
-    assert build_writer_agent(
-        stub_model, tools.documentation_engineer
-    )._default_structured_output_model is DocChangePlan
-    assert build_impact_agent(
-        stub_model, tools.documentation
-    )._default_structured_output_model is ImpactAnalysis
-    assert build_reviewer_agent(
-        stub_model, tools.documentation_reviewer
-    )._default_structured_output_model is EvaluationResult
-    assert build_answer_writer(
-        stub_model, tools.support_engineer
-    )._default_structured_output_model is AnswerDraft
+    assert (
+        build_writer_agent(
+            stub_model, tools.documentation_engineer
+        )._default_structured_output_model
+        is DocChangePlan
+    )
+    assert (
+        build_impact_agent(stub_model, tools.documentation)._default_structured_output_model
+        is ImpactAnalysis
+    )
+    assert (
+        build_reviewer_agent(
+            stub_model, tools.documentation_reviewer
+        )._default_structured_output_model
+        is EvaluationResult
+    )
+    assert (
+        build_answer_writer(stub_model, tools.support_engineer)._default_structured_output_model
+        is AnswerDraft
+    )
 
 
 def test_research_swarm_construction(stub_model: StubModel) -> None:
@@ -144,20 +152,13 @@ def test_delivery_agent_hitl_intervention(stub_model: StubModel) -> None:
 
     tools = build_tools()
     agent = build_delivery_agent(stub_model, tools.github_delivery, hitl=True)
-    assert isinstance(
-        agent._intervention_registry.handlers[0], HumanInTheLoop
-    )
+    assert isinstance(agent._intervention_registry.handlers[0], HumanInTheLoop)
 
 
 def test_skills_load_from_directory() -> None:
     from strands.vended_plugins.skills import Skill
 
-    skills_root = (
-        Path(__file__).resolve().parents[3]
-        / "src"
-        / "draftly"
-        / "skills"
-    )
+    skills_root = Path(__file__).resolve().parents[3] / "src" / "draftly" / "skills"
     skills = Skill.from_directory(skills_root)
     names = {skill.name for skill in skills}
     assert len(skills) == 20

@@ -66,17 +66,13 @@ class RunAuditLogger(HookProvider):
         run_id = (event.invocation_state or {}).get("run_id")
         self._node_started_at[event.node_id] = time.monotonic()
         if run_id:
-            logger.info(
-                "audit.step.start run_id=%s node_id=%s", run_id, event.node_id
-            )
+            logger.info("audit.step.start run_id=%s node_id=%s", run_id, event.node_id)
 
     def node_end(self, event: AfterNodeCallEvent) -> None:
         state = event.invocation_state or {}
         run_id = state.get("run_id")
         started = self._node_started_at.pop(event.node_id, None)
-        duration_ms = (
-            round((time.monotonic() - started) * 1000) if started else None
-        )
+        duration_ms = round((time.monotonic() - started) * 1000) if started else None
         status = _status_of(event)
         self._buffer_step(
             run_id=run_id,
@@ -124,9 +120,7 @@ class RunAuditLogger(HookProvider):
         except RuntimeError:
             logger.warning("audit_flush_skipped_no_loop run_id=%s", run_id)
             return
-        loop.create_task(
-            _flush_run(self.audit_repo, str(run_id), meta, steps)
-        )
+        loop.create_task(_flush_run(self.audit_repo, str(run_id), meta, steps))
 
     # --------------------------------------------------------------
     # Internals

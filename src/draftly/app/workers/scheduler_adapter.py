@@ -24,6 +24,7 @@ class ScheduledJob:
 @dataclass
 class DueJob:
     """Adapted job ready for execution by DraftlyScheduler."""
+
     name: str
     handler: Callable[..., Any]
     arguments: dict[str, Any]

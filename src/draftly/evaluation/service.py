@@ -53,9 +53,7 @@ class EvaluationService:
 
         return {
             "dataset": dataset,
-            "overall_score": float(
-                getattr(report, "overall_score", 0.0) or 0.0
-            ),
+            "overall_score": float(getattr(report, "overall_score", 0.0) or 0.0),
             "cases": len(passes),
             "passed": sum(1 for p in passes if p),
             "failed": sum(1 for p in passes if not p),

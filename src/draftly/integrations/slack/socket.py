@@ -1,4 +1,5 @@
 """Socket Mode entry point for local development without ngrok."""
+
 from __future__ import annotations
 
 import structlog

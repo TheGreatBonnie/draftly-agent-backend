@@ -47,6 +47,4 @@ async def test_output_evaluator_rubric(model, requires_live):
 def _case(*, query: str, response: str, expected: str):
     from strands_evals.types.evaluation import EvaluationData
 
-    return EvaluationData(
-        input=query, actual_output=response, expected_output=expected
-    )
+    return EvaluationData(input=query, actual_output=response, expected_output=expected)

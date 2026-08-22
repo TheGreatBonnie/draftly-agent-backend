@@ -57,7 +57,7 @@ async def extract_frontmatter(content: str) -> dict:
 async def update_frontmatter(content: str, updates: dict) -> str:
     """Insert or replace frontmatter keys, preserving the document body."""
     match = _FRONTMATTER_RE.match(content)
-    body = content[match.end():] if match else content
+    body = content[match.end() :] if match else content
     metadata = parse_frontmatter(content)
     metadata.update(updates)
 

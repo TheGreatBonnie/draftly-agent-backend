@@ -63,10 +63,6 @@ class PermissionChecker:
         org_id: str | None = None,
     ) -> None:
         if org_id and principal.org_id and principal.org_id != org_id:
-            raise PermissionDeniedError(
-                f"cross-org access denied for {principal.id}"
-            )
+            raise PermissionDeniedError(f"cross-org access denied for {principal.id}")
         if not self.has_permission(principal, permission):
-            raise PermissionDeniedError(
-                f"{principal.id} lacks permission '{permission}'"
-            )
+            raise PermissionDeniedError(f"{principal.id} lacks permission '{permission}'")

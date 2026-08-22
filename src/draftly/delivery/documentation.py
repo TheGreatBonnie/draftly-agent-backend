@@ -32,8 +32,7 @@ class DocumentationDelivery:
         body = (
             "## Draftly documentation update\n\n"
             f"{summary}\n\n"
-            f"### Files changed ({len(files)})\n"
-            + "\n".join(f"- `{f['path']}`" for f in files)
+            f"### Files changed ({len(files)})\n" + "\n".join(f"- `{f['path']}`" for f in files)
         )
         return await self.github.deliver(
             repository=repository,

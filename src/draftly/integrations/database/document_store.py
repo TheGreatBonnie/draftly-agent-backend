@@ -108,6 +108,8 @@ class DocumentStore:
         path: str,
         content: str,
         metadata: dict[str, Any] | None = None,
+        title: str | None = None,
+        document_type: str | None = None,
     ) -> dict[str, Any]:
         existing = await self.client.fetch_one(
             """
@@ -121,16 +123,31 @@ class DocumentStore:
         )
 
         if existing is not None:
+            fields = ["content = $1"]
+            params: list[Any] = [content]
+
+            fields.append(f"metadata = ${len(params) + 1}")
+            params.append(metadata or {})
+
+            if title is not None:
+                fields.append(f"title = ${len(params) + 1}")
+                params.append(title)
+
+            if document_type is not None:
+                fields.append(f"document_type = ${len(params) + 1}")
+                params.append(document_type)
+
+            fields.append("updated_at = CURRENT_TIMESTAMP")
+            params.append(existing["id"])
+
             row = await self.client.fetch_one(
                 f"""
                 UPDATE documentation
-                SET content = $1, metadata = $2, updated_at = CURRENT_TIMESTAMP
-                WHERE id = $3
+                SET {", ".join(fields)}
+                WHERE id = ${len(params)}
                 RETURNING {_DOCUMENT_COLUMNS}
                 """,
-                content,
-                metadata or {},
-                existing["id"],
+                *params,
             )
         else:
             row = await self.client.fetch_one(
@@ -139,15 +156,19 @@ class DocumentStore:
                     org_id,
                     repository,
                     path,
+                    title,
+                    document_type,
                     content,
                     metadata
                 )
-                VALUES ($1, $2, $3, $4, $5)
+                VALUES ($1, $2, $3, $4, $5, $6, $7)
                 RETURNING {_DOCUMENT_COLUMNS}
                 """,
                 org_id,
                 repository,
                 path,
+                title,
+                document_type or "general",
                 content,
                 metadata or {},
             )
@@ -252,9 +273,7 @@ class DocumentStore:
         )
 
         if row is None:
-            raise ValueError(
-                f"Document '{document_id}' not found."
-            )
+            raise ValueError(f"Document '{document_id}' not found.")
 
         return self._row_to_dict(row)
 
@@ -301,7 +320,7 @@ class DocumentStore:
         return True
 
     @staticmethod
-    def _row_to_dict(row) -> dict[str, Any]:
+    def _row_to_dict(row: Any) -> dict[str, Any]:
         if isinstance(row, dict):
             return dict(row)
 
@@ -310,9 +329,7 @@ class DocumentStore:
 
         return {
             "id": str(row["id"]),
-            "org_id": (
-                str(row["org_id"]) if row["org_id"] else None
-            ),
+            "org_id": (str(row["org_id"]) if row["org_id"] else None),
             "repository": row["repository"],
             "path": row["path"],
             "title": row["title"],

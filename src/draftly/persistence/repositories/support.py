@@ -57,9 +57,7 @@ class SupportRepository:
             org_id = EXCLUDED.org_id
         """
 
-        effective_org_id = (
-            org_id if org_id is not None else message.org_id
-        )
+        effective_org_id = org_id if org_id is not None else message.org_id
 
         await self.database.execute(
             query,
@@ -180,18 +178,14 @@ class SupportRepository:
         ORDER BY timestamp ASC
         """
 
-        message_rows = (
-            await self.database.fetch_all(
-                message_query,
-                thread_id,
-            )
+        message_rows = await self.database.fetch_all(
+            message_query,
+            thread_id,
         )
 
         messages = [
             SupportMessage(
-                id=str(
-                    item["message_id"]
-                ),
+                id=str(item["message_id"]),
                 platform=item["platform"],
                 channel_id=item["channel_id"],
                 channel_name=item["channel_name"],
@@ -212,9 +206,7 @@ class SupportRepository:
             platform=row["platform"],
             channel_id=row["channel_id"],
             channel_name=row["channel_name"],
-            root_message_id=str(
-                row["root_message_id"]
-            ),
+            root_message_id=str(row["root_message_id"]),
             messages=messages,
             created_at=row["created_at"],
             updated_at=row["updated_at"],
@@ -292,9 +284,7 @@ class SupportRepository:
 
         return [
             SupportMessage(
-                id=str(
-                    row["message_id"]
-                ),
+                id=str(row["message_id"]),
                 platform=row["platform"],
                 channel_id=row["channel_id"],
                 channel_name=row["channel_name"],
@@ -368,23 +358,16 @@ class SupportRepository:
 
         if platform:
             args.append(platform)
-            conditions.append(
-                f"source = ${len(args)}"
-            )
+            conditions.append(f"source = ${len(args)}")
 
         if since:
             args.append(since)
-            conditions.append(
-                f"occurred_at >= ${len(args)}"
-            )
+            conditions.append(f"occurred_at >= ${len(args)}")
 
         where = ""
 
         if conditions:
-            where = (
-                "WHERE "
-                + " AND ".join(conditions)
-            )
+            where = "WHERE " + " AND ".join(conditions)
 
         args.append(limit)
 
@@ -409,9 +392,7 @@ class SupportRepository:
 
         return [
             SupportEvent(
-                event_id=str(
-                    row["event_id"]
-                ),
+                event_id=str(row["event_id"]),
                 platform=row["source"],
                 event_type=row["event_type"],
                 occurred_at=row["occurred_at"],

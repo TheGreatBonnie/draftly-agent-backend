@@ -9,9 +9,7 @@ Policies:
 
 from __future__ import annotations
 
-RISKY_CHANGE_TYPES = frozenset(
-    {"breaking_change", "deprecation", "api_change"}
-)
+RISKY_CHANGE_TYPES = frozenset({"breaking_change", "deprecation", "api_change"})
 
 VALID_POLICIES = ("always", "risky", "never")
 

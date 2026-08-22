@@ -6,7 +6,6 @@ from draftly.integrations.database.client import DatabaseClient
 
 
 class DatabaseEvaluationsStore:
-
     def __init__(
         self,
         client: DatabaseClient | None = None,
@@ -163,10 +162,7 @@ class DatabaseEvaluationsStore:
                 limit,
             )
 
-        return [
-            self._to_dict(row)
-            for row in rows
-        ]
+        return [self._to_dict(row) for row in rows]
 
     @staticmethod
     def _to_dict(row) -> dict[str, Any]:

@@ -20,9 +20,7 @@ from draftly.orchestration.routing.conditions import (
 )
 
 
-def _state_with_results(
-    results: dict, node_status: Status = Status.COMPLETED
-) -> GraphState:
+def _state_with_results(results: dict, node_status: Status = Status.COMPLETED) -> GraphState:
     state = GraphState()
     for node_id, result in results.items():
         state.results[node_id] = NodeResult(result=result, status=node_status)
@@ -45,9 +43,7 @@ def _evaluate_result(passed: bool) -> MultiAgentResult:
         status=Status.COMPLETED,
         results={
             "evaluate": NodeResult(
-                result=agent_result(
-                    {"passed": passed, "score": 0.9 if passed else 0.3}
-                ),
+                result=agent_result({"passed": passed, "score": 0.9 if passed else 0.3}),
             )
         },
     )
@@ -55,9 +51,7 @@ def _evaluate_result(passed: bool) -> MultiAgentResult:
 
 class TestIsValidSurface:
     def test_recognized_surface(self) -> None:
-        state = GraphState(
-            task=json.dumps({"event_type": "pull_request.opened"})
-        )
+        state = GraphState(task=json.dumps({"event_type": "pull_request.opened"}))
         assert is_valid_surface(state)
 
     def test_unrecognized_surface(self) -> None:

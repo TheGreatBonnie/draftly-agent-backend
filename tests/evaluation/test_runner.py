@@ -52,9 +52,7 @@ async def test_runner_builds_experiment_and_persists(
             persisted.append(kwargs)
             return {"id": "eval-1", **kwargs}
 
-    runner = StrandsEvalsRunner(
-        repository=Repo(), org_id="org-9", evaluation_type="documentation"
-    )
+    runner = StrandsEvalsRunner(repository=Repo(), org_id="org-9", evaluation_type="documentation")
     from strands_evals import Case
 
     cases = [

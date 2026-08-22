@@ -116,9 +116,7 @@ class TestHookRegistration:
         logger = RunAuditLogger(audit_repo=None)
         state = {"run_id": "r-1"}
         # Must not raise without an audit repository
-        logger.node_end(
-            type("E", (), {"node_id": "deliver", "invocation_state": state})()
-        )
+        logger.node_end(type("E", (), {"node_id": "deliver", "invocation_state": state})())
         logger.run_end(type("E", (), {"invocation_state": state})())
 
 

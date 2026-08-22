@@ -1,4 +1,5 @@
 """In-process, bounded conversation store for Slack thread context."""
+
 from __future__ import annotations
 
 from collections import OrderedDict

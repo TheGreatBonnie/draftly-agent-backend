@@ -45,11 +45,7 @@ def _task_payload(task: Any) -> dict:
 
     if isinstance(task, list):
         for block in task:
-            text = (
-                block.get("text", "")
-                if isinstance(block, dict)
-                else getattr(block, "text", "")
-            )
+            text = block.get("text", "") if isinstance(block, dict) else getattr(block, "text", "")
             try:
                 data = json.loads(text)
                 if isinstance(data, dict):
@@ -93,11 +89,7 @@ class SummarizeClustersNode(MultiAgentBase):
 
         return MultiAgentResult(
             status=Status.COMPLETED,
-            results={
-                self.name: NodeResult(
-                    result=agent_result({"clusters": clusters})
-                )
-            },
+            results={self.name: NodeResult(result=agent_result({"clusters": clusters}))},
         )
 
 

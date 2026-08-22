@@ -1,4 +1,5 @@
 """Slack Bolt app with event and action handlers."""
+
 from __future__ import annotations
 
 import asyncio

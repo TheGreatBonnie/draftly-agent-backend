@@ -1,4 +1,5 @@
 """Organizations repository operations."""
+
 from __future__ import annotations
 
 from typing import Any
@@ -72,8 +73,7 @@ async def get_org_by_github_org(
         db = deps.integrations.database
 
     row = await db.fetch_one(
-        "SELECT clerk_org_id, clerk_org_name, github_org "
-        "FROM organizations WHERE github_org = $1",
+        "SELECT clerk_org_id, clerk_org_name, github_org FROM organizations WHERE github_org = $1",
         github_org,
     )
     return dict(row) if row else None

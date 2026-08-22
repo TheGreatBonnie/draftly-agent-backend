@@ -156,9 +156,7 @@ class DatabaseMemoryStore:
             params.append(metadata)
 
         if not fields:
-            raise ValueError(
-                "No fields were provided for update."
-            )
+            raise ValueError("No fields were provided for update.")
 
         params.append(memory_id)
 
@@ -175,9 +173,7 @@ class DatabaseMemoryStore:
             )
 
             if row is None:
-                raise ValueError(
-                    f"Memory '{memory_id}' was not found."
-                )
+                raise ValueError(f"Memory '{memory_id}' was not found.")
 
             if embedding is not None:
                 await self.client.execute_conn(
@@ -239,18 +235,13 @@ class DatabaseMemoryStore:
             namespace,
         )
 
-        return [
-            self._row_to_memory(row)
-            for row in rows
-        ]
+        return [self._row_to_memory(row) for row in rows]
 
     @staticmethod
     def _row_to_memory(row) -> dict[str, Any]:
         return {
             "id": str(row["id"]),
-            "org_id": (
-                str(row["org_id"]) if row["org_id"] else None
-            ),
+            "org_id": (str(row["org_id"]) if row["org_id"] else None),
             "namespace": row["namespace"],
             "memory_type": row["memory_type"],
             "content": row["content"],
@@ -267,7 +258,4 @@ class DatabaseMemoryStore:
 
     @staticmethod
     def _format_vector(embedding: Sequence[float]) -> str:
-        return "[" + ",".join(
-            str(float(value))
-            for value in embedding
-        ) + "]"
+        return "[" + ",".join(str(float(value)) for value in embedding) + "]"

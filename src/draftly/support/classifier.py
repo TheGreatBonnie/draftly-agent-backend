@@ -25,11 +25,7 @@ class SupportClassifier:
 
     def urgency(self, content: str) -> str:
         lowered = content.lower()
-        return (
-            "high"
-            if any(keyword in lowered for keyword in URGENT_KEYWORDS)
-            else "normal"
-        )
+        return "high" if any(keyword in lowered for keyword in URGENT_KEYWORDS) else "normal"
 
     def triage(self, question: SupportQuestion) -> SupportQuestion:
         question.category = self.categorize(question.content)

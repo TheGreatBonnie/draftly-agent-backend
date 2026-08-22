@@ -68,8 +68,7 @@ class Metrics:
                 "counters": dict(self._counters),
                 "gauges": dict(self._gauges),
                 "timings": {
-                    name: self._summarize(samples)
-                    for name, samples in self._timings.items()
+                    name: self._summarize(samples) for name, samples in self._timings.items()
                 },
             }
 
@@ -100,11 +99,7 @@ class Metrics:
                 lines.append(f"# TYPE {name}_milliseconds summary")
                 for key, value in stats.items():
                     suffix = "" if key == "count" else f"_{key.split('_')[0]}"
-                    quantile = (
-                        f'{{quantile="{key.split("_")[0]}"}}'
-                        if key.endswith("_ms")
-                        else ""
-                    )
+                    quantile = f'{{quantile="{key.split("_")[0]}"}}' if key.endswith("_ms") else ""
                     display = value if not math.isnan(value) else 0.0
                     lines.append(f"{name}_milliseconds{suffix}{quantile} {display}")
         return "\n".join(lines) + "\n"

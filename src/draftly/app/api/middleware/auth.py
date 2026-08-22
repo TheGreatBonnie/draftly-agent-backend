@@ -24,9 +24,7 @@ class APIKeyMiddleware(BaseHTTPMiddleware):
     ):
         settings = get_settings()
 
-        supplied_key = request.headers.get(
-            "X-Draftly-API-Key"
-        )
+        supplied_key = request.headers.get("X-Draftly-API-Key")
 
         if supplied_key != settings.api_key:
             return JSONResponse(

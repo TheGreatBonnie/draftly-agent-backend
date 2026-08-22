@@ -110,10 +110,9 @@ class StrandsEvalsRunner:
         reasons = list(getattr(report, "reasons", []) or [])
         case_names = [
             str(case.get("name", index))
-            if isinstance(case, dict) else str(getattr(case, "name", index))
-            for index, case in enumerate(
-                getattr(report, "cases", []) or []
-            )
+            if isinstance(case, dict)
+            else str(getattr(case, "name", index))
+            for index, case in enumerate(getattr(report, "cases", []) or [])
         ]
 
         failures = [
@@ -182,10 +181,7 @@ def run_dataset_sync(dataset: dict[str, Any]) -> list[dict[str, Any]]:
 
     experiment = Experiment(
         cases=cases,
-        evaluators=[
-            Contains(value=str(case.expected_output or ""))
-            for case in cases
-        ],
+        evaluators=[Contains(value=str(case.expected_output or "")) for case in cases],
     )
     report = experiment.run_evaluations(
         lambda case: str(getattr(case, "expected_output", "") or "")

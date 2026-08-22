@@ -66,12 +66,8 @@ def build_model_router() -> ModelRouter:
         NvidiaProvider(
             ProviderConfig(
                 name="nvidia",
-                api_key=os.getenv(
-                    "NVIDIA_API_KEY"
-                ),
-                base_url=os.getenv(
-                    "NVIDIA_BASE_URL"
-                ),
+                api_key=os.getenv("NVIDIA_API_KEY"),
+                base_url=os.getenv("NVIDIA_BASE_URL"),
                 priority=10,
             )
         )
@@ -81,12 +77,8 @@ def build_model_router() -> ModelRouter:
         RequestyProvider(
             ProviderConfig(
                 name="requesty",
-                api_key=os.getenv(
-                    "REQUESTY_API_KEY"
-                ),
-                base_url=os.getenv(
-                    "REQUESTY_BASE_URL"
-                ),
+                api_key=os.getenv("REQUESTY_API_KEY"),
+                base_url=os.getenv("REQUESTY_BASE_URL"),
                 priority=20,
             )
         )
@@ -96,12 +88,8 @@ def build_model_router() -> ModelRouter:
         OrcaRouterProvider(
             ProviderConfig(
                 name="orcarouter",
-                api_key=os.getenv(
-                    "ORCAROUTER_API_KEY"
-                ),
-                base_url=os.getenv(
-                    "ORCAROUTER_BASE_URL"
-                ),
+                api_key=os.getenv("ORCAROUTER_API_KEY"),
+                base_url=os.getenv("ORCAROUTER_BASE_URL"),
                 priority=30,
             )
         )
@@ -111,12 +99,8 @@ def build_model_router() -> ModelRouter:
         OpenRouterProvider(
             ProviderConfig(
                 name="openrouter",
-                api_key=os.getenv(
-                    "OPENROUTER_API_KEY"
-                ),
-                base_url=os.getenv(
-                    "OPENROUTER_BASE_URL"
-                ),
+                api_key=os.getenv("OPENROUTER_API_KEY"),
+                base_url=os.getenv("OPENROUTER_BASE_URL"),
                 priority=40,
             )
         )
@@ -212,9 +196,7 @@ def build_model_router() -> ModelRouter:
                 "REQUESTY_DEEPSEEK_V4_FLASH_MODEL",
                 default="tensorx/deepseek-v4-flash",
             ),
-            capabilities=(
-                "tool_calling",
-            ),
+            capabilities=("tool_calling",),
             priority=20,
             max_tokens=2048,
         )
@@ -775,5 +757,3 @@ def build_embedding_router() -> EmbeddingRouter:
         registry=registry,
         health=health,
     )
-
-

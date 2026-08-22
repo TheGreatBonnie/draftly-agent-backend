@@ -41,9 +41,7 @@ class WebhookVerifier:
 
     def verify_github(self, body: bytes, signature: str) -> bool:
         if not self.github_secret:
-            raise WebhookVerificationError(
-                "GitHub webhook secret is not configured"
-            )
+            raise WebhookVerificationError("GitHub webhook secret is not configured")
         expected = hmac.new(
             self.github_secret.encode(),
             body,
@@ -62,9 +60,7 @@ class WebhookVerifier:
         signature: str,
     ) -> bool:
         if not self.slack_signing_secret:
-            raise WebhookVerificationError(
-                "Slack signing secret is not configured"
-            )
+            raise WebhookVerificationError("Slack signing secret is not configured")
         try:
             ts_int = int(timestamp)
         except (TypeError, ValueError) as exc:
@@ -92,9 +88,7 @@ class WebhookVerifier:
         signature_hex: str,
     ) -> bool:
         if not self.discord_public_key:
-            raise WebhookVerificationError(
-                "Discord public key is not configured"
-            )
+            raise WebhookVerificationError("Discord public key is not configured")
         try:
             from nacl.exceptions import BadSignatureError
             from nacl.signing import VerifyKey

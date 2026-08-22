@@ -1,4 +1,5 @@
 """Discord event handler — processes Gateway messages and dispatches to the pipeline."""
+
 from __future__ import annotations
 
 import asyncio

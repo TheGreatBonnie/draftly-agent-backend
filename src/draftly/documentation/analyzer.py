@@ -15,8 +15,25 @@ class DocumentationAnalyzer:
     TOPIC_PATTERN = re.compile(r"^#{1,3}\s+(.+)$", re.MULTILINE)
     LINK_PATTERN = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
     STOPWORDS = {
-        "the", "a", "an", "and", "or", "to", "of", "in", "for", "on",
-        "how", "do", "i", "is", "are", "with", "what", "when", "my",
+        "the",
+        "a",
+        "an",
+        "and",
+        "or",
+        "to",
+        "of",
+        "in",
+        "for",
+        "on",
+        "how",
+        "do",
+        "i",
+        "is",
+        "are",
+        "with",
+        "what",
+        "when",
+        "my",
     }
 
     def topics(self, content: str) -> list[str]:

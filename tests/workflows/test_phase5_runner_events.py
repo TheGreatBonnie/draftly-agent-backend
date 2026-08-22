@@ -170,9 +170,7 @@ class TestRunnerOutcomes:
         assert graph.calls == []
 
     async def test_invocation_state_carries_review_policy(self) -> None:
-        config = type(
-            "Config", (), {"strands": type("S", (), {"review_policy": "risky"})()}
-        )()
+        config = type("Config", (), {"strands": type("S", (), {"review_policy": "risky"})()})()
         context = make_context(config=config)
         graph = FakeGraph(completed_result())
         runner = WorkflowRunner(context, graph_factory=lambda r, s: graph)
@@ -241,10 +239,7 @@ class TestDispatcherRouting:
             return "ok"
 
         dispatcher.register("pull_request.opened", handler)
-        assert (
-            await dispatcher.dispatch({"event_type": "pull_request.opened"})
-            == "ok"
-        )
+        assert await dispatcher.dispatch({"event_type": "pull_request.opened"}) == "ok"
         assert seen and seen[0]["event_type"] == "pull_request.opened"
 
     async def test_dispatch_without_workflow_returns_none(self) -> None:

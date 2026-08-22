@@ -52,10 +52,7 @@ class GitHubClient:
         body: str,
     ) -> dict:
 
-        url = (
-            f"{self.BASE_URL}/repos/"
-            f"{owner}/{repository}/pulls"
-        )
+        url = f"{self.BASE_URL}/repos/{owner}/{repository}/pulls"
 
         response = httpx.post(
             url,
@@ -80,10 +77,7 @@ class GitHubClient:
         number: int,
     ) -> dict:
 
-        url = (
-            f"{self.BASE_URL}/repos/"
-            f"{owner}/{repository}/pulls/{number}"
-        )
+        url = f"{self.BASE_URL}/repos/{owner}/{repository}/pulls/{number}"
 
         response = httpx.get(
             url,
@@ -166,10 +160,13 @@ class GitHubClient:
         repository: str,
         pull_request_number: int,
     ) -> list[dict[str, Any]]:
-        return cast(list[dict[str, Any]], await self._request(
-            "GET",
-            f"/repos/{repository}/pulls/{pull_request_number}/files",
-        ))
+        return cast(
+            list[dict[str, Any]],
+            await self._request(
+                "GET",
+                f"/repos/{repository}/pulls/{pull_request_number}/files",
+            ),
+        )
 
     async def create_ref(
         self,
@@ -177,14 +174,17 @@ class GitHubClient:
         name: str,
         sha: str,
     ) -> dict[str, Any]:
-        return cast(dict[str, Any], await self._request(
-            "POST",
-            f"/repos/{repository}/git/refs",
-            json={
-                "ref": f"refs/heads/{name}",
-                "sha": sha,
-            },
-        ))
+        return cast(
+            dict[str, Any],
+            await self._request(
+                "POST",
+                f"/repos/{repository}/git/refs",
+                json={
+                    "ref": f"refs/heads/{name}",
+                    "sha": sha,
+                },
+            ),
+        )
 
     async def create_commit_and_tree(
         self,
@@ -193,39 +193,48 @@ class GitHubClient:
         message: str,
         files: list[dict[str, Any]],
     ) -> dict[str, Any]:
-        branch_ref = cast(dict[str, Any], await self._request(
-            "GET",
-            f"/repos/{repository}/git/ref/heads/{branch}",
-        ))
+        branch_ref = cast(
+            dict[str, Any],
+            await self._request(
+                "GET",
+                f"/repos/{repository}/git/ref/heads/{branch}",
+            ),
+        )
         branch_sha = cast(str, branch_ref["object"]["sha"])
 
-        tree = cast(dict[str, Any], await self._request(
-            "POST",
-            f"/repos/{repository}/git/trees",
-            json={
-                "base_tree": branch_sha,
-                "tree": [
-                    {
-                        "path": file["path"],
-                        "mode": file.get("mode", "100644"),
-                        "type": "blob",
-                        "content": file["content"],
-                    }
-                    for file in files
-                ],
-            },
-        ))
+        tree = cast(
+            dict[str, Any],
+            await self._request(
+                "POST",
+                f"/repos/{repository}/git/trees",
+                json={
+                    "base_tree": branch_sha,
+                    "tree": [
+                        {
+                            "path": file["path"],
+                            "mode": file.get("mode", "100644"),
+                            "type": "blob",
+                            "content": file["content"],
+                        }
+                        for file in files
+                    ],
+                },
+            ),
+        )
         tree_sha = cast(str, tree["sha"])
 
-        commit = cast(dict[str, Any], await self._request(
-            "POST",
-            f"/repos/{repository}/git/commits",
-            json={
-                "message": message,
-                "tree": tree_sha,
-                "parents": [branch_sha],
-            },
-        ))
+        commit = cast(
+            dict[str, Any],
+            await self._request(
+                "POST",
+                f"/repos/{repository}/git/commits",
+                json={
+                    "message": message,
+                    "tree": tree_sha,
+                    "parents": [branch_sha],
+                },
+            ),
+        )
 
         await self._request(
             "PATCH",
@@ -241,21 +250,27 @@ class GitHubClient:
         pull_request_number: int,
         body: str,
     ) -> dict[str, Any]:
-        return cast(dict[str, Any], await self._request(
-            "POST",
-            f"/repos/{repository}/issues/{pull_request_number}/comments",
-            json={"body": body},
-        ))
+        return cast(
+            dict[str, Any],
+            await self._request(
+                "POST",
+                f"/repos/{repository}/issues/{pull_request_number}/comments",
+                json={"body": body},
+            ),
+        )
 
     async def get_issue(
         self,
         repository: str,
         issue_number: int,
     ) -> dict[str, Any]:
-        return cast(dict[str, Any], await self._request(
-            "GET",
-            f"/repos/{repository}/issues/{issue_number}",
-        ))
+        return cast(
+            dict[str, Any],
+            await self._request(
+                "GET",
+                f"/repos/{repository}/issues/{issue_number}",
+            ),
+        )
 
     async def search_issues(
         self,
@@ -279,10 +294,13 @@ class GitHubClient:
         repository: str,
         pull_request_number: int,
     ) -> dict[str, Any]:
-        return cast(dict[str, Any], await self._request(
-            "GET",
-            f"/repos/{repository}/pulls/{pull_request_number}",
-        ))
+        return cast(
+            dict[str, Any],
+            await self._request(
+                "GET",
+                f"/repos/{repository}/pulls/{pull_request_number}",
+            ),
+        )
 
     async def search_pull_requests(
         self,
@@ -294,10 +312,7 @@ class GitHubClient:
             "GET",
             "/search/issues",
             params={
-                "q": (
-                    f"repo:{repository} "
-                    f"is:pr {query}"
-                ),
+                "q": (f"repo:{repository} is:pr {query}"),
                 "per_page": limit,
             },
         )
@@ -310,42 +325,45 @@ class GitHubClient:
         release_identifier: str,
     ) -> dict[str, Any]:
         if release_identifier.isdigit():
-            path = (
-                f"/repos/{repository}/releases/"
-                f"{release_identifier}"
-            )
+            path = f"/repos/{repository}/releases/{release_identifier}"
         else:
-            path = (
-                f"/repos/{repository}/releases/tags/"
-                f"{release_identifier}"
-            )
+            path = f"/repos/{repository}/releases/tags/{release_identifier}"
 
-        return cast(dict[str, Any], await self._request(
-            "GET",
-            path,
-        ))
+        return cast(
+            dict[str, Any],
+            await self._request(
+                "GET",
+                path,
+            ),
+        )
 
     async def list_releases(
         self,
         repository: str,
         limit: int = 20,
     ) -> list[dict[str, Any]]:
-        return cast(list[dict[str, Any]], await self._request(
-            "GET",
-            f"/repos/{repository}/releases",
-            params={
-                "per_page": limit,
-            },
-        ))
+        return cast(
+            list[dict[str, Any]],
+            await self._request(
+                "GET",
+                f"/repos/{repository}/releases",
+                params={
+                    "per_page": limit,
+                },
+            ),
+        )
 
     async def get_repository(
         self,
         repository: str,
     ) -> dict[str, Any]:
-        return cast(dict[str, Any], await self._request(
-            "GET",
-            f"/repos/{repository}",
-        ))
+        return cast(
+            dict[str, Any],
+            await self._request(
+                "GET",
+                f"/repos/{repository}",
+            ),
+        )
 
     async def search_code(
         self,

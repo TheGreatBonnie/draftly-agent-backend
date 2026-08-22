@@ -1,6 +1,10 @@
 ---
 name: github-issue-analysis
-description: Analyzes GitHub issues to determine whether they signal documentation gaps or require a support-style answer.
+description: Analyzes GitHub issues to determine whether they signal documentation gaps or require a support-style answer. Use when an issue webhook arrives and needs routing.
+allowed-tools: get_issue semantic_search keyword_search hybrid_search
+metadata:
+  references: 3
+  assets: 0
 ---
 
 # GitHub Issue Analysis
@@ -24,3 +28,21 @@ wrong) or a support question (user needs an answer).
 
 - Repeatedly reported issues usually signal a real gap — prioritize.
 - Quote the relevant parts of the issue in `rationale`.
+- A vague or label-only issue is weighted lower — do not let a single loud
+  issue outrank recurring multi-source signals.
+- Spam, duplicates, and non-product issues get action `none` with a one-line
+  rationale.
+
+## Output
+
+An `EventClassification` (`surface`, `change_type`, `urgency`, `reason`) plus
+an `ImpactAnalysis` (`action`, `affected_documents[]`, `rationale`,
+`evidence[]`).
+
+## References
+
+Read on demand with your file tools — load only when needed:
+
+- `references/issue-taxonomy.md` — issue categories and routing table; load when classifying the issue
+- `references/documentation-signal-rules.md` — signals that indicate a doc gap; load for the step 3 decision
+- `references/issue-history-analysis.md` — history query strategy and recurrence detection; load when the issue looks recurring

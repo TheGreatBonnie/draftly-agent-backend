@@ -1,4 +1,5 @@
 """Bolt InstallationStore backed by the slack_installations table."""
+
 from __future__ import annotations
 
 from datetime import datetime

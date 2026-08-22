@@ -17,9 +17,7 @@ class GitHubAuth:
         self.token = token or os.getenv("GITHUB_TOKEN")
 
         if not self.token:
-            raise RuntimeError(
-                "GITHUB_TOKEN is not configured."
-            )
+            raise RuntimeError("GITHUB_TOKEN is not configured.")
 
     def headers(self) -> dict[str, str]:
         return {

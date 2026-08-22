@@ -9,7 +9,6 @@ logger = logging.getLogger("draftly.api")
 
 
 class RequestLoggingMiddleware(BaseHTTPMiddleware):
-
     async def dispatch(
         self,
         request: Request,
@@ -26,9 +25,7 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
 
             duration = time.perf_counter() - started
 
-            response.headers[
-                "X-Request-ID"
-            ] = request_id
+            response.headers["X-Request-ID"] = request_id
 
             logger.info(
                 "request_completed",

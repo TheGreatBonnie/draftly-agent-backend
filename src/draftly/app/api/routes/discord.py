@@ -1,4 +1,5 @@
 """Discord interactions route with Ed25519 signature verification."""
+
 from __future__ import annotations
 
 import json
@@ -49,9 +50,9 @@ def _verify_signature(body: bytes, timestamp: str, signature: str) -> bool:
     )
 
     try:
-        return WebhookVerifier(
-            discord_public_key=settings.discord_public_key
-        ).verify_discord(body, timestamp, signature)
+        return WebhookVerifier(discord_public_key=settings.discord_public_key).verify_discord(
+            body, timestamp, signature
+        )
     except (WebhookVerificationError, ValueError):
         return False
 

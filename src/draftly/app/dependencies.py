@@ -97,10 +97,7 @@ def build_models(
     from draftly.models.factory import build_agent_policies
 
     policies = build_agent_policies()
-    max_output_tokens = {
-        role: policy.max_output_tokens
-        for role, policy in policies.items()
-    }
+    max_output_tokens = {role: policy.max_output_tokens for role, policy in policies.items()}
 
     logger.info(
         "resolved model handles fast=%s reasoning=%s research=%s review=%s rubric_grader=%s",
@@ -156,34 +153,24 @@ def build_integrations(
     )
 
     github = GitHubClient(
-        auth=(
-            GitHubAuth(token=settings.github_token)
-            if settings.github_token
-            else None
-        ),
+        auth=(GitHubAuth(token=settings.github_token) if settings.github_token else None),
         repository=settings.github_repository,
     )
 
     slack = SlackClient(
-        auth=(
-            SlackAuth(token=settings.slack_bot_token)
-            if settings.slack_bot_token
-            else None
-        ),
+        auth=(SlackAuth(token=settings.slack_bot_token) if settings.slack_bot_token else None),
     )
 
     discord = DiscordClient(
         auth=(
-            DiscordAuth(token=settings.discord_bot_token)
-            if settings.discord_bot_token
-            else None
+            DiscordAuth(token=settings.discord_bot_token) if settings.discord_bot_token else None
         ),
     )
 
     # Evaluation client (Strands Evals) is wired in Phase 7 (§8.2).
     evaluation_client = None
 
-# Build Slack Bolt app if tokens are present
+    # Build Slack Bolt app if tokens are present
     slack_app = None
     if settings.slack_bot_token and settings.slack_signing_secret:
         slack_app = build_slack_app(
@@ -307,36 +294,36 @@ def build_repositories(
 # ============================================================
 
 
-        # def build_memory(
-        #     *,
-        #     repository: MemoryRepository,
-        #     database: DatabaseClient | None = None,
-        # ) -> MemoryManager:
-        #     """
-        #     Construct Draftly's agentic memory subsystem.
+# def build_memory(
+#     *,
+#     repository: MemoryRepository,
+#     database: DatabaseClient | None = None,
+# ) -> MemoryManager:
+#     """
+#     Construct Draftly's agentic memory subsystem.
 
-        #     The memory manager sits above persistence and the
-        #     NeonDB integration layer.
+#     The memory manager sits above persistence and the
+#     NeonDB integration layer.
 
-        #     Dependency direction:
+#     Dependency direction:
 
-        #         tools/memory/
-        #              ↓
-        #         memory/manager.py
-        #              ↓
-        #         persistence/repositories/memory.py
-        #              ↓
-        #         integrations/database/
-        #     """
+#         tools/memory/
+#              ↓
+#         memory/manager.py
+#              ↓
+#         persistence/repositories/memory.py
+#              ↓
+#         integrations/database/
+#     """
 
-        #     del database  # noqa: ARG001 — injected for interface stability only
+#     del database  # noqa: ARG001 — injected for interface stability only
 
-        #     embedder = build_memory_embedder()
+#     embedder = build_memory_embedder()
 
-        #     return MemoryManager(
-        #         repository=repository,
-        #         embedder=embedder,
-        #     )
+#     return MemoryManager(
+#         repository=repository,
+#         embedder=embedder,
+#     )
 
 
 # ============================================================

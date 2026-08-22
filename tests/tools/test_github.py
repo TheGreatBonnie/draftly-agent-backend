@@ -15,9 +15,7 @@ from tests.fakes import FakeGitHubClient
 @pytest.fixture
 def fake_github(monkeypatch: pytest.MonkeyPatch) -> FakeGitHubClient:
     fake = FakeGitHubClient()
-    monkeypatch.setattr(
-        "draftly.integrations.github.client.GitHubClient", lambda: fake
-    )
+    monkeypatch.setattr("draftly.integrations.github.client.GitHubClient", lambda: fake)
     return fake
 
 

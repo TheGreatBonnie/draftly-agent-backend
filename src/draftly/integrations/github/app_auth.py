@@ -73,9 +73,7 @@ def verify_webhook_signature(payload: bytes, signature: str) -> bool:
     )
 
     try:
-        return WebhookVerifier(github_secret=secret).verify_github(
-            payload, signature
-        )
+        return WebhookVerifier(github_secret=secret).verify_github(payload, signature)
     except WebhookVerificationError:
         return False
 

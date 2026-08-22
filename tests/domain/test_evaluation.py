@@ -76,9 +76,7 @@ class TestStrandsEvalsRunner:
             name="quality",
             input="write docs",
             actual_output="See docs/transactions for retry details",
-            metadata={
-                "evidence": [{"id": "docs/transactions", "topic": "retry"}]
-            },
+            metadata={"evidence": [{"id": "docs/transactions", "topic": "retry"}]},
         )
         outputs = evaluator.evaluate(data)
         assert len(outputs) == 1

@@ -108,9 +108,7 @@ class FakeDiscordClient:
         self.sent.append({"channel_id": channel_id, "content": content})
         return {"id": "m1"}
 
-    async def create_thread(
-        self, channel_id: str, name: str, **kwargs: Any
-    ) -> dict:
+    async def create_thread(self, channel_id: str, name: str, **kwargs: Any) -> dict:
         self.calls.append(("create_thread", channel_id, name))
         return {"id": "thread-1", "name": name}
 
@@ -118,9 +116,7 @@ class FakeDiscordClient:
         self.calls.append(("get_thread", thread_id))
         return self.messages
 
-    async def send_thread_message(
-        self, thread_id: str, content: str, **kwargs: Any
-    ) -> dict:
+    async def send_thread_message(self, thread_id: str, content: str, **kwargs: Any) -> dict:
         self.calls.append(("send_thread_message", thread_id))
         self.sent.append({"thread_id": thread_id, "content": content})
         return {"id": "m2"}

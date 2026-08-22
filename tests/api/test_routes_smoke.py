@@ -196,9 +196,7 @@ class TestReviewResumeRoute:
         def _fail(*args: Any, **kwargs: Any) -> None:
             raise AssertionError("graph must not be built on rejection")
 
-        monkeypatch.setattr(
-            "draftly.integrations.strands.graph.build_graph_for_run", _fail
-        )
+        monkeypatch.setattr("draftly.integrations.strands.graph.build_graph_for_run", _fail)
         response = client.post(
             "/api/github/review/run-1",
             json={
@@ -211,9 +209,7 @@ class TestReviewResumeRoute:
         assert response.status_code == 200
         assert response.json()["status"] == "rejected"
         state = client.app.state.draftly  # type: ignore[attr-defined]
-        assert state.dependencies.repositories.reviews.decisions[0][
-            "decision"
-        ] == "rejected"
+        assert state.dependencies.repositories.reviews.decisions[0]["decision"] == "rejected"
 
     def test_approve_resumes_graph(
         self,

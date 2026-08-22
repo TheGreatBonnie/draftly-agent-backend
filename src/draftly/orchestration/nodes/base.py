@@ -107,10 +107,7 @@ def parse_node_input(task: Any) -> dict[str, dict]:
     """
     blocks = task if isinstance(task, list) else []
     text = "\n".join(
-        b.get("text", "")
-        if isinstance(b, dict)
-        else getattr(b, "text", "")
-        for b in blocks
+        b.get("text", "") if isinstance(b, dict) else getattr(b, "text", "") for b in blocks
     )
 
     result: dict[str, dict] = {}
@@ -118,11 +115,11 @@ def parse_node_input(task: Any) -> dict[str, dict]:
 
     for line in text.splitlines():
         if line.startswith("From "):
-            current_dep = line[len("From "):].strip().rstrip(":")
+            current_dep = line[len("From ") :].strip().rstrip(":")
             continue
 
         if current_dep and line.startswith("  - "):
-            payload = line[len("  - "):].strip()
+            payload = line[len("  - ") :].strip()
 
             # Format is "<agent_name>: <json>" — take the part after the
             # first ": " when it looks like a JSON object/array.

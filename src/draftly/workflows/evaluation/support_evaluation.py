@@ -37,12 +37,30 @@ def evaluate_support_answer(
 
 def _keywords_from_question(question: str) -> list[str]:
     stop = {
-        "how", "do", "i", "the", "a", "an", "is", "are", "what",
-        "why", "when", "to", "of", "in", "on", "for", "with", "my",
-        "can", "does", "did", "it", "this", "that",
+        "how",
+        "do",
+        "i",
+        "the",
+        "a",
+        "an",
+        "is",
+        "are",
+        "what",
+        "why",
+        "when",
+        "to",
+        "of",
+        "in",
+        "on",
+        "for",
+        "with",
+        "my",
+        "can",
+        "does",
+        "did",
+        "it",
+        "this",
+        "that",
     }
-    words = [
-        w.strip("?!.,;:'\"()")
-        for w in question.split()
-    ]
+    words = [w.strip("?!.,;:'\"()") for w in question.split()]
     return [w for w in words if w.lower() not in stop and len(w) > 2][:8]

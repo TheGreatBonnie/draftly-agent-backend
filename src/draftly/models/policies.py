@@ -8,9 +8,7 @@ __all__ = [
     "validate_fallback_chain",
 ]
 
-KNOWN_PROVIDERS = frozenset(
-    {"openrouter", "nvidia", "requesty", "orcarouter"}
-)
+KNOWN_PROVIDERS = frozenset({"openrouter", "nvidia", "requesty", "orcarouter"})
 
 FALLBACKS: dict[str, tuple[str, ...]] = {
     "reasoning": (
@@ -45,6 +43,7 @@ FALLBACKS: dict[str, tuple[str, ...]] = {
     ),
 }
 
+
 def validate_fallback_chain(
     chain: tuple[str, ...],
 ) -> None:
@@ -55,6 +54,7 @@ def validate_fallback_chain(
             f"Known providers: {sorted(KNOWN_PROVIDERS)}."
         )
 
+
 @dataclass(frozen=True)
 class RoutingPolicy:
     preferred_models: tuple[str, ...] = ()
@@ -62,6 +62,7 @@ class RoutingPolicy:
     allow_fallback: bool = True
     max_attempts: int = 3
     fallback_chain: tuple[str, ...] = ()
+
 
 @dataclass(frozen=True)
 class AgentModelPolicy:

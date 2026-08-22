@@ -36,9 +36,7 @@ async def run_documentation_audit(
             try:
                 cutoff = datetime.now(UTC) - timedelta(days=freshness_days)
                 for doc in await lister(limit=1000):
-                    updated = getattr(doc, "updated_at", None) or getattr(
-                        doc, "created_at", None
-                    )
+                    updated = getattr(doc, "updated_at", None) or getattr(doc, "created_at", None)
                     if updated is None or _as_aware(updated) < cutoff:
                         stale.append(str(getattr(doc, "id", "?")))
             except Exception:

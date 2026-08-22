@@ -24,9 +24,7 @@ def create_api_app() -> FastAPI:
 
     app = FastAPI(
         title="Draftly",
-        description=(
-            "Autonomous documentation engineering platform."
-        ),
+        description=("Autonomous documentation engineering platform."),
         lifespan=lifespan,
     )
 

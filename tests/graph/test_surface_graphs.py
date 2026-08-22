@@ -12,9 +12,7 @@ from draftly.orchestration.graphs.feedback_graph import build_feedback_graph
 from tests.graph.conftest import ISSUE_TASK, SUPPORT_TASK
 
 
-async def test_issue_graph_answers_and_delivers(
-    model, tools, tmp_sessions
-) -> None:
+async def test_issue_graph_answers_and_delivers(model, tools, tmp_sessions) -> None:
     graph = build_graph_for_run(
         "issue-1",
         surface="issue",
@@ -33,9 +31,7 @@ async def test_issue_graph_answers_and_delivers(
     assert order[-1] == "deliver"
 
 
-async def test_support_graph_runs_through_triage(
-    model, tools, tmp_sessions
-) -> None:
+async def test_support_graph_runs_through_triage(model, tools, tmp_sessions) -> None:
     graph = build_graph_for_run(
         "support-1",
         surface="support",

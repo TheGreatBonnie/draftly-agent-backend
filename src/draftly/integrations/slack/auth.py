@@ -8,14 +8,10 @@ class SlackAuth:
         self,
         token: str | None = None,
     ):
-        self.token = token or os.getenv(
-            "SLACK_BOT_TOKEN"
-        )
+        self.token = token or os.getenv("SLACK_BOT_TOKEN")
 
         if not self.token:
-            raise RuntimeError(
-                "SLACK_BOT_TOKEN is not configured."
-            )
+            raise RuntimeError("SLACK_BOT_TOKEN is not configured.")
 
     def headers(self) -> dict[str, str]:
         return {

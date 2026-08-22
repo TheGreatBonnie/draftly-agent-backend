@@ -80,8 +80,5 @@ and summarize. Respond with the curated memory payload."""
 def build_prompt(template: str, **policy_names: str) -> str:
     """Render a prompt template, injecting the requested policy files."""
 
-    kwargs = {
-        name: load_policy(policy)
-        for name, policy in policy_names.items()
-    }
+    kwargs = {name: load_policy(policy) for name, policy in policy_names.items()}
     return template.format(**kwargs)

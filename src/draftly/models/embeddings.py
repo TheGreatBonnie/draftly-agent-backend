@@ -150,9 +150,9 @@ class EmbeddingRouter:
 
             return vector
 
-        raise RuntimeError(
-            "No healthy embedding provider was available."
-        ) from (errors[-1] if errors else None)
+        raise RuntimeError("No healthy embedding provider was available.") from (
+            errors[-1] if errors else None
+        )
 
     def _ordered_candidates(
         self,
@@ -166,11 +166,7 @@ class EmbeddingRouter:
 
         primary_model_id = candidates[0].model_id
 
-        return [
-            config
-            for config in candidates
-            if config.model_id == primary_model_id
-        ]
+        return [config for config in candidates if config.model_id == primary_model_id]
 
     @staticmethod
     def _validate_dimensions(

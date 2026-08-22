@@ -39,9 +39,9 @@ class FakeReviewsRepository:
 
     async def list_reviews(self, *, status=None, org_id=None, limit=100):
         found = [
-            r for r in self.records.values()
-            if (status is None or r.status == status)
-            and (org_id is None or r.org_id == org_id)
+            r
+            for r in self.records.values()
+            if (status is None or r.status == status) and (org_id is None or r.org_id == org_id)
         ]
         return sorted(found, key=lambda r: r.created_at)[:limit]
 
@@ -120,7 +120,9 @@ class TestReviewQueueAndDecisions:
 
         result = await service.decide(
             ReviewDecision(
-                review_id="rev-1", reviewer_id="alice", approved=True,
+                review_id="rev-1",
+                reviewer_id="alice",
+                approved=True,
                 comment="lgtm",
             )
         )
@@ -137,7 +139,9 @@ class TestReviewQueueAndDecisions:
 
         result = await service.decide(
             ReviewDecision(
-                review_id="rev-1", reviewer_id="bob", approved=False,
+                review_id="rev-1",
+                reviewer_id="bob",
+                approved=False,
                 comment="wrong approach",
             )
         )

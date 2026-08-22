@@ -25,9 +25,7 @@ FAILURE_CONTEXT_LENGTH = "context_length"
 FAILURE_INVALID_REQUEST = "invalid_request"
 
 # Failure types that should trigger provider fallback (vs retry/fail-fast).
-FALLBACK_FAILURES = frozenset(
-    {FAILURE_RATE_LIMIT, FAILURE_UNAVAILABLE}
-)
+FALLBACK_FAILURES = frozenset({FAILURE_RATE_LIMIT, FAILURE_UNAVAILABLE})
 
 
 @dataclass
@@ -61,9 +59,7 @@ class ProviderHealth:
     ) -> None:
         self.healthy = False
         self.failures += 1
-        self.failure_counts[failure_type] = (
-            self.failure_counts.get(failure_type, 0) + 1
-        )
+        self.failure_counts[failure_type] = self.failure_counts.get(failure_type, 0) + 1
         self.last_failure = time.time()
 
         if self.failures >= self.failure_threshold:

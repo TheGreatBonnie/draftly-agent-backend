@@ -7,7 +7,6 @@ from draftly.support.models import SupportMessage
 
 
 class SlackEventHandler:
-
     def parse_message(
         self,
         payload: dict[str, Any],
@@ -21,16 +20,12 @@ class SlackEventHandler:
         if event.get("subtype"):
             return None
 
-        channel_id = event.get(
-            "channel"
-        )
+        channel_id = event.get("channel")
 
         if not channel_id:
             return None
 
-        timestamp = self._parse_timestamp(
-            event.get("ts")
-        )
+        timestamp = self._parse_timestamp(event.get("ts"))
 
         return SupportMessage(
             id=event.get(
@@ -39,16 +34,12 @@ class SlackEventHandler:
             ),
             platform="slack",
             channel_id=channel_id,
-            author_id=event.get(
-                "user"
-            ),
+            author_id=event.get("user"),
             content=event.get(
                 "text",
                 "",
             ),
-            thread_id=event.get(
-                "thread_ts"
-            ),
+            thread_id=event.get("thread_ts"),
             timestamp=timestamp,
             raw=payload,
         )
@@ -59,13 +50,9 @@ class SlackEventHandler:
     ) -> datetime:
 
         if not value:
-            return datetime.now(
-                UTC
-            )
+            return datetime.now(UTC)
 
-        seconds = float(
-            value.split(".")[0]
-        )
+        seconds = float(value.split(".")[0])
 
         return datetime.fromtimestamp(
             seconds,

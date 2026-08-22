@@ -42,7 +42,5 @@ async def validate_links(content: str, base_dir: str) -> list[dict]:
         if path.exists():
             results.append({**link, "status": "ok", "reason": None})
         else:
-            results.append(
-                {**link, "status": "missing", "reason": f"{path} does not exist"}
-            )
+            results.append({**link, "status": "missing", "reason": f"{path} does not exist"})
     return results

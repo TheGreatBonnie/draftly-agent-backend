@@ -44,6 +44,7 @@ class OrcaRouterProvider(ModelProvider):
         config: EmbeddingConfig,
     ) -> Any:
         from ..embeddings import OpenAICompatibleEmbedder
+
         if not self.config.api_key:
             raise ValueError("ORCAROUTER_API_KEY is not configured.")
 

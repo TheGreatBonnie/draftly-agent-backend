@@ -141,9 +141,7 @@ def build_support_graph(
     builder.add_edge("impact", "update", condition=route_to_update_of("triage"))
     builder.add_edge("impact", "create", condition=route_to_create_of("triage"))
 
-    evaluator = EvaluatorNode(
-        "evaluate", max_iterations=evaluator_max_iterations
-    )
+    evaluator = EvaluatorNode("evaluate", max_iterations=evaluator_max_iterations)
     builder.add_node(evaluator, "evaluate")
     builder.add_edge("answer", "evaluate", condition=generated)
     builder.add_edge("update", "evaluate", condition=generated)

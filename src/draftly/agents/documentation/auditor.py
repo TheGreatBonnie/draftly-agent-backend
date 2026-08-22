@@ -19,8 +19,7 @@ def build_auditor_agent(
         name="doc_auditor",
         system_prompt=(
             "You audit the documentation store for staleness, broken links, "
-            "and coverage gaps. "
-            + REVIEWER_PROMPT
+            "and coverage gaps. " + REVIEWER_PROMPT
         ),
         model=model,
         tools=tools,

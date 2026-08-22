@@ -105,20 +105,14 @@ async def test_find_section() -> None:
 @pytest.mark.asyncio
 async def test_extract_links() -> None:
     links = await extract_links(SAMPLE)
-    assert any(
-        link["target"] == "https://example.com" and not link["anchor"]
-        for link in links
-    )
+    assert any(link["target"] == "https://example.com" and not link["anchor"] for link in links)
 
 
 @pytest.mark.asyncio
 async def test_validate_links(tmp_path) -> None:
     (tmp_path / "guide.md").write_text("# Guide", encoding="utf-8")
     content = (
-        "[ok](./guide.md)\n"
-        "[missing](./nope.md)\n"
-        "[ext](https://example.com)\n"
-        "[anchor](#section)\n"
+        "[ok](./guide.md)\n[missing](./nope.md)\n[ext](https://example.com)\n[anchor](#section)\n"
     )
     results = await validate_links(content, str(tmp_path))
     statuses = {r["target"]: r["status"] for r in results}

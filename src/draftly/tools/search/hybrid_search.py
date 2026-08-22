@@ -38,9 +38,7 @@ async def hybrid_search(
         item = dict(item)
         key = str(item["id"])
         if key in merged:
-            merged[key]["score"] = merged[key].get("score", 0.0) + (
-                1.0 - _SEMANTIC_WEIGHT
-            )
+            merged[key]["score"] = merged[key].get("score", 0.0) + (1.0 - _SEMANTIC_WEIGHT)
         else:
             item["score"] = 1.0 - _SEMANTIC_WEIGHT
             merged[key] = item

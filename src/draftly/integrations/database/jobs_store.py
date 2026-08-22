@@ -5,7 +5,6 @@ from draftly.integrations.database.client import DatabaseClient
 
 
 class DatabaseJobsStore:
-
     def __init__(
         self,
         client: DatabaseClient | None = None,
@@ -121,9 +120,7 @@ class DatabaseJobsStore:
         )
 
         if not row:
-            raise ValueError(
-                f"Job '{job_id}' was not found."
-            )
+            raise ValueError(f"Job '{job_id}' was not found.")
 
         return self._to_dict(row)
 
@@ -146,10 +143,7 @@ class DatabaseJobsStore:
             """,
         )
 
-        return [
-            self._to_dict(row)
-            for row in rows
-        ]
+        return [self._to_dict(row) for row in rows]
 
     @staticmethod
     def _to_dict(row) -> dict[str, Any]:

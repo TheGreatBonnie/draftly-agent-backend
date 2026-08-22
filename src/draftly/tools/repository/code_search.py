@@ -32,17 +32,13 @@ async def code_search(
     matches = []
     root = Path(repo_dir)
     for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = sorted(
-            name for name in dirnames if name not in _SKIPPED_DIRS
-        )
+        dirnames[:] = sorted(name for name in dirnames if name not in _SKIPPED_DIRS)
         for name in sorted(filenames):
             path = Path(dirpath) / name
             if path.is_symlink():
                 continue
             try:
-                lines = path.read_text(
-                    encoding="utf-8", errors="replace"
-                ).splitlines()
+                lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
             except OSError:
                 continue
             for line_number, line in enumerate(lines, start=1):

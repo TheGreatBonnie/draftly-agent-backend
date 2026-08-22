@@ -140,9 +140,7 @@ class WorkflowRunner:
         raw = getattr(result, "failed_nodes", None)
         if isinstance(raw, int):
             return []
-        return sorted(
-            getattr(node, "node_id", "?") for node in (raw or ())
-        )
+        return sorted(getattr(node, "node_id", "?") for node in (raw or ()))
 
     # ========================================================
     # Persistence helpers (duck-typed repositories)

@@ -58,15 +58,29 @@ class ReviewsRepository:
         """
 
         await self.database.execute(
-            query, review_id, org_id, thread_id, workflow, tool_name,
-            json.dumps(tool_args), action_description, now, expires_at,
+            query,
+            review_id,
+            org_id,
+            thread_id,
+            workflow,
+            tool_name,
+            json.dumps(tool_args),
+            action_description,
+            now,
+            expires_at,
         )
 
         return ReviewRecord(
-            id=review_id, org_id=org_id, thread_id=thread_id,
-            workflow=workflow, tool_name=tool_name, tool_args=tool_args,
-            action_description=action_description, status="pending",
-            created_at=now, expires_at=expires_at,
+            id=review_id,
+            org_id=org_id,
+            thread_id=thread_id,
+            workflow=workflow,
+            tool_name=tool_name,
+            tool_args=tool_args,
+            action_description=action_description,
+            status="pending",
+            created_at=now,
+            expires_at=expires_at,
         )
 
     async def get_review(self, review_id: str) -> ReviewRecord | None:
@@ -107,7 +121,12 @@ class ReviewsRepository:
         RETURNING *
         """
         row = await self.database.fetch_one(
-            query, review_id, decision, reviewer_id, comment, now,
+            query,
+            review_id,
+            decision,
+            reviewer_id,
+            comment,
+            now,
         )
         if not row:
             existing = await self.get_review(review_id)
@@ -223,12 +242,17 @@ class ReviewsRepository:
         if isinstance(tool_args, str):
             tool_args = json.loads(tool_args)
         return ReviewRecord(
-            id=str(row["id"]), org_id=str(row["org_id"]),
-            thread_id=str(row["thread_id"]), workflow=str(row["workflow"]),
-            tool_name=str(row["tool_name"]), tool_args=tool_args,
+            id=str(row["id"]),
+            org_id=str(row["org_id"]),
+            thread_id=str(row["thread_id"]),
+            workflow=str(row["workflow"]),
+            tool_name=str(row["tool_name"]),
+            tool_args=tool_args,
             action_description=row.get("action_description"),
-            status=str(row["status"]), reviewer_id=row.get("reviewer_id"),
-            decision=row.get("decision"), decision_comment=row.get("decision_comment"),
+            status=str(row["status"]),
+            reviewer_id=row.get("reviewer_id"),
+            decision=row.get("decision"),
+            decision_comment=row.get("decision_comment"),
             decided_at=row.get("decided_at"),
             created_at=row.get("created_at", datetime.now(UTC)),
             expires_at=row.get("expires_at"),

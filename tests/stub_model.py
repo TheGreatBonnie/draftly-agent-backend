@@ -57,9 +57,7 @@ class StubModel(Model, Generic[T]):
             output = output_model(**output)
 
         if not isinstance(output, output_model):
-            raise AssertionError(
-                f"scripted output {type(output)} is not {output_model}"
-            )
+            raise AssertionError(f"scripted output {type(output)} is not {output_model}")
 
         yield {"output": output}
 
@@ -96,11 +94,7 @@ class StubModel(Model, Generic[T]):
                     }
                 }
             }
-            yield {
-                "contentBlockDelta": {
-                    "delta": {"toolUse": {"input": json.dumps(payload)}}
-                }
-            }
+            yield {"contentBlockDelta": {"delta": {"toolUse": {"input": json.dumps(payload)}}}}
             yield {"contentBlockStop": {}}
             yield {"messageStop": {"stopReason": "tool_use"}}
             return
@@ -120,10 +114,6 @@ class StubModel(Model, Generic[T]):
         for spec in tool_specs:
             for model_type, payload in self._structured_outputs.items():
                 if spec.get("name") == model_type.__name__:
-                    data = (
-                        payload
-                        if isinstance(payload, dict)
-                        else payload.model_dump()
-                    )
+                    data = payload if isinstance(payload, dict) else payload.model_dump()
                     return spec["name"], data
         return None, None

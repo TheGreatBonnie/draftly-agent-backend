@@ -54,9 +54,9 @@ class TestFeedbackPipeline:
         assert len(unique) < len(items)
         # The near-identical rotation questions collapse to one.
         rotation = [
-            i for i in unique
-            if "rotate api keys" in i.content.lower()
-            and "production" in i.content.lower()
+            i
+            for i in unique
+            if "rotate api keys" in i.content.lower() and "production" in i.content.lower()
         ]
         assert len(rotation) == 1
 
@@ -91,14 +91,10 @@ class TestFeedbackPipeline:
         detector = GapDetector(min_cluster_size=1)
         classifier = FeedbackClassifier()
         neutral = [
-            classifier.classify(
-                FeedbackItem(platform="slack", content="how do backups work")
-            )
+            classifier.classify(FeedbackItem(platform="slack", content="how do backups work"))
         ]
         angry = [
-            classifier.classify(
-                FeedbackItem(platform="slack", content="backups are broken again")
-            )
+            classifier.classify(FeedbackItem(platform="slack", content="backups are broken again"))
         ]
         gap_neutral = detector.detect_gaps(neutral, min_occurrences=1)[0]
         gap_angry = detector.detect_gaps(angry, min_occurrences=1)[0]

@@ -47,9 +47,7 @@ class MemoryGroundedNode(MultiAgentBase):
         if self.memory is None or not isinstance(task, str) or not task.strip():
             return task
         try:
-            items = await self.memory.recall_knowledge(
-                task, limit=MAX_GROUNDING_ITEMS
-            )
+            items = await self.memory.recall_knowledge(task, limit=MAX_GROUNDING_ITEMS)
         except Exception:
             logger.exception("memory_grounding_failed")
             return task

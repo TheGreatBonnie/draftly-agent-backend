@@ -38,9 +38,7 @@ class TestWebhookVerification:
 
     def test_github_tampered_signature_rejected(self) -> None:
         verifier = WebhookVerifier(github_secret=self.SECRET)
-        assert (
-            verifier.verify_github(b"{}", "sha256=" + "0" * 64) is False
-        )
+        assert verifier.verify_github(b"{}", "sha256=" + "0" * 64) is False
 
     def test_github_missing_secret_raises(self) -> None:
         with pytest.raises(Exception, match="not configured"):
@@ -51,12 +49,8 @@ class TestWebhookVerification:
         body = b"payload=1"
         timestamp = str(int(time.time()))
         basestring = f"v0:{timestamp}:".encode() + body
-        digest = hmac.new(
-            self.SECRET.encode(), basestring, hashlib.sha256
-        ).hexdigest()
-        assert (
-            verifier.verify_slack(body, timestamp, f"v0={digest}") is True
-        )
+        digest = hmac.new(self.SECRET.encode(), basestring, hashlib.sha256).hexdigest()
+        assert verifier.verify_slack(body, timestamp, f"v0={digest}") is True
 
     def test_slack_replayed_timestamp_rejected(self) -> None:
         verifier = WebhookVerifier(slack_signing_secret=self.SECRET)
@@ -76,10 +70,7 @@ class TestWebhookVerification:
 class TestRedaction:
     def test_redacts_common_secret_shapes(self) -> None:
         redactor = RedactionService()
-        text = (
-            "email me at dev@example.com, key=AKIAIOSFODNN7EXAMPLE, "
-            "Authorization: Bearer abc123"
-        )
+        text = "email me at dev@example.com, key=AKIAIOSFODNN7EXAMPLE, Authorization: Bearer abc123"
         cleaned = redactor.redact(text)
         assert "dev@example.com" not in cleaned
         assert "AKIAIOSFODNN7EXAMPLE" not in cleaned
@@ -88,9 +79,7 @@ class TestRedaction:
         redactor = RedactionService()
         text = "-----BEGIN RSA PRIVATE KEY-----\nabc\n-----END RSA PRIVATE KEY-----"
         assert redactor.contains_secret(text) is True
-        assert "PRIVATE KEY" not in redactor.redact(text).replace(
-            "[REDACTED_PRIVATE_KEY]", ""
-        )
+        assert "PRIVATE KEY" not in redactor.redact(text).replace("[REDACTED_PRIVATE_KEY]", "")
 
 
 class TestPermissions:
@@ -128,8 +117,11 @@ class TestDocumentationDomain:
     def test_gap_detection_flags_uncovered_questions(self) -> None:
         questions = ["How do I rotate API keys?", "rotate api keys please"]
         documents = [
-            {"title": "Backups", "path": "docs/backups.md",
-             "content": "# Backups\nAutomated backups run daily."}
+            {
+                "title": "Backups",
+                "path": "docs/backups.md",
+                "content": "# Backups\nAutomated backups run daily.",
+            }
         ]
         gaps = self.analyzer.detect_gaps(questions, documents)
         assert len(gaps) == 1

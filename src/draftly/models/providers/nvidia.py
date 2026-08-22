@@ -46,6 +46,7 @@ class NvidiaProvider(ModelProvider):
         config: EmbeddingConfig,
     ) -> Any:
         from ..embeddings import OpenAICompatibleEmbedder
+
         if not self.config.api_key:
             raise ValueError("NVIDIA_API_KEY is not configured.")
 

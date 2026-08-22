@@ -46,6 +46,4 @@ class WorkflowRegistry:
         try:
             return self.__dict__["_workflows"][name]
         except KeyError:
-            raise AttributeError(
-                f"WorkflowRegistry has no workflow named {name!r}"
-            ) from None
+            raise AttributeError(f"WorkflowRegistry has no workflow named {name!r}") from None

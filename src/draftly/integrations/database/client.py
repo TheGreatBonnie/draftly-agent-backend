@@ -27,9 +27,7 @@ class DatabaseClient:
         command_timeout: int = 30,
     ) -> None:
         self.database_url = (
-            database_url
-            or os.environ.get("NEON_DATABASE_URL")
-            or os.environ["DATABASE_URL"]
+            database_url or os.environ.get("NEON_DATABASE_URL") or os.environ["DATABASE_URL"]
         )
         self.pool_min_size = pool_min_size
         self.pool_max_size = pool_max_size

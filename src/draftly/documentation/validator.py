@@ -43,9 +43,7 @@ class DocumentationValidator:
             return None
         if isinstance(updated_at, str):
             try:
-                updated_at = datetime.fromisoformat(
-                    updated_at.replace("Z", "+00:00")
-                )
+                updated_at = datetime.fromisoformat(updated_at.replace("Z", "+00:00"))
             except ValueError:
                 return None
         return (datetime.now(UTC) - updated_at).days

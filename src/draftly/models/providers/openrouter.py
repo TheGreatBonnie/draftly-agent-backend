@@ -46,6 +46,7 @@ class OpenRouterProvider(ModelProvider):
         config: EmbeddingConfig,
     ) -> Any:
         from ..embeddings import OpenAICompatibleEmbedder
+
         if not self.config.api_key:
             raise ValueError("OPENROUTER_API_KEY is not configured.")
 

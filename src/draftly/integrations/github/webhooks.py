@@ -24,9 +24,7 @@ class GitHubWebhookHandler:
         self,
         secret: str | None = None,
     ):
-        self.secret = secret or os.getenv(
-            "GITHUB_WEBHOOK_SECRET"
-        )
+        self.secret = secret or os.getenv("GITHUB_WEBHOOK_SECRET")
 
     def verify_signature(
         self,
@@ -34,9 +32,7 @@ class GitHubWebhookHandler:
         signature: str,
     ) -> bool:
         if not self.secret:
-            raise RuntimeError(
-                "GITHUB_WEBHOOK_SECRET is not configured."
-            )
+            raise RuntimeError("GITHUB_WEBHOOK_SECRET is not configured.")
 
         expected = hmac.new(
             self.secret.encode(),
@@ -59,21 +55,14 @@ class GitHubWebhookHandler:
         repository = payload.get(
             "repository",
             {},
-        ).get(
-            "full_name"
-        )
+        ).get("full_name")
 
         if not repository:
             return None
 
-        actor = (
-            payload.get("sender", {})
-            .get("login")
-        )
+        actor = payload.get("sender", {}).get("login")
 
-        occurred_at = datetime.now(
-            UTC
-        )
+        occurred_at = datetime.now(UTC)
 
         event_id = str(uuid.uuid4())
 
@@ -111,20 +100,13 @@ class GitHubWebhookHandler:
             if action not in supported:
                 return None
 
-            if (
-                action == "closed"
-                and payload.get(
-                    "pull_request",
-                    {},
-                ).get("merged")
-            ):
-                event_type = (
-                    "pull_request.merged"
-                )
+            if action == "closed" and payload.get(
+                "pull_request",
+                {},
+            ).get("merged"):
+                event_type = "pull_request.merged"
             else:
-                event_type = (
-                    f"pull_request.{action}"
-                )
+                event_type = f"pull_request.{action}"
 
             return GitHubPullRequestEvent(
                 event_id=event_id,

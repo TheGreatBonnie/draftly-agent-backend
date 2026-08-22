@@ -1,4 +1,5 @@
 """Discord Gateway WebSocket client — connects to the Discord Gateway for real-time events."""
+
 from __future__ import annotations
 
 import asyncio
@@ -62,9 +63,7 @@ class DiscordGateway:
             if self._running:
                 logger.info("discord_gateway_reconnecting delay=%s", self._reconnect_delay)
                 await asyncio.sleep(self._reconnect_delay)
-                self._reconnect_delay = min(
-                    self._reconnect_delay * 2, MAX_RECONNECT_DELAY
-                )
+                self._reconnect_delay = min(self._reconnect_delay * 2, MAX_RECONNECT_DELAY)
 
     async def _handle_connection(self, ws: ClientConnection) -> None:
         """Handle a single Gateway connection lifecycle."""

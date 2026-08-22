@@ -1,4 +1,3 @@
-
 import httpx
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -41,6 +40,7 @@ def _get_handler() -> AsyncSlackRequestHandler:
 
 class LinkSlackRequest(BaseModel):
     team_id: str
+
 
 settings = get_settings()
 

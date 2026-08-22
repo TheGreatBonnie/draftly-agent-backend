@@ -16,9 +16,7 @@ def _run_git(repo_dir: str, *args: str) -> str:
         check=False,
     )
     if result.returncode != 0:
-        raise RuntimeError(
-            f"git {' '.join(args)} failed: {result.stderr.strip()}"
-        )
+        raise RuntimeError(f"git {' '.join(args)} failed: {result.stderr.strip()}")
     return result.stdout
 
 
@@ -56,7 +54,5 @@ async def git_log(repo_dir: str, limit: int = 20) -> list[dict]:
         if not line:
             continue
         sha, author, date, subject = line.split("|", 3)
-        commits.append(
-            {"sha": sha, "author": author, "date": date, "subject": subject}
-        )
+        commits.append({"sha": sha, "author": author, "date": date, "subject": subject})
     return commits

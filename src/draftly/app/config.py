@@ -1,4 +1,3 @@
-
 from pydantic import AliasChoices, BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -97,7 +96,7 @@ class Settings(BaseSettings):
     discord_app_id: str | None = None
     discord_guild_id: str | None = None
 
-# ------------------------------------------------------------------
+    # ------------------------------------------------------------------
     # Database (NeonDB / Postgres)
     # ------------------------------------------------------------------
 

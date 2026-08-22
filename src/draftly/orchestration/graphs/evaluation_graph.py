@@ -121,8 +121,7 @@ class RunExperimentsNode(MultiAgentBase):
                         {
                             "results": results,
                             "errors": errors,
-                            "passed_all": not errors
-                            and all(r["test_pass"] for r in results),
+                            "passed_all": not errors and all(r["test_pass"] for r in results),
                         }
                     )
                 )

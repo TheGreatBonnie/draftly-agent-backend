@@ -18,8 +18,7 @@ def create_draftly_agent(
     return Agent(
         name="draftly",
         system_prompt=(
-            "You are Draftly, an autonomous documentation-engineering agent. "
-            + CLASSIFIER_PROMPT
+            "You are Draftly, an autonomous documentation-engineering agent. " + CLASSIFIER_PROMPT
         ),
         model=model,
         tools=tools or [],

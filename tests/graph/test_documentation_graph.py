@@ -8,9 +8,7 @@ from draftly.integrations.strands.graph import build_graph_for_run
 from tests.graph.conftest import PR_TASK
 
 
-async def test_full_pipeline_with_revise_loop(
-    model, tools, tmp_sessions
-) -> None:
+async def test_full_pipeline_with_revise_loop(model, tools, tmp_sessions) -> None:
     """update → evaluate(FAIL) → update → evaluate(PASS) → deliver."""
     graph = build_graph_for_run(
         "e2e-1",
@@ -44,9 +42,7 @@ async def test_full_pipeline_with_revise_loop(
     assert "create" not in order
 
 
-async def test_invalid_surface_stops_after_classify(
-    model, tools, tmp_sessions
-) -> None:
+async def test_invalid_surface_stops_after_classify(model, tools, tmp_sessions) -> None:
     """The is_valid_surface guard blocks unknown event types."""
     graph = build_graph_for_run(
         "e2e-2",
@@ -67,9 +63,7 @@ async def test_invalid_surface_stops_after_classify(
     assert order == ["classify"]
 
 
-async def test_impact_none_skips_generation_and_delivery(
-    model, tools, tmp_sessions
-) -> None:
+async def test_impact_none_skips_generation_and_delivery(model, tools, tmp_sessions) -> None:
     """action='none' fans out to no generation node; graph completes."""
     from draftly.agents.schemas import ImpactAnalysis
 
@@ -99,9 +93,7 @@ async def test_impact_none_skips_generation_and_delivery(
         assert node not in order
 
 
-async def test_graph_builds_with_distinct_writer_instances(
-    model, tools, tmp_sessions
-) -> None:
+async def test_graph_builds_with_distinct_writer_instances(model, tools, tmp_sessions) -> None:
     """Duplicate executors are rejected by the SDK — writers must differ."""
     graph = build_graph_for_run(
         "e2e-4",

@@ -10,9 +10,7 @@ from pydantic import BaseModel, Field
 class EventClassification(BaseModel):
     """Structured classifier output for an incoming surface event."""
 
-    surface: str = Field(
-        description='"pull_request" | "issue" | "support_question"'
-    )
+    surface: str = Field(description='"pull_request" | "issue" | "support_question"')
     change_type: str = Field(
         description=(
             '"documentation_only" | "bug_fix" | "new_feature" | "api_change" '
@@ -33,9 +31,7 @@ class EvidenceBundle(BaseModel):
 class ImpactAnalysis(BaseModel):
     """Documentation impact analysis for a surface event."""
 
-    action: str = Field(
-        description='"answer" | "update" | "create" | "none"'
-    )
+    action: str = Field(description='"answer" | "update" | "create" | "none"')
     affected_documents: list[str] = Field(default_factory=list)
     rationale: str = ""
     evidence: list[str] = Field(default_factory=list)

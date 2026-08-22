@@ -43,7 +43,5 @@ class DeliveryService:
             return await self.documentation.deliver_plan(**kwargs)
         raise ValueError(f"Unknown delivery surface: {surface}")
 
-    async def deliver_documentation(
-        self, **kwargs: Any
-    ) -> PullRequestResult:
+    async def deliver_documentation(self, **kwargs: Any) -> PullRequestResult:
         return await self.documentation.deliver_plan(**kwargs)
