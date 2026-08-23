@@ -75,6 +75,32 @@ class DomainMemoryRepository:
     async def delete(self, memory_id: str) -> bool:
         return await self.repository.delete(memory_id=memory_id)
 
+    async def set_status(self, *, memory_id: str, status: str) -> bool:
+        """Transition a memory record's lifecycle status (active/superseded/archived)."""
+        return bool(
+            await self.repository.set_status(memory_id=memory_id, status=status)
+        )
+
+    async def record_provenance(
+        self,
+        *,
+        memory_id: str,
+        source_type: str,
+        source_id: str | None = None,
+        source_url: str | None = None,
+        evidence: list | None = None,
+        org_id: str | None = None,
+    ) -> None:
+        """Record an evidence/provenance row for a memory item."""
+        await self.repository.record_provenance(
+            memory_id=memory_id,
+            source_type=source_type,
+            source_id=source_id,
+            source_url=source_url,
+            evidence=evidence or [],
+            org_id=org_id,
+        )
+
     async def delete_by_metadata(
         self,
         *,

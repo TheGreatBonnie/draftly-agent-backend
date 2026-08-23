@@ -43,6 +43,10 @@ def build_workflows(
     """Compose the workflow registry, context, and runner."""
     del agents  # graphs build agents per-run via build_graph_for_run
 
+    from draftly.memory.candidates.service import CandidateService
+    from draftly.memory.docgraph.service import DocGraphService
+    from draftly.memory.episodic.service import EpisodicService
+    from draftly.memory.procedural.service import ProceduralService
     from draftly.workflows.context import WorkflowContext
     from draftly.workflows.documentation.documentation_audit import (
         run_documentation_audit,
@@ -64,6 +68,12 @@ def build_workflows(
     )
     from draftly.workflows.github.issue_resolution import (
         run_github_issue_workflow,
+    )
+    from draftly.workflows.maintenance.run_memory_maintenance import (
+        run_memory_maintenance,
+    )
+    from draftly.workflows.memory.curation_workflow import (
+        run_memory_curation,
     )
     from draftly.workflows.onboarding.initialize import (
         run_onboarding_initialize,
@@ -90,6 +100,10 @@ def build_workflows(
             "session_storage_dir",
             ".draftly/sessions",
         ),
+        episodic=EpisodicService(),
+        procedural=ProceduralService(),
+        docgraph=DocGraphService(),
+        candidates=CandidateService(),
     )
 
     registry = WorkflowRegistry()
@@ -103,6 +117,8 @@ def build_workflows(
     registry.register("feedback_loop", run_feedback_loop)
     registry.register("evaluation_loop", run_evaluation_loop)
     registry.register("onboarding_initialize", run_onboarding_initialize)
+    registry.register("memory_curation", run_memory_curation)
+    registry.register("memory_maintenance", run_memory_maintenance)
 
     runner = WorkflowRunner(context)
 

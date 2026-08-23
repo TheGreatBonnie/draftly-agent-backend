@@ -34,6 +34,14 @@ from draftly.tools.github.get_diff import get_diff
 from draftly.tools.github.get_files import get_files
 from draftly.tools.github.get_issue import get_issue
 from draftly.tools.github.get_pull_request import get_pull_request
+from draftly.tools.memory.affected_docs import affected_docs
+from draftly.tools.memory.curation import (
+    archive_memory,
+    reinforce_memory,
+    supersede_memory,
+)
+from draftly.tools.memory.knowledge import record_doc_relation, record_procedure
+from draftly.tools.memory.search import get_memory, memory_search
 from draftly.tools.repository.code_search import code_search
 from draftly.tools.repository.filesystem import (
     file_exists,
@@ -67,6 +75,7 @@ _DOCUMENTATION_TOOLS = [
     code_search,
     get_diff,
     get_files,
+    affected_docs,
 ]
 
 _DOCUMENTATION_ENGINEER_TOOLS = [
@@ -148,6 +157,16 @@ _GITHUB_DELIVERY_TOOLS = [
     create_commit,
     create_pull_request,
     create_comment,
+]
+
+_MEMORY_CURATOR_TOOLS = [
+    memory_search,
+    get_memory,
+    supersede_memory,
+    reinforce_memory,
+    archive_memory,
+    record_doc_relation,
+    record_procedure,
 ]
 
 
@@ -238,7 +257,7 @@ def build_tools() -> ToolRegistry:
         research=_RESEARCH_TOOLS,
         evaluation=[],
         github_delivery=_GITHUB_DELIVERY_TOOLS,
-        memory_curator=[],
+        memory_curator=_MEMORY_CURATOR_TOOLS,
         all_tools=_unique_tools(
             _DOCUMENTATION_TOOLS,
             _DOCUMENTATION_ENGINEER_TOOLS,

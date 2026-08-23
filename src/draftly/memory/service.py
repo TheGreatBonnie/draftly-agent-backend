@@ -43,6 +43,68 @@ class MemoryService:
     async def forget(self, memory_id: str) -> bool:
         return await self.repository.delete(memory_id)
 
+    async def supersede(
+        self,
+        old_id: str,
+        new_content: str,
+        *,
+        namespace: str,
+        memory_type: str = "fact",
+        importance: float = 0.6,
+        confidence: float = 0.8,
+        org_id: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        source_type: str | None = None,
+        source_id: str | None = None,
+        evidence: list[str] | None = None,
+    ) -> dict[str, Any] | None:
+        """Replace an outdated active fact with corrected content.
+
+        Marks the old record ``superseded`` (kept for history, excluded from
+        retrieval), stores the replacement, and records provenance linking
+        the new record back to the old one plus any evidence paths.
+        """
+        from draftly.memory.models.base import MemoryItem
+
+        old = await self.repository.get(old_id)
+        if old is None:
+            return None
+
+        set_status = getattr(self.repository, "set_status", None)
+        if set_status is not None:
+            await set_status(memory_id=old_id, status="superseded")
+
+        item = MemoryItem(
+            namespace=namespace,
+            content=new_content,
+            memory_type=memory_type,
+            importance=importance,
+            confidence=confidence,
+            metadata={**(metadata or {}), "supersedes": old_id},
+            org_id=org_id or old.get("org_id"),
+        )
+        record = await self.repository.store(item)
+
+        record_provenance = getattr(self.repository, "record_provenance", None)
+        if record_provenance is not None:
+            await record_provenance(
+                memory_id=str(record["id"]),
+                source_type="supersedes",
+                source_id=old_id,
+                evidence=evidence or [],
+                org_id=org_id,
+            )
+            if source_type:
+                await record_provenance(
+                    memory_id=str(record["id"]),
+                    source_type=source_type,
+                    source_id=source_id,
+                    evidence=evidence or [],
+                    org_id=org_id,
+                )
+        logger.info("memory_superseded old=%s new=%s", old_id, record["id"])
+        return record
+
     # --------------------------------------------------------------
     # Retrieval
     # --------------------------------------------------------------

@@ -51,6 +51,7 @@ class VectorSearch:
             FROM memory_embeddings me
             JOIN memory_items mi ON mi.id = me.memory_item_id
             WHERE mi.namespace = $2
+              AND mi.status = 'active'
             ORDER BY me.embedding <=> $1::VECTOR
             LIMIT $3
             """,
@@ -62,7 +63,7 @@ class VectorSearch:
         return [self._row_to_memory(row) for row in rows]
 
     @staticmethod
-    def _row_to_memory(row) -> dict[str, Any]:
+    def _row_to_memory(row: Any) -> dict[str, Any]:
         return {
             "id": str(row["id"]),
             "org_id": (str(row["org_id"]) if row["org_id"] else None),

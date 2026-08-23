@@ -1,4 +1,4 @@
-"""Memory curator agent: consolidates and ranks memory items."""
+"""Memory curator agent: curates candidates into durable long-term knowledge."""
 
 from __future__ import annotations
 
@@ -13,12 +13,12 @@ def build_memory_curator(
     model: Any,
     tools: list[Any] | None = None,
 ) -> Agent:
-    """Build the memory curation agent."""
+    """Build the memory curation agent with its read/write toolset."""
 
     return Agent(
         name="memory_curator",
         system_prompt=MEMORY_CURATOR_PROMPT,
         model=model,
-        tools=tools or [],
-        description="Consolidates and ranks memory items.",
+        tools=list(tools or []),
+        description="Curates long-term memory candidates into durable knowledge.",
     )

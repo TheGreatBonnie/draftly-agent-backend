@@ -29,6 +29,21 @@ logger = structlog.get_logger(__name__)
 GraphFactory = Callable[[str, str], Any]
 
 
+async def _post_run_memory(context: Any, state: Any, surface: str, *, hook: Any = None) -> None:
+    """Record episode + enqueue memory candidates. Never raises."""
+    try:
+        if hook is not None:
+            await hook(context, state, surface)
+            return
+        from draftly.workflows.post_run.candidate_extractor import (
+            record_post_run_memory,
+        )
+
+        await record_post_run_memory(context, state, surface)
+    except Exception:
+        logger.warning("post_run_memory_failed", exc_info=True)
+
+
 def _default_graph_factory(context: WorkflowContext) -> GraphFactory:
     """Build the real per-run graph via the Phase 4 integration layer."""
 
@@ -120,6 +135,7 @@ class WorkflowRunner:
 
         if result.status == Status.COMPLETED:
             await self._mark(event, "completed")
+            await _post_run_memory(self.context, state, surface)
             return state.finish(WorkflowStatus.DELIVERED)
 
         failed = self._failed_node_ids(result)

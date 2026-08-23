@@ -30,6 +30,11 @@ class WorkflowContext:
     audit_repo: Any = None
     #: RoutingDecision from the adaptive router when per-task routing ran.
     routing_decision: Any | None = None
+    #: Agentic-memory subsystems (spec 2026-08-23); None disables them.
+    episodic: Any = None
+    procedural: Any = None
+    docgraph: Any = None
+    candidates: Any = None
 
     @property
     def events(self) -> Any:

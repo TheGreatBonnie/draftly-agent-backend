@@ -24,6 +24,8 @@ TASK_REGISTRY: dict[str, str] = {
     "support.gap_scan": "feedback_loop",
     "evaluation.loop": "evaluation_loop",
     "onboarding.initialize": "onboarding_initialize",
+    "memory.curation": "memory_curation",
+    "memory.maintenance": "memory_maintenance",
 }
 
 
@@ -93,6 +95,18 @@ SCHEDULED_JOBS: list[dict[str, Any]] = [
         "id": "evaluation-loop",
         "name": "evaluation.loop",
         "schedule": "0 5 * * *",
+        "arguments": {},
+    },
+    {
+        "id": "memory-curation",
+        "name": "memory.curation",
+        "schedule": "*/30 * * * *",
+        "arguments": {},
+    },
+    {
+        "id": "memory-maintenance",
+        "name": "memory.maintenance",
+        "schedule": "0 6 * * 0",
         "arguments": {},
     },
 ]

@@ -259,3 +259,18 @@ class DatabaseMemoryStore:
     @staticmethod
     def _format_vector(embedding: Sequence[float]) -> str:
         return "[" + ",".join(str(float(value)) for value in embedding) + "]"
+
+    async def set_status(self, *, memory_id: str, status: str) -> bool:
+        row = await self.client.fetch_one(
+            """
+            UPDATE memory_items SET status = $2, updated_at = now()
+            WHERE id = $1::UUID
+            RETURNING id
+            """,
+            memory_id,
+            status,
+        )
+        return row is not None
+
+    async def get_with_org(self, *, memory_id: str) -> dict | None:
+        return await self.get(memory_id=memory_id)
