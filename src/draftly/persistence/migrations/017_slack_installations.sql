@@ -18,7 +18,7 @@ CREATE TABLE IF NOT EXISTS slack_installations (
     token_type TEXT,
 
     installed_at TIMESTAMPTZ DEFAULT now(),
-    updated_at TIMESTAMPTZ DEFAULT now() ON UPDATE now(),
+    updated_at TIMESTAMPTZ DEFAULT now(),
 
     UNIQUE (team_id)
 );

@@ -8,7 +8,7 @@ CREATE TABLE IF NOT EXISTS embeddings (
 
     workflow_id TEXT,
 
-    embedding vector(3072) NOT NULL,
+    embedding vector(1536) NOT NULL,
 
     metadata JSONB NOT NULL DEFAULT '{}'::JSONB,
 

@@ -17,7 +17,7 @@ CREATE TABLE IF NOT EXISTS reviewers (
     is_active BOOLEAN DEFAULT true,
 
     created_at TIMESTAMPTZ DEFAULT now(),
-    updated_at TIMESTAMPTZ DEFAULT now() ON UPDATE now()
+    updated_at TIMESTAMPTZ DEFAULT now()
 );
 
 CREATE INDEX IF NOT EXISTS idx_reviewers_org

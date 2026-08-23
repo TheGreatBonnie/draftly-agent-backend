@@ -10,7 +10,7 @@ CREATE TABLE IF NOT EXISTS github_installations (
     repositories JSONB DEFAULT '[]'::JSONB,
 
     created_at TIMESTAMPTZ DEFAULT now(),
-    updated_at TIMESTAMPTZ DEFAULT now() ON UPDATE now()
+    updated_at TIMESTAMPTZ DEFAULT now()
 );
 
 CREATE INDEX IF NOT EXISTS idx_installations_org
