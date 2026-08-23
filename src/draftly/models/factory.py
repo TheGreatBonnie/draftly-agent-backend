@@ -1,10 +1,12 @@
-import logging
 import os
+
+import structlog
 
 from .capabilities import CapabilityMatcher
 from .config import EmbeddingConfig, ModelConfig, ProviderConfig
 from .embeddings import EmbeddingRouter
 from .health import ProviderHealthRegistry
+from .performance import EMAStatsStore, ModelHealthRegistry
 from .policies import (
     FALLBACKS,
     AgentModelPolicy,
@@ -21,7 +23,7 @@ from .providers import (
 from .registry import ModelRegistry
 from .router import ModelRouter
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 
 def _resolve_model_id(
@@ -52,7 +54,11 @@ def _resolve_model_id(
     return default
 
 
-def build_model_router() -> ModelRouter:
+def build_model_router(
+    *,
+    stats_store: EMAStatsStore | None = None,
+    model_health: ModelHealthRegistry | None = None,
+) -> ModelRouter:
 
     registry = ModelRegistry()
 
@@ -131,43 +137,6 @@ def build_model_router() -> ModelRouter:
     # ---------------------------------------------------------
     # Models
     # ---------------------------------------------------------
-
-    registry.register_model(
-        ModelConfig(
-            name="reasoning-nvidia",
-            provider="nvidia",
-            model_id=_resolve_model_id(
-                "NVIDIA_REASONING_MODEL",
-                "GLM_5.2_MODEL",
-                default="moonshotai/kimi-k2.5",
-            ),
-            capabilities=(
-                "reasoning",
-                "tool_calling",
-                "structured_output",
-            ),
-            priority=10,
-            max_tokens=4096,
-        )
-    )
-
-    registry.register_model(
-        ModelConfig(
-            name="fast-nvidia",
-            provider="nvidia",
-            model_id=_resolve_model_id(
-                "NVIDIA_FAST_MODEL",
-                "NVIDIA_DEEPSEEK_V4_FLASH_MODEL",
-                default="deepseek-ai/deepseek-v4-flash",
-            ),
-            capabilities=(
-                "tool_calling",
-                "structured_output",
-            ),
-            priority=10,
-            max_tokens=2048,
-        )
-    )
 
     registry.register_model(
         ModelConfig(
@@ -332,155 +301,185 @@ def build_model_router() -> ModelRouter:
         )
     )
 
+    # fast-openrouter pruned: probe showed it ignores tools and cannot
+    # produce schema-constrained JSON (only basic chat passed).
+
+    # Ox Alpha (stealth/ox-alpha): free reasoning model with a 1M context
+    # window; preferred over nvidia/requesty/orca, below mantle/bedrock.
+    # structured_output stripped: probe returned prose instead of schema JSON.
     registry.register_model(
         ModelConfig(
-            name="fast-openrouter",
+            name="reasoning-openrouter-ox-alpha",
             provider="openrouter",
             model_id=_resolve_model_id(
-                "OPENROUTER_FAST_MODEL",
-                "LAGUNA_MODEL",
-                default="google/gemini-2.5-flash",
+                "OPENROUTER_OX_ALPHA_MODEL",
+                default="stealth/ox-alpha",
+            ),
+            capabilities=(
+                "reasoning",
+                "tool_calling",
+            ),
+            priority=6,
+            max_tokens=4096,
+            context_window=1_048_576,
+            input_cost_per_1m_tokens=0.0,
+            output_cost_per_1m_tokens=0.0,
+        )
+    )
+
+    # ---------------------------------------------------------
+    # .env.example candidate models — registered unconditionally so
+    # `make probe-models` can measure them; pruned/ranked by live
+    # probe results (see docs/superpowers specs).
+    # ---------------------------------------------------------
+
+    registry.register_model(
+        ModelConfig(
+            name="reasoning-requesty-v4-pro",
+            provider="requesty",
+            model_id=_resolve_model_id(
+                "REQUESTY_DEEPSEEK_V4_PRO_MODEL",
+                default="deepseek/deepseek-v4-pro-0813",
+            ),
+            capabilities=(
+                "reasoning",
+                "tool_calling",
+            ),
+            priority=20,
+            max_tokens=4096,
+        )
+    )
+
+    registry.register_model(
+        ModelConfig(
+            name="fast-requesty-luna",
+            provider="requesty",
+            model_id=_resolve_model_id(
+                "REQUESTY_OPENAI_5.6_LUNA_MODEL",
+                default="openai/gpt-5.6-luna",
             ),
             capabilities=(
                 "tool_calling",
                 "structured_output",
             ),
-            priority=40,
+            priority=20,
             max_tokens=2048,
         )
     )
 
     registry.register_model(
         ModelConfig(
-            name="fast-openrouter",
-            provider="openrouter",
+            name="reasoning-orca-v4-pro",
+            provider="orcarouter",
             model_id=_resolve_model_id(
-                "OPENROUTER_FAST_MODEL",
-                "LAGUNA_MODEL",
-                default="google/gemini-2.5-flash",
+                "ORCA_DEEPSEEK_V4_PRO_MODEL",
+                default="deepseek/deepseek-v4-pro",
             ),
             capabilities=(
+                "reasoning",
                 "tool_calling",
                 "structured_output",
             ),
-            priority=40,
+            priority=30,
+            max_tokens=4096,
+        )
+    )
+
+    # structured_output stripped: orca free tier rejects response_format.
+    registry.register_model(
+        ModelConfig(
+            name="fast-orca-v4-pro-free",
+            provider="orcarouter",
+            model_id=_resolve_model_id(
+                "ORCA_DEEPSEEK_V4_PRO_FREE_MODEL",
+                default="deepseek/deepseek-v4-pro-free",
+            ),
+            capabilities=(
+                "tool_calling",
+            ),
+            priority=34,
             max_tokens=2048,
         )
     )
 
-    # Bedrock models
     registry.register_model(
         ModelConfig(
-            name="reasoning-bedrock-nova",
-            provider="bedrock",
+            name="fast-orca-v4-flash",
+            provider="orcarouter",
             model_id=_resolve_model_id(
-                "BEDROCK_NOVA_REASONING_MODEL",
-                default="amazon.nova-pro-v1:0",
+                "ORCA_DEEPSEEK_V4_FLASH_MODEL",
+                default="deepseek/deepseek-v4-flash",
             ),
             capabilities=(
-                "reasoning",
                 "tool_calling",
                 "structured_output",
             ),
-            priority=5,
-            max_tokens=4096,
+            priority=32,
+            max_tokens=2048,
         )
     )
 
     registry.register_model(
         ModelConfig(
-            name="fast-bedrock-nova",
-            provider="bedrock",
+            name="fast-orca-v4-flash-free",
+            provider="orcarouter",
             model_id=_resolve_model_id(
-                "BEDROCK_NOVA_FAST_MODEL",
-                default="amazon.nova-micro-v1:0",
+                "ORCA_DEEPSEEK_V4_FLASH_FREE_MODEL",
+                default="deepseek/deepseek-v4-flash-free",
             ),
             capabilities=(
                 "tool_calling",
-                "structured_output",
             ),
-            priority=5,
-            max_tokens=4096,
+            priority=33,
+            max_tokens=2048,
         )
     )
 
     registry.register_model(
         ModelConfig(
-            name="reasoning-bedrock-claude",
-            provider="bedrock",
+            name="fast-orca-v4-flash-0731",
+            provider="orcarouter",
             model_id=_resolve_model_id(
-                "BEDROCK_CLAUDE_REASONING_MODEL",
-                "BEDROCK_CLAUDE_SONNET_4_MODEL",
-                default="global.anthropic.claude-sonnet-4-6",
+                "ORCA_DEEPSEEK_V4_FLASH_0731_MODEL",
+                default="deepseek/deepseek-v4-flash-0731",
             ),
             capabilities=(
-                "reasoning",
                 "tool_calling",
                 "structured_output",
             ),
-            priority=5,
-            max_tokens=8192,
+            priority=31,
+            max_tokens=2048,
         )
     )
 
     registry.register_model(
         ModelConfig(
-            name="fast-bedrock-claude",
-            provider="bedrock",
+            name="fast-orca-luna",
+            provider="orcarouter",
             model_id=_resolve_model_id(
-                "BEDROCK_CLAUDE_FAST_MODEL",
-                "BEDROCK_CLAUDE_HAIKU_MODEL",
-                default="global.anthropic.claude-3-5-haiku-20241022-v1:0",
+                "ORCA_OPENAI_5.6_LUNA_MODEL",
+                default="openai/gpt-5.6-luna",
             ),
             capabilities=(
                 "tool_calling",
                 "structured_output",
             ),
-            priority=5,
-            max_tokens=4096,
+            priority=30,
+            max_tokens=2048,
         )
     )
 
-    # Mantle models (OpenAI-compatible on Bedrock)
-    # Note: GPT-5.6 models require inference profile ARNs
-    # OSS models (gpt-oss-120b/20b) are ON_DEMAND but may need model access enabled
-    # Other models (Kimi, GLM, Minimax, Mistral) work on Mantle with Chat Completions API
-    registry.register_model(
-        ModelConfig(
-            name="reasoning-mantle-gpt",
-            provider="mantle",
-            model_id=_resolve_model_id(
-                "MANTLE_REASONING_MODEL",
-                "NEMOTRON_3_ULTRA_MODEL",
-                default="arn:aws:bedrock:us-east-1:145776961336:inference-profile/global.openai.gpt-5.6-luna",
-            ),
-            capabilities=(
-                "reasoning",
-                "tool_calling",
-                "structured_output",
-            ),
-            priority=3,
-            max_tokens=8192,
-        )
-    )
 
-    registry.register_model(
-        ModelConfig(
-            name="fast-mantle-gpt",
-            provider="mantle",
-            model_id=_resolve_model_id(
-                "MANTLE_FAST_MODEL",
-                "LAGUNA_MODEL",
-                default="arn:aws:bedrock:us-east-1:145776961336:inference-profile/global.openai.gpt-5.6-terra",
-            ),
-            capabilities=(
-                "tool_calling",
-                "structured_output",
-            ),
-            priority=3,
-            max_tokens=4096,
-        )
-    )
+
+
+
+
+    # ---------------------------------------------------------
+    # Bedrock models removed: IAM lacks model access ("Operation not
+    # allowed" / invalid identifier) — re-add once access is granted.
+    # Mantle GPT entries (gpt-5.6-luna/terra ARNs) removed pending
+    # validation; Kimi/GLM/Minimax/Mistral Mantle models remain.
+    # ---------------------------------------------------------
 
     # Mantle models (available on Mantle endpoint with Chat Completions API)
     registry.register_model(
@@ -516,6 +515,9 @@ def build_model_router() -> ModelRouter:
             ),
             priority=3,
             max_tokens=8192,
+            context_window=256000,
+            input_cost_per_1m_tokens=0.60,
+            output_cost_per_1m_tokens=2.50,
         )
     )
 
@@ -580,9 +582,9 @@ def build_model_router() -> ModelRouter:
                 "MANTLE_MINIMAX_M2_5_MODEL",
                 default="minimax.minimax-m2.5",
             ),
+            # structured_output stripped: probe hit LengthFinishReasonError.
             capabilities=(
                 "tool_calling",
-                "structured_output",
             ),
             priority=3,
             max_tokens=4096,
@@ -610,6 +612,8 @@ def build_model_router() -> ModelRouter:
     return ModelRouter(
         registry=registry,
         health=health,
+        stats_store=stats_store or EMAStatsStore(),
+        model_health=model_health or ModelHealthRegistry(),
     )
 
 
@@ -731,7 +735,7 @@ def build_embedding_router() -> EmbeddingRouter:
     )
 
     for priority, provider_name in enumerate(
-        ("requesty", "orcarouter", "openrouter"),
+        ("openrouter", "requesty", "orcarouter"),
         start=10,
     ):
         if provider_name not in registry.providers():

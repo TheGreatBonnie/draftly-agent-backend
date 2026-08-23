@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import logging
+import structlog
 
 from draftly.feedback.classifier import FeedbackClassifier
 from draftly.feedback.deduplication import DeduplicationService
@@ -14,7 +14,7 @@ from draftly.feedback.models import (
 from draftly.feedback.prioritization import GapPrioritizer
 from draftly.persistence.repositories.support import SupportRepository
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 
 class FeedbackService:

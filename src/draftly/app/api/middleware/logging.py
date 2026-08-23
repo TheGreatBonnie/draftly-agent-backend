@@ -1,23 +1,41 @@
-import logging
-import time
-import uuid
+"""Request logging + correlation-id binding middleware."""
 
+from __future__ import annotations
+
+import time
+from collections.abc import Awaitable, Callable
+
+import structlog
 from fastapi import Request
 from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.responses import Response
 
-logger = logging.getLogger("draftly.api")
+from draftly.observability.tracing import (
+    bind_correlation_id,
+    clear_correlation_id,
+    new_correlation_id,
+)
+
+logger = structlog.get_logger("draftly.api")
 
 
 class RequestLoggingMiddleware(BaseHTTPMiddleware):
     async def dispatch(
         self,
         request: Request,
-        call_next,
-    ):
-        request_id = str(uuid.uuid4())
+        call_next: Callable[[Request], Awaitable[Response]],
+    ) -> Response:
+        inbound = request.headers.get("X-Request-ID")
+        request_id = inbound or new_correlation_id()
+
+        bind_correlation_id(request_id)
+        structlog.contextvars.bind_contextvars(
+            request_id=request_id,
+            method=request.method,
+            path=request.url.path,
+        )
 
         request.state.request_id = request_id
-
         started = time.perf_counter()
 
         try:
@@ -29,13 +47,8 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
 
             logger.info(
                 "request_completed",
-                extra={
-                    "request_id": request_id,
-                    "method": request.method,
-                    "path": request.url.path,
-                    "status_code": response.status_code,
-                    "duration_seconds": duration,
-                },
+                status_code=response.status_code,
+                duration_seconds=round(duration, 6),
             )
 
             return response
@@ -45,12 +58,15 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
 
             logger.exception(
                 "request_failed",
-                extra={
-                    "request_id": request_id,
-                    "method": request.method,
-                    "path": request.url.path,
-                    "duration_seconds": duration,
-                },
+                duration_seconds=round(duration, 6),
             )
 
             raise
+
+        finally:
+            structlog.contextvars.unbind_contextvars(
+                "request_id",
+                "method",
+                "path",
+            )
+            clear_correlation_id()

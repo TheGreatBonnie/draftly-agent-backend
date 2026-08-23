@@ -4,11 +4,12 @@ routing, and EventComposition normalization."""
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Any, cast
 
 import pytest
 from strands.interrupt import Interrupt
 from strands.multiagent.base import MultiAgentResult, Status
-from strands.multiagent.graph import GraphResult
+from strands.multiagent.graph import GraphNode, GraphResult
 
 from draftly.events.dispatcher import EventDispatcher
 from draftly.workflows.context import WorkflowContext
@@ -64,7 +65,7 @@ class FakeGraph:
 
 
 def make_context(**overrides) -> WorkflowContext:
-    base = dict(
+    base: dict[str, Any] = dict(
         repositories=type(
             "Repos", (), {"events": FakeEventsRepo(), "reviews": FakeReviewsRepo()}
         )(),
@@ -100,11 +101,14 @@ def failed_result() -> GraphResult:
     return GraphResult(
         status=Status.FAILED,
         failed_nodes=2,
-        execution_order=[
-            FailedNode("update"),
-            FailedNode("evaluate"),
-            FailedNode("classify", Status.COMPLETED),
-        ],
+        execution_order=cast(
+            list[GraphNode],
+            [
+                FailedNode("update"),
+                FailedNode("evaluate"),
+                FailedNode("classify", Status.COMPLETED),
+            ],
+        ),
     )
 
 

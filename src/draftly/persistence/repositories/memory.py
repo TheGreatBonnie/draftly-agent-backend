@@ -74,8 +74,24 @@ class MemoryRepository:
             embedding=embedding,
         )
 
-    async def delete(self, *, memory_id: str) -> bool:
+    async def delete(self, memory_id: str) -> bool:
         return await self.store.delete(memory_id=memory_id)
+
+    async def delete_by_metadata(
+        self,
+        *,
+        namespace: str,
+        key: str,
+        value: str,
+    ) -> int:
+        """Delete items in a namespace matching metadata[key]; returns count."""
+        items = await self.list_namespace(namespace=namespace)
+        deleted = 0
+        for item in items:
+            if (item.get("metadata") or {}).get(key) == value:
+                if await self.delete(memory_id=item["id"]):
+                    deleted += 1
+        return deleted
 
     async def list_namespace(
         self,

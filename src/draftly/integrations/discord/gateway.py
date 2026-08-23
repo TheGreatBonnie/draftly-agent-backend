@@ -4,15 +4,15 @@ from __future__ import annotations
 
 import asyncio
 import json
-import logging
 
+import structlog
 import websockets
 from websockets.asyncio.client import ClientConnection
 from websockets.exceptions import ConnectionClosed
 
 from draftly.app.config import get_settings
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 settings = get_settings()
 

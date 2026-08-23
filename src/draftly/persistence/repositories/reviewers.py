@@ -1,13 +1,14 @@
 from __future__ import annotations
 
-import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
+import structlog
+
 from draftly.integrations.database.client import DatabaseClient
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 
 @dataclass

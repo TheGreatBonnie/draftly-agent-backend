@@ -1,6 +1,6 @@
-import logging
 from collections.abc import Sequence
 
+import structlog
 from openai import OpenAI
 
 from .config import EmbeddingConfig
@@ -13,7 +13,7 @@ from .registry import ModelRegistry
 
 __all__ = ["EmbeddingRouter", "OpenAICompatibleEmbedder"]
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 
 class OpenAICompatibleEmbedder:

@@ -38,7 +38,7 @@ class DatabaseMemoryStore:
     async def insert(
         self,
         *,
-        org_id: str,
+        org_id: str | None,
         namespace: str,
         content: str,
         memory_type: str,

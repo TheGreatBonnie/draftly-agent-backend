@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-import logging
 from typing import Any
+
+import structlog
 
 from draftly.feedback.knowledge_updater import KnowledgeUpdater
 from draftly.support.models import SupportAnswer, SupportQuestion
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 
 class SupportResolver:

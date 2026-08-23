@@ -6,14 +6,15 @@ The runner owns idempotency, graph build, invocation, and outcomes.
 
 from __future__ import annotations
 
-import logging
 from typing import Any
+
+import structlog
 
 from draftly.workflows.context import WorkflowContext
 from draftly.workflows.runner import WorkflowRunner
 from draftly.workflows.state import WorkflowState
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 
 async def run_pull_request_workflow(

@@ -1,6 +1,7 @@
-import logging
 import time
 from dataclasses import dataclass, field
+
+import structlog
 
 __all__ = [
     "FAILURE_AUTH",
@@ -14,7 +15,7 @@ __all__ = [
     "ProviderHealthRegistry",
 ]
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 # Failure classification (doc §19).
 FAILURE_TIMEOUT = "timeout"

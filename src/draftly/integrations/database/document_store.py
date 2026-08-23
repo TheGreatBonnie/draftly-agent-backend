@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import Any
 from uuid import uuid4
 
@@ -15,6 +16,7 @@ _DOCUMENT_COLUMNS = """
     document_type,
     version,
     commit_sha,
+    source_hash,
     status,
     metadata,
     stale,
@@ -110,6 +112,9 @@ class DocumentStore:
         metadata: dict[str, Any] | None = None,
         title: str | None = None,
         document_type: str | None = None,
+        status: str | None = None,
+        commit_sha: str | None = None,
+        source_hash: str | None = None,
     ) -> dict[str, Any]:
         existing = await self.client.fetch_one(
             """
@@ -137,6 +142,16 @@ class DocumentStore:
                 fields.append(f"document_type = ${len(params) + 1}")
                 params.append(document_type)
 
+            # Persist sync columns when provided
+            for column, value in (
+                ("status", status),
+                ("commit_sha", commit_sha),
+                ("source_hash", source_hash),
+            ):
+                if value is not None:
+                    fields.append(f"{column} = ${len(params) + 1}")
+                    params.append(value)
+
             fields.append("updated_at = CURRENT_TIMESTAMP")
             params.append(existing["id"])
 
@@ -150,27 +165,29 @@ class DocumentStore:
                 *params,
             )
         else:
+            # Build INSERT dynamically so optional sync columns are included
+            columns = ["repository", "path", "content", "metadata"]
+            values: list[Any] = [repository, path, content, metadata or {}]
+            for column, value in (
+                ("org_id", org_id),
+                ("title", title),
+                ("document_type", document_type or "general"),
+                ("status", status or "draft"),
+                ("commit_sha", commit_sha),
+                ("source_hash", source_hash),
+            ):
+                if value is not None:
+                    columns.append(column)
+                    values.append(value)
+
+            placeholders = ", ".join(f"${i}" for i in range(1, len(values) + 1))
             row = await self.client.fetch_one(
                 f"""
-                INSERT INTO documentation (
-                    org_id,
-                    repository,
-                    path,
-                    title,
-                    document_type,
-                    content,
-                    metadata
-                )
-                VALUES ($1, $2, $3, $4, $5, $6, $7)
+                INSERT INTO documentation ({", ".join(columns)})
+                VALUES ({placeholders})
                 RETURNING {_DOCUMENT_COLUMNS}
                 """,
-                org_id,
-                repository,
-                path,
-                title,
-                document_type or "general",
-                content,
-                metadata or {},
+                *values,
             )
 
         return self._row_to_dict(row)
@@ -242,6 +259,7 @@ class DocumentStore:
         content: str | None = None,
         title: str | None = None,
         status: str | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         fields = []
         params: list[Any] = []
@@ -257,6 +275,10 @@ class DocumentStore:
         if status is not None:
             fields.append(f"status = ${len(params) + 1}")
             params.append(status)
+
+        if metadata is not None:
+            fields.append(f"metadata = ${len(params) + 1}::jsonb")
+            params.append(json.dumps(metadata))
 
         fields.append("updated_at = CURRENT_TIMESTAMP")
 
@@ -302,6 +324,44 @@ class DocumentStore:
             limit,
         )
 
+        return [self._row_to_dict(row) for row in rows]
+
+    async def get_by_org_and_path(
+        self,
+        *,
+        org_id: str,
+        path: str,
+    ) -> dict[str, Any] | None:
+        row = await self.client.fetch_one(
+            f"""
+            SELECT {_DOCUMENT_COLUMNS}
+            FROM documentation
+            WHERE org_id = $1
+              AND path = $2
+            LIMIT 1
+            """,
+            org_id,
+            path,
+        )
+        return self._row_to_dict(row) if row else None
+
+    async def list_by_org(
+        self,
+        *,
+        org_id: str,
+        limit: int = 1000,
+    ) -> list[dict[str, Any]]:
+        rows = await self.client.fetch_all(
+            f"""
+            SELECT {_DOCUMENT_COLUMNS}
+            FROM documentation
+            WHERE org_id = $1
+            ORDER BY updated_at DESC
+            LIMIT $2
+            """,
+            org_id,
+            limit,
+        )
         return [self._row_to_dict(row) for row in rows]
 
     async def delete(

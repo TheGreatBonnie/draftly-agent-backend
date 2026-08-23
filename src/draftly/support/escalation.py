@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-import logging
 from typing import Any
+
+import structlog
 
 from draftly.delivery.slack import SlackDelivery
 from draftly.support.models import SupportQuestion
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 ESCALATION_CHANNEL = "support-escalation"
 

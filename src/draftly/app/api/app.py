@@ -1,7 +1,8 @@
 # app/api/app.py
 
-from fastapi import FastAPI  # ty: ignore[unresolved-import]
+from fastapi import FastAPI
 
+from draftly.app.api.middleware.logging import RequestLoggingMiddleware
 from draftly.app.api.routes import (
     clerk,
     discord,
@@ -27,6 +28,8 @@ def create_api_app() -> FastAPI:
         description=("Autonomous documentation engineering platform."),
         lifespan=lifespan,
     )
+
+    app.add_middleware(RequestLoggingMiddleware)
 
     app.include_router(
         health.router,

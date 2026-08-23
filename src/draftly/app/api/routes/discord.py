@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import json
-import logging
 
+import structlog
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
@@ -13,7 +13,7 @@ from draftly.app.api.auth import get_verified_token
 from draftly.app.config import get_settings
 from draftly.integrations.discord.interactions import resolve_interaction_token
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 router = APIRouter(
     prefix="/discord",
@@ -141,7 +141,9 @@ async def handle_interactions(request: Request) -> JSONResponse:
 
         logger.info(
             "discord_review_decision_received",
-            extra={"review_id": review_id, "action": action_prefix, "reviewer_id": reviewer_id},
+            review_id=review_id,
+            action=action_prefix,
+            reviewer_id=reviewer_id,
         )
 
         try:
@@ -167,7 +169,11 @@ async def handle_interactions(request: Request) -> JSONResponse:
                 comment=feedback,
             )
         except Exception as e:
-            logger.error("discord_review_complete_failed", review_id=review_id, error=str(e))
+            logger.error(
+                "discord_review_complete_failed review_id=%s error=%s",
+                review_id,
+                str(e),
+            )
             return JSONResponse(
                 content={
                     "type": 4,

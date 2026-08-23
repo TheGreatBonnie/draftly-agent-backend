@@ -8,15 +8,17 @@ unavailable — grounding must never break a run.
 
 from __future__ import annotations
 
-import logging
 from typing import Any
 
+import structlog
+from strands.agent import Agent
 from strands.multiagent.base import (
     MultiAgentBase,
     MultiAgentResult,
+    Status,
 )
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 MAX_GROUNDING_ITEMS = 5
 GROUNDING_HEADER = "Relevant organizational knowledge:"
@@ -25,7 +27,7 @@ GROUNDING_HEADER = "Relevant organizational knowledge:"
 class MemoryGroundedNode(MultiAgentBase):
     """Prepend recalled memory to the task, then delegate."""
 
-    def __init__(self, inner: MultiAgentBase, memory: Any) -> None:
+    def __init__(self, inner: MultiAgentBase | Agent, memory: Any) -> None:
         self.name = getattr(inner, "name", "grounded")
         self.inner = inner
         self.memory = memory
@@ -37,11 +39,14 @@ class MemoryGroundedNode(MultiAgentBase):
         **kwargs: Any,
     ) -> MultiAgentResult:
         grounded_task = await self._ground(task)
-        return await self.inner.invoke_async(
+        result = await self.inner.invoke_async(
             grounded_task,
             invocation_state=invocation_state,
             **kwargs,
         )
+        if isinstance(result, MultiAgentResult):
+            return result
+        return MultiAgentResult(status=getattr(result, "status", Status.COMPLETED))
 
     async def _ground(self, task: Any) -> Any:
         if self.memory is None or not isinstance(task, str) or not task.strip():

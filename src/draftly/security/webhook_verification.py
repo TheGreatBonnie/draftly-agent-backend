@@ -9,10 +9,11 @@ from __future__ import annotations
 
 import hashlib
 import hmac
-import logging
 import time
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 SLACK_MAX_AGE_SECONDS = 300
 
@@ -90,8 +91,8 @@ class WebhookVerifier:
         if not self.discord_public_key:
             raise WebhookVerificationError("Discord public key is not configured")
         try:
-            from nacl.exceptions import BadSignatureError
-            from nacl.signing import VerifyKey
+            from nacl.exceptions import BadSignatureError  # ty: ignore[unresolved-import]
+            from nacl.signing import VerifyKey  # ty: ignore[unresolved-import]
         except ImportError as exc:  # pragma: no cover - dependency pinned
             raise WebhookVerificationError(
                 "PyNaCl not installed; cannot verify Discord webhooks"

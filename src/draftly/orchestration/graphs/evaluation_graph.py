@@ -13,10 +13,10 @@ from __future__ import annotations
 
 import asyncio
 import json
-import logging
 from collections.abc import Callable
 from typing import Any
 
+import structlog
 from strands.multiagent import GraphBuilder
 from strands.multiagent.base import (
     MultiAgentBase,
@@ -29,7 +29,7 @@ from strands.session.session_manager import SessionManager
 from draftly.evaluation.runner import run_dataset_sync
 from draftly.orchestration.nodes.base import agent_result, parse_node_input
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 EVALUATION_GRAPH_ID = "draftly-evaluation-graph"
 

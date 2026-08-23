@@ -12,18 +12,24 @@ from __future__ import annotations
 
 import os
 
+import structlog
 import uvicorn
 
-from draftly.app.api.app import create_app
+from draftly.app.api.app import create_api_app
+from draftly.app.config import get_settings
+from draftly.observability.logging import configure_logging
 
 
 def main() -> None:
     port = int(os.getenv("PORT", "8000"))
+    configure_logging(settings=get_settings())
+    structlog.contextvars.bind_contextvars(worker="events")
     uvicorn.run(
-        create_app(),
+        create_api_app(),
         host="0.0.0.0",
         port=port,
         log_level="info",
+        log_config=None,
     )
 
 

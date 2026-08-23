@@ -2,11 +2,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from draftly.documentation.repositories import DocumentationRepository
 from draftly.integrations.database.document_store import DocumentStore
 
 
-class DocumentRepository(DocumentationRepository):
+class DocumentRepository:
     def __init__(
         self,
         store: DocumentStore | None = None,
@@ -54,9 +53,45 @@ class DocumentRepository(DocumentationRepository):
             metadata=metadata or {},
         )
 
-    async def get(
+    async def upsert(
         self,
         *,
+        org_id: str | None = None,
+        repository: str,
+        path: str,
+        content: str,
+        metadata: dict[str, Any] | None = None,
+        title: str | None = None,
+        document_type: str | None = None,
+        status: str | None = None,
+        commit_sha: str | None = None,
+        source_hash: str | None = None,
+    ) -> dict[str, Any]:
+        return await self.store.upsert_document(
+            org_id=org_id,
+            repository=repository,
+            path=path,
+            content=content,
+            metadata=metadata,
+            title=title,
+            document_type=document_type,
+            status=status,
+            commit_sha=commit_sha,
+            source_hash=source_hash,
+        )
+
+    async def get_by_org_and_path(
+        self, *, org_id: str, path: str
+    ) -> dict[str, Any] | None:
+        return await self.store.get_by_org_and_path(org_id=org_id, path=path)
+
+    async def list_by_org(
+        self, *, org_id: str, limit: int = 1000
+    ) -> list[dict[str, Any]]:
+        return await self.store.list_by_org(org_id=org_id, limit=limit)
+
+    async def get(
+        self,
         document_id: str,
     ) -> dict[str, Any] | None:
         return await self.store.get(document_id=document_id)
@@ -74,17 +109,19 @@ class DocumentRepository(DocumentationRepository):
 
     async def update(
         self,
-        *,
         document_id: str,
-        content: str | None,
-        title: str | None,
-        status: str | None,
+        *,
+        content: str | None = None,
+        title: str | None = None,
+        status: str | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         return await self.store.update(
             document_id=document_id,
             content=content,
             title=title,
             status=status,
+            metadata=metadata,
         )
 
     async def search(
@@ -102,7 +139,6 @@ class DocumentRepository(DocumentationRepository):
 
     async def delete(
         self,
-        *,
         document_id: str,
     ) -> bool:
         return await self.store.delete(document_id=document_id)

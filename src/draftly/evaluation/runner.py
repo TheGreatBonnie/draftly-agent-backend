@@ -7,16 +7,16 @@ persists the report to the evaluations repository (012_evaluations).
 from __future__ import annotations
 
 import json
-import logging
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import structlog
 from strands_evals import Case, Experiment
 from strands_evals.types.evaluation_report import EvaluationReport
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 DATASET_DIR = Path(__file__).parent / "datasets"
 
@@ -167,8 +167,9 @@ def run_dataset_sync(dataset: dict[str, Any]) -> list[dict[str, Any]]:
     because ``Experiment.run_evaluations`` calls ``asyncio.run``.
     """
     from strands_evals.evaluators import Contains
+    from strands_evals.evaluators.evaluator import Evaluator
 
-    cases = [
+    cases: list[Case[str, str]] = [
         Case(
             name=case.get("name", f"case-{index + 1}"),
             input=case.get("input", ""),
@@ -179,10 +180,10 @@ def run_dataset_sync(dataset: dict[str, Any]) -> list[dict[str, Any]]:
     if not cases:
         return []
 
-    experiment = Experiment(
-        cases=cases,
-        evaluators=[Contains(value=str(case.expected_output or "")) for case in cases],
-    )
+    evaluators: list[Evaluator[str, str]] = [
+        Contains(value=str(case.expected_output or "")) for case in cases
+    ]
+    experiment = Experiment(cases=cases, evaluators=evaluators)
     report = experiment.run_evaluations(
         lambda case: str(getattr(case, "expected_output", "") or "")
     )

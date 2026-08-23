@@ -12,6 +12,9 @@ from typing import Any
 
 from strands.session import FileSessionManager
 
+from draftly.integrations.strands.models import (
+    resolve_model_for_role,  # noqa: F401 - re-exported for graph builders
+)
 from draftly.orchestration.graphs.documentation_graph import (
     build_documentation_graph,
 )

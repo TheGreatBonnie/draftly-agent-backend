@@ -1,8 +1,7 @@
 """Draftly documentation subsystem (plan §8.4).
 
-Exports are lazy (PEP 562) because ``draftly.persistence.repositories.
-documents`` imports ``draftly.documentation.repositories`` (the ABC) at
-module level; eager re-exports here would create a circular import.
+Exports are lazy (PEP 562) to keep import time low and avoid circular
+imports between submodules.
 """
 
 from typing import Any

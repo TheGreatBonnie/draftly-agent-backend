@@ -14,7 +14,7 @@ async def create_pull_request(
     from draftly.integrations.github.client import GitHubClient
 
     client = GitHubClient()
-    return await client.create_pull_request(
+    return client.create_pull_request(
         owner,
         repo,
         head,

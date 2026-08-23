@@ -32,6 +32,11 @@ def bind_correlation_id(correlation_id: str) -> None:
     _correlation_id.set(correlation_id)
 
 
+def clear_correlation_id() -> None:
+    """Reset the correlation scope (e.g. after request handling)."""
+    _correlation_id.set("")
+
+
 @asynccontextmanager
 async def traced(
     name: str,

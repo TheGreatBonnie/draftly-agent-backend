@@ -39,6 +39,9 @@ test:
 test-live:
 	DRAFTLY_LIVE=1 uv run pytest -q -m integration
 
+probe-models:
+	uv run python tests/scripts/probe_models.py
+
 lint:
 	uv run ruff check .
 

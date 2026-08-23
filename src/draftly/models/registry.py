@@ -25,6 +25,9 @@ class ModelRegistry:
         if model.provider not in self._providers:
             raise ValueError(f"Provider '{model.provider}' must be registered before its models.")
 
+        if model.name in self._models:
+            raise ValueError(f"Duplicate model name: '{model.name}' is already registered.")
+
         self._models[model.name] = model
 
     def register_embedding_model(

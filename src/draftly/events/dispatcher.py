@@ -9,9 +9,10 @@ Two routing jobs:
 
 from __future__ import annotations
 
-import logging
 from collections.abc import Awaitable, Callable
 from typing import Any
+
+import structlog
 
 from draftly.events.types import (
     SURFACE_BY_EVENT_TYPE,
@@ -22,7 +23,7 @@ from draftly.events.types import (
 )
 from draftly.orchestration.routing.classifiers import event_prefix
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 WorkflowFunc = Callable[..., Awaitable[Any]]
 

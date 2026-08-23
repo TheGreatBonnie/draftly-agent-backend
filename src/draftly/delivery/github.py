@@ -2,14 +2,15 @@
 
 from __future__ import annotations
 
-import logging
 import uuid
 from typing import Any
+
+import structlog
 
 from draftly.delivery.models import CommitResult, PullRequestResult
 from draftly.integrations.github.client import GitHubClient
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 
 class GitHubDelivery:

@@ -14,9 +14,12 @@ from .organizations import (
     get_org_by_slack_team,
     update_org_github,
 )
+from .routing import PerformanceRepository, RoutingRepository
 
 __all__ = [
     "MemoryRepository",
+    "PerformanceRepository",
+    "RoutingRepository",
     "get_org_by_github_org",
     "store_github_installation",
     "remove_github_installation",

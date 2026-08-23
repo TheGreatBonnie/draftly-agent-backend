@@ -38,7 +38,7 @@ def generate_jwt() -> str:
         "exp": int(time.time()) + (10 * 60),
         "iss": _get_app_id(),
     }
-    return cast(str, jwt.encode(payload, private_key, algorithm="RS256"))
+    return jwt.encode(payload, private_key, algorithm="RS256")
 
 
 async def get_installation_token(installation_id: int) -> str:

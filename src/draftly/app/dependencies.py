@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-import logging
 from dataclasses import dataclass
 from typing import Any
+
+import structlog
 
 from draftly.app.config import Settings
 from draftly.integrations.database.client import DatabaseClient
@@ -29,13 +30,18 @@ from draftly.persistence.repositories.delivery import DeliveryRepository
 from draftly.persistence.repositories.documents import DocumentRepository
 from draftly.persistence.repositories.evaluations import EvaluationRepository
 from draftly.persistence.repositories.events import EventRepository
+from draftly.persistence.repositories.github import GitHubInstallationsRepository
 from draftly.persistence.repositories.jobs import JobRepositoryImpl
 from draftly.persistence.repositories.memory import MemoryRepository
+from draftly.persistence.repositories.onboarding import OnboardingRepository
+from draftly.persistence.repositories.repository_config import RepositoryConfigRepository
 from draftly.persistence.repositories.reviewers import ReviewersRepository
 from draftly.persistence.repositories.reviews import ReviewsRepository
+from draftly.persistence.repositories.routing import PerformanceRepository, RoutingRepository
 from draftly.persistence.repositories.support import SupportRepository
+from draftly.persistence.stores.routing import DatabasePerformanceStore, DatabaseRoutingStore
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 # ============================================================
 # Model Dependencies
@@ -58,6 +64,7 @@ class ModelDependencies:
     rubric_grader: Any
     router: Any
     max_output_tokens: dict[str, int] | None = None
+    stats_store: Any | None = None
 
 
 def build_models(
@@ -72,9 +79,14 @@ def build_models(
     """
 
     from draftly.models.factory import build_model_router
+    from draftly.models.performance import EMAStatsStore
     from draftly.models.policies import RoutingPolicy
 
-    router = build_model_router()
+    # One shared EMA cache: the router scores from it while the
+    # performance repository persists/warm-starts it (Task 15).
+    stats_store = EMAStatsStore()
+
+    router = build_model_router(stats_store=stats_store)
 
     fast = router.resolve(
         RoutingPolicy(
@@ -116,6 +128,7 @@ def build_models(
         rubric_grader=rubric_grader,
         router=router,
         max_output_tokens=max_output_tokens,
+        stats_store=stats_store,
     )
 
 
@@ -215,11 +228,16 @@ class RepositoryDependencies:
     events: EventRepository
     memory: MemoryRepository
     documents: DocumentRepository
+    github_installations: GitHubInstallationsRepository
     evaluations: EvaluationRepository
     support: SupportRepository
     jobs: JobRepositoryImpl
     reviews: ReviewsRepository
     reviewers: ReviewersRepository
+    routing: RoutingRepository
+    performance: PerformanceRepository
+    onboarding: OnboardingRepository
+    repository_config: RepositoryConfigRepository
 
 
 def build_repositories(
@@ -252,6 +270,8 @@ def build_repositories(
         ),
     )
 
+    github_installations = GitHubInstallationsRepository(db=database)
+
     evaluations = EvaluationRepository(
         store=DatabaseEvaluationsStore(
             client=database,
@@ -276,16 +296,33 @@ def build_repositories(
         database=database,
     )
 
+    routing = RoutingRepository(
+        store=DatabaseRoutingStore(client=database),
+    )
+
+    performance = PerformanceRepository(
+        store=DatabasePerformanceStore(client=database),
+    )
+
+    onboarding = OnboardingRepository(client=database)
+
+    repository_config = RepositoryConfigRepository(client=database)
+
     return RepositoryDependencies(
         delivery=delivery,
         events=events,
         memory=memory,
         documents=documents,
+        github_installations=github_installations,
         evaluations=evaluations,
         support=support,
         jobs=jobs,
         reviews=reviews,
         reviewers=reviewers,
+        routing=routing,
+        performance=performance,
+        onboarding=onboarding,
+        repository_config=repository_config,
     )
 
 

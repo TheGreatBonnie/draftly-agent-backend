@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from typing import Any, cast
 
+from draftly.persistence.repositories.reviews import ReviewsRepository
 from draftly.review import ReviewPolicy, ReviewService
 from draftly.review.models import ReviewDecision
 
@@ -70,11 +72,11 @@ class FakeReviewsRepository:
 
 def make_service() -> tuple[ReviewService, FakeReviewsRepository]:
     repo = FakeReviewsRepository()
-    return ReviewService(repo), repo
+    return ReviewService(cast(ReviewsRepository, repo)), repo
 
 
 def seeded_record(**overrides) -> FakeReviewRecord:
-    defaults = dict(
+    defaults: dict[str, Any] = dict(
         id="rev-1",
         tool_args={
             "interrupt_id": "v1:before_node_call:deliver:doc-review",
@@ -115,8 +117,8 @@ class TestReviewQueueAndDecisions:
         assert request.interrupt_id == "v1:before_node_call:deliver:doc-review"
 
     async def test_approval_returns_resume_payload(self) -> None:
-        service, _ = make_service()
-        service.repository.seed(seeded_record())
+        service, repo = make_service()
+        repo.seed(seeded_record())
 
         result = await service.decide(
             ReviewDecision(
@@ -131,11 +133,12 @@ class TestReviewQueueAndDecisions:
         assert resume["response"] == {"approved": True, "comment": "lgtm"}
         assert resume["interrupt_id"].endswith("doc-review")
         record = await service.repository.get_review("rev-1")
+        assert record is not None
         assert record.status == "approved"
 
     async def test_rejection_records_and_flags_cancellation(self) -> None:
-        service, _ = make_service()
-        service.repository.seed(seeded_record())
+        service, repo = make_service()
+        repo.seed(seeded_record())
 
         result = await service.decide(
             ReviewDecision(
@@ -149,6 +152,7 @@ class TestReviewQueueAndDecisions:
         assert result["expected_outcome"] == "delivery_cancelled"
         assert result["resume"]["response"]["approved"] is False
         record = await service.repository.get_review("rev-1")
+        assert record is not None
         assert record.status == "rejected"
 
     async def test_expiry_marks_stale_reviews(self) -> None:
@@ -173,7 +177,9 @@ class TestResumeInputFormat:
     def test_build_resume_input_matches_sdk_contract(self) -> None:
         from draftly.review.approvals import ApprovalHandler
 
-        handler = ApprovalHandler(repository=FakeReviewsRepository())
+        handler = ApprovalHandler(
+            repository=cast(ReviewsRepository, FakeReviewsRepository())
+        )
         payload = handler.build_resume_input(
             "v1:before_node_call:deliver:doc-review",
             {"approved": True, "comment": ""},

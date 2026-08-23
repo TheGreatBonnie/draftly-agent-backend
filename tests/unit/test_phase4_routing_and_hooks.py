@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+from typing import cast
 
+from strands.hooks import AfterInvocationEvent, AfterNodeCallEvent
 from strands.hooks.registry import HookRegistry
 from strands.multiagent.base import MultiAgentResult, NodeResult, Status
 from strands.multiagent.graph import GraphState
@@ -116,8 +118,13 @@ class TestHookRegistration:
         logger = RunAuditLogger(audit_repo=None)
         state = {"run_id": "r-1"}
         # Must not raise without an audit repository
-        logger.node_end(type("E", (), {"node_id": "deliver", "invocation_state": state})())
-        logger.run_end(type("E", (), {"invocation_state": state})())
+        logger.node_end(
+            cast(
+                AfterNodeCallEvent,
+                type("E", (), {"node_id": "deliver", "invocation_state": state})(),
+            )
+        )
+        logger.run_end(cast(AfterInvocationEvent, type("E", (), {"invocation_state": state})()))
 
 
 def _unused(result: MultiAgentResult) -> MultiAgentResult:  # pragma: no cover

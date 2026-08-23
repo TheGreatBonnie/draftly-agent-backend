@@ -2,14 +2,15 @@
 
 from __future__ import annotations
 
-import logging
 from typing import Any
+
+import structlog
 
 from draftly.memory.models import Knowledge, Solution
 from draftly.memory.repository import MemoryNamespaces
 from draftly.memory.service import MemoryService
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 
 class KnowledgeUpdater:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from typing import cast
 
 import pytest
 
@@ -14,6 +15,7 @@ from draftly.memory import (
     MemoryService,
 )
 from draftly.memory.models import Knowledge, Question
+from draftly.persistence.repositories.memory import MemoryRepository
 
 # ================================================================
 # Fakes
@@ -100,7 +102,7 @@ def make_service() -> tuple[MemoryService, FakeMemoryRepository]:
     repo = FakeMemoryRepository()
     embeddings = EmbeddingService(router=False)  # force hash embedder
     service = MemoryService(
-        repository=DomainMemoryRepository(repo, embeddings),
+        repository=DomainMemoryRepository(cast(MemoryRepository, repo), embeddings),
     )
     return service, repo
 

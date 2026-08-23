@@ -11,10 +11,10 @@ model keys).
 from __future__ import annotations
 
 import asyncio
-import logging
 import time
 from typing import Any
 
+import structlog
 from strands.hooks import (
     AfterInvocationEvent,
     AfterNodeCallEvent,
@@ -25,7 +25,7 @@ from strands.hooks import (
     HookRegistry,
 )
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 
 class RunAuditLogger(HookProvider):

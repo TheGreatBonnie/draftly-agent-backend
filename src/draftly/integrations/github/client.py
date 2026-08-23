@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import base64
 from typing import Any, cast
 
 import httpx
+import structlog
 
 from .app_auth import (
     add_issue_labels,
@@ -13,6 +15,8 @@ from .app_auth import (
     post_issue_comment,
 )
 from .auth import GitHubAuth
+
+logger = structlog.get_logger(__name__)
 
 
 class GitHubClient:
@@ -96,8 +100,12 @@ class GitHubClient:
         *,
         params: dict[str, Any] | None = None,
         json: dict[str, Any] | None = None,
+        token: str | None = None,
     ) -> Any:
         url = f"{self.BASE_URL}{path}"
+        headers = self.auth.headers()
+        if token:
+            headers = {**headers, "Authorization": f"Bearer {token}"}
 
         async with httpx.AsyncClient(
             timeout=self.timeout,
@@ -105,7 +113,7 @@ class GitHubClient:
             response = await client.request(
                 method,
                 url,
-                headers=self.auth.headers(),
+                headers=headers,
                 params=params,
                 json=json,
             )
@@ -122,12 +130,15 @@ class GitHubClient:
         params: dict[str, Any] | None = None,
         json: dict[str, Any] | None = None,
         accept: str | None = None,
+        token: str | None = None,
     ) -> str:
         url = f"{self.BASE_URL}{path}"
 
         headers = self.auth.headers()
         if accept:
             headers = {**headers, "Accept": accept}
+        if token:
+            headers = {**headers, "Authorization": f"Bearer {token}"}
 
         async with httpx.AsyncClient(
             timeout=self.timeout,
@@ -352,6 +363,74 @@ class GitHubClient:
                 },
             ),
         )
+
+    async def get_tree(
+        self,
+        owner: str,
+        repo: str,
+        ref: str,
+        token: str,
+    ) -> list[dict[str, Any]]:
+        """Get recursive Git tree for a repository ref.
+
+        A truncated recursive response cannot be paginated, so fall back to
+        walking each root directory's subtree by sha.
+        """
+        data = await self._request(
+            "GET",
+            f"/repos/{owner}/{repo}/git/trees/{ref}",
+            params={"recursive": "1"},
+            token=token,
+        )
+
+        if not data.get("truncated", False):
+            return list(data.get("tree", []))
+
+        logger.warning(
+            "github_tree_truncated owner=%s repo=%s ref=%s", owner, repo, ref
+        )
+        all_entries: list[dict[str, Any]] = []
+        pending = [
+            entry for entry in data.get("tree", []) if entry.get("type") == "tree"
+        ]
+        while pending:
+            entry = pending.pop(0)
+            subtree = await self._request(
+                "GET",
+                f"/repos/{owner}/{repo}/git/trees/{entry['sha']}",
+                params={"recursive": "1"},
+                token=token,
+            )
+            all_entries.extend(subtree.get("tree", []))
+        return all_entries
+
+    async def get_file_contents(
+        self,
+        owner: str,
+        repo: str,
+        path: str,
+        ref: str,
+        token: str,
+    ) -> str:
+        """Get decoded file contents from a repository."""
+        data = await self._request(
+            "GET",
+            f"/repos/{owner}/{repo}/contents/{path}",
+            params={"ref": ref},
+            token=token,
+        )
+
+        # Skip files > 1MB
+        if data.get("size", 0) > 1_000_000:
+            logger.warning("file_too_large path=%s size=%d", path, data.get("size", 0))
+            return ""
+
+        content = data.get("content", "")
+        encoding = data.get("encoding", "")
+
+        if encoding == "base64":
+            return base64.b64decode(content).decode("utf-8", errors="replace")
+        return content
 
     async def get_repository(
         self,

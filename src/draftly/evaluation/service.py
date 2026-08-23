@@ -2,16 +2,16 @@
 
 from __future__ import annotations
 
-import logging
 from collections.abc import Callable
 from typing import Any
 
+import structlog
 from strands_evals import Case
 
 from draftly.evaluation.failure_analyzer import FailureAnalyzer
 from draftly.evaluation.runner import StrandsEvalsRunner
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 
 class EvaluationService:

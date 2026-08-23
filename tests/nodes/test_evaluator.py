@@ -6,6 +6,8 @@ import json
 
 import pytest
 
+from strands.agent.agent_result import AgentResult
+
 from draftly.orchestration.nodes.base import parse_node_input
 from draftly.orchestration.nodes.evaluate import EvaluatorNode, compute_quality
 
@@ -64,7 +66,9 @@ class TestEvaluatorNode:
         )
         node = EvaluatorNode()
         result = await node.invoke_async(_blocks(evidence, draft))
-        payload = result.results["evaluate"].result.message["content"][0]["text"]
+        node_result = result.results["evaluate"].result
+        assert isinstance(node_result, AgentResult)
+        payload = node_result.message["content"][0]["text"]
 
         data = json.loads(payload)
         assert set(data) == {"passed", "score", "reasons", "iteration"}
@@ -78,11 +82,15 @@ class TestEvaluatorNode:
         blocks = _blocks([], "tiny")
 
         first = await node.invoke_async(blocks)
-        first_data = json.loads(first.results["evaluate"].result.message["content"][0]["text"])
+        first_result = first.results["evaluate"].result
+        assert isinstance(first_result, AgentResult)
+        first_data = json.loads(first_result.message["content"][0]["text"])
         assert first_data["passed"] is False
 
         second = await node.invoke_async(blocks)
-        second_data = json.loads(second.results["evaluate"].result.message["content"][0]["text"])
+        second_result = second.results["evaluate"].result
+        assert isinstance(second_result, AgentResult)
+        second_data = json.loads(second_result.message["content"][0]["text"])
         assert second_data["passed"] is True  # iteration >= max_iterations
         assert second_data["iteration"] == 2
 
@@ -92,7 +100,9 @@ class TestEvaluatorNode:
         draft = "Answer text neon doc-1 " * 30
         node = EvaluatorNode()
         result = await node.invoke_async(_blocks(evidence, draft, source="answer"))
-        payload = json.loads(result.results["evaluate"].result.message["content"][0]["text"])
+        node_result = result.results["evaluate"].result
+        assert isinstance(node_result, AgentResult)
+        payload = json.loads(node_result.message["content"][0]["text"])
         assert payload["score"] >= 0.7
 
     @pytest.mark.asyncio
@@ -108,7 +118,9 @@ class TestEvaluatorNode:
         ]
         node = EvaluatorNode()
         result = await node.invoke_async(blocks)
-        payload = json.loads(result.results["evaluate"].result.message["content"][0]["text"])
+        node_result = result.results["evaluate"].result
+        assert isinstance(node_result, AgentResult)
+        payload = json.loads(node_result.message["content"][0]["text"])
         assert payload["passed"] is False
         assert payload["score"] < 0.7
 

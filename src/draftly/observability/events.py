@@ -8,13 +8,14 @@ from __future__ import annotations
 
 import asyncio
 import json
-import logging
 from collections import defaultdict
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from typing import Any
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 async def stream_graph_events(

@@ -8,12 +8,13 @@ in-memory fallback so callers never fail because of auditing.
 
 from __future__ import annotations
 
-import logging
 from collections import deque
 from datetime import UTC, datetime
 from typing import Any
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 class AuditTrail:

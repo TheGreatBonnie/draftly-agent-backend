@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-import logging
 from typing import Any
+
+import structlog
 
 from draftly.documentation.analyzer import DocumentationAnalyzer
 from draftly.persistence.repositories.documents import DocumentRepository
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 
 class DocumentationIndexer:

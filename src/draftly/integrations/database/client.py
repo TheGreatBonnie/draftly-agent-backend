@@ -95,7 +95,7 @@ class DatabaseClient:
 
     @staticmethod
     async def execute_conn(conn: asyncpg.Connection, query: str, *args: Any) -> str:
-        return cast(str, await conn.execute(query, *args))
+        return await conn.execute(query, *args)
 
     @staticmethod
     async def fetch_one_conn(conn: asyncpg.Connection, query: str, *args: Any) -> Any:

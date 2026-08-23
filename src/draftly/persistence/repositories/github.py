@@ -8,6 +8,38 @@ from typing import Any, cast
 from draftly.integrations.database.client import DatabaseClient
 
 
+class GitHubInstallationsRepository:
+    """Org-scoped access to github_installations for workflow contexts."""
+
+    def __init__(self, db: DatabaseClient | None = None) -> None:
+        self.db = db or DatabaseClient()
+
+    async def list_by_org(self, org_id: str) -> list[dict[str, Any]]:
+        """List installations belonging to one org (clerk_org_id)."""
+        rows = await self.db.fetch_all(
+            """
+            SELECT gi.id::text, gi.installation_id, gi.github_org, gi.repositories,
+                   gi.created_at, gi.updated_at
+            FROM github_installations gi
+            WHERE gi.org_id = $1
+            ORDER BY gi.created_at DESC
+            """,
+            org_id,
+        )
+        result = []
+        for row in rows:
+            d = dict(row)
+            if isinstance(d.get("repositories"), str):
+                d["repositories"] = json.loads(d["repositories"])
+            result.append(d)
+        return result
+
+    async def first_for_org(self, org_id: str) -> dict[str, Any] | None:
+        """Most recent installation for an org, or None."""
+        installs = await self.list_by_org(org_id)
+        return installs[0] if installs else None
+
+
 async def get_org_by_github_org(
     *,
     github_org: str,

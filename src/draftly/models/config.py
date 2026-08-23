@@ -27,6 +27,12 @@ class ModelConfig:
 
     enabled: bool = True
 
+    # Routing metadata (spec: operational layer). Optional; unpriced or
+    # window-less models fall back to sentinel cost / conservative window.
+    context_window: int | None = None
+    input_cost_per_1m_tokens: float | None = None
+    output_cost_per_1m_tokens: float | None = None
+
 
 @dataclass(frozen=True)
 class EmbeddingConfig:

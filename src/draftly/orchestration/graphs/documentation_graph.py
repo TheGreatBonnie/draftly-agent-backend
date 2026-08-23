@@ -24,12 +24,13 @@ Deviations from the plan, forced by strands-agents 1.52.0 behavior:
 
 from __future__ import annotations
 
-import logging
 from typing import Any
 
+import structlog
 from strands.multiagent import GraphBuilder
 from strands.session.session_manager import SessionManager
 
+from draftly.integrations.strands.models import resolve_model_for_role
 from draftly.orchestration.hooks.audit import RunAuditLogger
 from draftly.orchestration.hooks.review_gate import ReviewGate
 from draftly.orchestration.nodes.evaluate import EvaluatorNode
@@ -43,7 +44,7 @@ from draftly.orchestration.routing.conditions import (
     route_to_update,
 )
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 DEFAULT_GRAPH_ID = "draftly-main-graph"
 DEFAULT_MAX_NODE_EXECUTIONS = 10
@@ -120,12 +121,15 @@ def build_documentation_graph(
         _dedupe(reg.semantic_search, reg.keyword_search),
     )
     # Two DISTINCT instances: the SDK rejects duplicate executors.
+    # Per-task routing: writer nodes resolve their own model when a
+    # resolver is wired in; concrete/shared models pass through verbatim.
+    writer_model = resolve_model_for_role(model, "documentation_engineer")
     update_writer = build_writer_agent(
-        model,
+        writer_model,
         _dedupe(reg.documentation_engineer, reg.documentation),
     )
     create_writer = build_writer_agent(
-        model,
+        writer_model,
         _dedupe(reg.documentation_engineer, reg.documentation),
     )
     delivery_agent = build_delivery_agent(
@@ -188,7 +192,8 @@ def build_documentation_graph(
     builder.reset_on_revisit(True)
 
     # Session persistence + hooks (providers MUST be set pre-build)
-    builder.set_session_manager(session_manager)
+    if session_manager is not None:
+        builder.set_session_manager(session_manager)
     providers: list[Any] = [ReviewGate()]
     if audit_repo is not None:
         providers.append(RunAuditLogger(audit_repo))

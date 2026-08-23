@@ -14,13 +14,20 @@ import os
 import signal
 import sys
 
+import structlog
+
 from draftly.app.config import get_settings
 from draftly.app.lifecycle import create_application
+from draftly.observability.logging import configure_logging
 
 INTERVAL_SECONDS = int(os.getenv("EVALUATION_INTERVAL_SECONDS", "3600"))
 
 
 async def run(*, watch: bool = False) -> None:
+    configure_logging(settings=get_settings())
+    log = structlog.get_logger("draftly.worker.evaluation")
+    structlog.contextvars.bind_contextvars(worker="evaluation")
+
     application = create_application(settings=get_settings())
     await application.startup()
     try:
@@ -33,7 +40,7 @@ async def run(*, watch: bool = False) -> None:
             loop.add_signal_handler(sig, stop.set)
         while True:
             result = await worker.run_task("evaluation.loop")
-            print(f"evaluation.loop → {result}")  # noqa: T201 - CLI output
+            log.info("evaluation_loop_result", result=result)
             if not watch:
                 break
             try:

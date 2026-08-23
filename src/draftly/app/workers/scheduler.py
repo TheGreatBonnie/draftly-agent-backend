@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 from typing import Any
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 class DraftlyScheduler:
@@ -107,13 +108,11 @@ class DraftlyScheduler:
 
         logger.info(
             "Executing scheduled job",
-            extra={
-                "job": getattr(
-                    job,
-                    "name",
-                    "unknown",
-                ),
-            },
+            job=getattr(
+                job,
+                "name",
+                "unknown",
+            ),
         )
 
         await self.task_runner.run(

@@ -4,15 +4,16 @@ from __future__ import annotations
 
 from typing import Any
 
-from strands.multiagent.base import MultiAgentResult
+from strands.multiagent.base import MultiAgentBase, MultiAgentResult, Status
 
 from draftly.agents.shared.memory_grounding import MemoryGroundedNode
 
 
-class RecordingInner:
+class RecordingInner(MultiAgentBase):
     name = "context"
 
     def __init__(self) -> None:
+        super().__init__()
         self.received: Any = None
 
     async def invoke_async(
@@ -22,7 +23,7 @@ class RecordingInner:
         **kwargs: Any,
     ) -> MultiAgentResult:
         self.received = task
-        return MultiAgentResult(status=None)
+        return MultiAgentResult(status=Status.COMPLETED)
 
 
 class FakeMemory:

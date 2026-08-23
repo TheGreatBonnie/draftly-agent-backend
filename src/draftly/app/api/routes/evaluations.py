@@ -56,7 +56,7 @@ async def run_evaluations(request: Request) -> dict[str, Any]:
     workflows = getattr(application, "workflows", None)
     registry = getattr(workflows, "registry", None)
     func = registry.get("evaluation_loop") if registry else None
-    if func is None:
+    if workflows is None or func is None:
         raise HTTPException(status_code=503, detail="Runtime not started")
     state = await func(workflows.context)
     return {

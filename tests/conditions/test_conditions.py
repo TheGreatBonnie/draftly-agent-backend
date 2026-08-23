@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from typing import Any, cast
 
 from strands.multiagent.base import MultiAgentResult, NodeResult, Status
 from strands.multiagent.graph import GraphState
@@ -59,7 +60,7 @@ class TestIsValidSurface:
         assert not is_valid_surface(state)
 
     def test_non_string_task(self) -> None:
-        state = GraphState(task=["not", "a", "string"])
+        state = GraphState(task=cast(Any, ["not", "a", "string"]))
         assert not is_valid_surface(state)
 
     def test_invalid_json(self) -> None:

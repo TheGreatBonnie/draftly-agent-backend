@@ -6,9 +6,9 @@ the feedback loop by the runner via the support event store.
 
 from __future__ import annotations
 
-import logging
 from typing import Any
 
+import structlog
 from strands.multiagent import GraphBuilder
 from strands.session.session_manager import SessionManager
 
@@ -31,7 +31,7 @@ from draftly.orchestration.routing.conditions import (
     route_to_update_of,
 )
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 SUPPORT_GRAPH_ID = "draftly-support-graph"
 
@@ -158,7 +158,8 @@ def build_support_graph(
     builder.set_node_timeout(node_timeout)
     builder.reset_on_revisit(True)
 
-    builder.set_session_manager(session_manager)
+    if session_manager is not None:
+        builder.set_session_manager(session_manager)
     providers: list[Any] = [ReviewGate()]
     if audit_repo is not None:
         from draftly.orchestration.hooks.audit import RunAuditLogger

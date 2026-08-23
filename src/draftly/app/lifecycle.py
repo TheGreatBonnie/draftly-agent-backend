@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any
 
+import structlog
 from fastapi import FastAPI
 
 from draftly.app.composition.agents import AgentRegistry, build_agents
@@ -21,8 +21,9 @@ from draftly.app.dependencies import (
     build_dependencies,
 )
 from draftly.app.workers.worker import DraftlyWorker
+from draftly.observability.logging import configure_logging
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 
 @dataclass(slots=True)
@@ -74,6 +75,16 @@ class DraftlyApplication:
 
         try:
             await self._start_infrastructure()
+
+            # Seed the router's EMA cache from persisted performance rows.
+            repositories = self.dependencies.repositories
+            stats_store = self.dependencies.models.stats_store
+            if stats_store is not None:
+                repositories.performance.bind_stats_store(stats_store)
+                try:
+                    await repositories.performance.warm_start()
+                except Exception:  # cold DB must not block startup
+                    logger.warning("routing_warm_start_skipped")
 
             # Build agents and workflows after checkpointer is ready
             await self._build_agents_and_workflows()
@@ -365,6 +376,8 @@ def create_application(
     """
 
     settings = settings if settings is not None else get_settings()
+
+    configure_logging(settings=settings)
 
     # --------------------------------------------------------
     # Infrastructure

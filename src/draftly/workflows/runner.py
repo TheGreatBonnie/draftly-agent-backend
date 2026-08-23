@@ -12,18 +12,19 @@ with store_interrupt) and test-injectable via ``graph_factory``.
 from __future__ import annotations
 
 import json
-import logging
+import time
 from collections.abc import Callable
 from typing import Any
 from uuid import uuid4
 
+import structlog
 from strands.multiagent.base import Status
 
 from draftly.events.dispatcher import EventDispatcher
 from draftly.workflows.context import WorkflowContext
 from draftly.workflows.state import WorkflowState, WorkflowStatus
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 GraphFactory = Callable[[str, str], Any]
 
@@ -90,6 +91,7 @@ class WorkflowRunner:
 
         # 3. Invoke; runtime context rides in invocation_state, never in
         #    the prompt. ReviewGate reads review_policy before delivering.
+        started = time.monotonic()
         result = await graph.invoke_async(
             json.dumps(event),
             invocation_state={
@@ -102,6 +104,11 @@ class WorkflowRunner:
                 "event_type": str(event.get("event_type") or "unknown"),
                 "project_id": str(event.get("project_id") or ""),
             },
+        )
+        await self._record_routing_outcome(
+            run_id=run_id,
+            success=result.status == Status.COMPLETED,
+            latency_ms=(time.monotonic() - started) * 1000.0,
         )
         state.result = result
 
@@ -119,6 +126,45 @@ class WorkflowRunner:
         state.errors.extend(failed)
         await self._mark(event, "failed")
         return state.finish(WorkflowStatus.FAILED)
+
+    async def _record_routing_outcome(
+        self, *, run_id: str, success: bool, latency_ms: float
+    ) -> None:
+        """Best-effort telemetry: never fail the workflow over bookkeeping."""
+        decision = getattr(self.context, "routing_decision", None)
+        if decision is None:
+            return
+        try:
+            repositories = getattr(self.context, "repositories", None)
+            if repositories is None:
+                return
+            # Telemetry aggregates are keyed by TASK type; profile is only a
+            # display label (e.g. research tasks run on the reasoning profile).
+            task_type = decision.task_type or decision.profile
+            await repositories.routing.record({
+                "request_id": run_id,
+                "organization_id": None,
+                "task_type": task_type,
+                "selected_model": decision.selected_model,
+                "provider": decision.provider,
+                "score": decision.score,
+                "candidates_considered": decision.candidates_considered,
+                "profile": decision.profile,
+                "reason_codes": list(decision.reason_codes),
+                "fallback_chain": list(decision.fallback_chain),
+                "estimated_cost": decision.estimated_cost,
+                "estimated_latency_ms": decision.estimated_latency_ms,
+                "latency_ms": latency_ms,
+                "success": success,
+            })
+            await repositories.performance.record_outcome(
+                task_type=task_type,
+                model_name=decision.selected_model,
+                success=success,
+                latency_ms=latency_ms,
+            )
+        except Exception:
+            logger.warning("routing_telemetry_failed", exc_info=True)
 
     @staticmethod
     def _failed_node_ids(result: Any) -> list[str]:

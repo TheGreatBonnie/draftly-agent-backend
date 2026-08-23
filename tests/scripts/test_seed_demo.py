@@ -94,16 +94,18 @@ class FakeDocumentStoreForScripts:
 
 
 def _write_corpus(root: Path) -> Path:
-    """Create a small fake authly/docs corpus and return its path."""
+    """Create a small fake authly/docs corpus (Diátaxis layout) and return its path."""
     docs_dir = root / "docs"
-    docs_dir.mkdir(parents=True)
-    (docs_dir / "getting-started.md").write_text(
+    (docs_dir / "tutorials").mkdir(parents=True)
+    (docs_dir / "how-to").mkdir()
+    (docs_dir / "reference").mkdir()
+    (docs_dir / "tutorials" / "getting-started.md").write_text(
         "# Getting started\n\nInstall the client.\n", encoding="utf-8"
     )
-    (docs_dir / "troubleshooting.md").write_text(
+    (docs_dir / "how-to" / "troubleshooting.md").write_text(
         "# Troubleshooting\n\nCommon fixes.\n", encoding="utf-8"
     )
-    (docs_dir / "webhooks.md").write_text(
+    (docs_dir / "reference" / "webhooks.md").write_text(
         "# Webhooks\n\nHMAC-SHA256 signing helper.\n", encoding="utf-8"
     )
     return docs_dir
@@ -145,15 +147,15 @@ async def test_load_demo_docs_reads_sorted_corpus_with_titles_and_types(tmp_path
     docs = module._load_demo_docs(_write_corpus(tmp_path))
 
     assert [doc["path"] for doc in docs] == [
-        "getting-started.md",
-        "troubleshooting.md",
-        "webhooks.md",
+        "how-to/troubleshooting.md",
+        "reference/webhooks.md",
+        "tutorials/getting-started.md",
     ]
     by_path = {doc["path"]: doc for doc in docs}
-    assert by_path["getting-started.md"]["title"] == "Getting started"
-    assert by_path["getting-started.md"]["document_type"] == "tutorial"
-    assert by_path["troubleshooting.md"]["document_type"] == "how-to"
-    assert by_path["webhooks.md"]["document_type"] == "conceptual"
+    assert by_path["tutorials/getting-started.md"]["title"] == "Getting started"
+    assert by_path["tutorials/getting-started.md"]["document_type"] == "tutorial"
+    assert by_path["how-to/troubleshooting.md"]["document_type"] == "how-to"
+    assert by_path["reference/webhooks.md"]["document_type"] == "api-reference"
     for doc in docs:
         assert doc["repository"] == module.DEMO_REPOSITORY
         assert doc["metadata"]["source"] == "seed"
@@ -162,12 +164,12 @@ async def test_load_demo_docs_reads_sorted_corpus_with_titles_and_types(tmp_path
 @pytest.mark.parametrize(
     ("filename", "expected"),
     [
-        ("getting-started.md", "tutorial"),
-        ("faq.md", "how-to"),
-        ("troubleshooting.md", "how-to"),
-        ("sdk.md", "api-reference"),
-        ("cli.md", "api-reference"),
-        ("oauth.md", "conceptual"),
+        ("tutorials/getting-started.md", "tutorial"),
+        ("how-to/faq.md", "how-to"),
+        ("how-to/troubleshooting.md", "how-to"),
+        ("reference/sdk.md", "api-reference"),
+        ("reference/cli.md", "api-reference"),
+        ("explanation/oauth.md", "conceptual"),
         ("index.md", "conceptual"),
     ],
 )

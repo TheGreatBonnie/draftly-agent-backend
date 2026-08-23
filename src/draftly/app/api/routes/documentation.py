@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from pydantic import BaseModel
 
 from draftly.app.api.auth import get_verified_token
 
@@ -25,6 +27,89 @@ def _documents(request: Request) -> Any:
     if repo is None:
         raise HTTPException(status_code=503, detail="Store unavailable")
     return repo
+
+
+class SyncRequest(BaseModel):
+    repository_full_name: str
+    include: list[str] | None = None
+    exclude: list[str] | None = None
+
+
+def _worker(request: Request):
+    """Resolve the background worker from application state."""
+    worker = getattr(request.app.state.draftly, "worker", None)
+    if worker is None:
+        raise HTTPException(status_code=503, detail="Background worker is disabled")
+    return worker
+
+
+@router.post("/sync")
+async def sync_documentation(
+    request: Request,
+    body: SyncRequest,
+    token: dict = Depends(get_verified_token),
+) -> dict[str, Any]:
+    """Run documentation sync for a repository (synchronous via the task runner)."""
+    org_id = token.get("org_id")
+    if not org_id:
+        raise HTTPException(status_code=400, detail="No organization selected")
+
+    worker = _worker(request)
+    if not worker.task_runner.has_task("documentation.sync_repository"):
+        raise HTTPException(status_code=404, detail="Unknown job: documentation.sync_repository")
+
+    result = await worker.run_task(
+        "documentation.sync_repository",
+        org_id=org_id,
+        repository_full_name=body.repository_full_name,
+        include=body.include,
+        exclude=body.exclude,
+    )
+
+    return {"status": "completed", "result": result}
+
+
+@router.get("/sync/{job_id}")
+async def get_sync_status(
+    job_id: str,
+    request: Request,
+    token: dict = Depends(get_verified_token),
+) -> dict[str, Any]:
+    """Look up a sync run's job record."""
+    jobs = request.app.state.draftly.dependencies.repositories.jobs
+    record = await jobs.get(job_id=job_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail=f"Unknown job: {job_id}")
+    return {"job": record}
+
+
+@router.get("/baseline")
+async def get_baseline(
+    request: Request,
+    repository: str,
+    token: dict = Depends(get_verified_token),
+) -> dict[str, Any]:
+    """Live baseline: current indexed state for a repository.
+
+    v1 executes sync synchronously and returns the BaselineSnapshot in the
+    POST /sync response; this endpoint reports the live indexed state.
+    """
+    org_id = token.get("org_id")
+    if not org_id:
+        raise HTTPException(status_code=400, detail="No organization selected")
+
+    documents = _documents(request)
+    rows = await documents.list_by_org(org_id=org_id, limit=1000)
+    repo_rows = [row for row in rows if row.get("repository") == repository]
+    shas = [row.get("commit_sha") for row in repo_rows if row.get("commit_sha")]
+    latest = Counter(shas).most_common(1)[0][0] if shas else None
+
+    return {
+        "repository": repository,
+        "document_count": len(repo_rows),
+        "latest_commit_sha": latest,
+        "stale_count": sum(1 for row in repo_rows if row.get("status") == "stale"),
+    }
 
 
 @router.get("")

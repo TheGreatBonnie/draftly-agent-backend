@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 TaskHandler = Callable[..., Awaitable[Any]]
@@ -75,9 +76,7 @@ class TaskRunner:
 
         logger.info(
             "Running Draftly task",
-            extra={
-                "task": name,
-            },
+            task=name,
         )
 
         try:
@@ -86,17 +85,13 @@ class TaskRunner:
         except Exception:
             logger.exception(
                 "Draftly task failed",
-                extra={
-                    "task": name,
-                },
+                task=name,
             )
             raise
 
         logger.info(
             "Draftly task completed",
-            extra={
-                "task": name,
-            },
+            task=name,
         )
 
         return result

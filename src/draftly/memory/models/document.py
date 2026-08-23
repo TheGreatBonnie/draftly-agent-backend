@@ -12,3 +12,6 @@ class Document(MemoryItem):
     path: str | None = None
     repository: str | None = None
     title: str | None = None
+    heading_path: str | None = None
+    start_line: int | None = None
+    end_line: int | None = None

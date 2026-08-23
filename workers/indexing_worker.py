@@ -13,13 +13,20 @@ import asyncio
 import os
 import signal
 
+import structlog
+
 from draftly.app.config import get_settings
 from draftly.app.lifecycle import create_application
+from draftly.observability.logging import configure_logging
 
 INTERVAL_SECONDS = int(os.getenv("INDEXING_INTERVAL_SECONDS", "300"))
 
 
 async def run() -> None:
+    configure_logging(settings=get_settings())
+    log = structlog.get_logger("draftly.worker.indexing")
+    structlog.contextvars.bind_contextvars(worker="indexing")
+
     application = create_application(settings=get_settings())
     await application.startup()
     try:
@@ -34,9 +41,7 @@ async def run() -> None:
             try:
                 await worker.run_task("documentation.sync")
             except Exception:
-                import logging
-
-                logging.getLogger(__name__).exception("indexing_run_failed")
+                log.exception("indexing_run_failed")
             try:
                 await asyncio.wait_for(stop.wait(), timeout=INTERVAL_SECONDS)
             except TimeoutError:

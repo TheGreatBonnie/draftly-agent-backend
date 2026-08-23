@@ -55,7 +55,7 @@ async def handle_message_create(data: dict[str, Any], *, app_state: Any = None) 
     4. Are in a configured trigger channel (or no channels configured = no trigger)
     """
     from draftly.integrations.discord.gateway import gateway
-    from draftly.integrations.shared.org_resolution import get_org_by_discord_guild
+    from draftly.persistence.repositories.organizations import get_org_by_discord_guild
 
     guild_id = data.get("guild_id", "")
     channel_id = data.get("channel_id", "")
@@ -176,21 +176,23 @@ async def _dispatch_to_event_bus(
     user_id: str,
     data: dict[str, Any],
 ) -> None:
-    """Dispatch Discord message to EventBus via DiscordEventProcessor."""
-    from draftly.events.discord_events import DiscordEventProcessor
+    """Normalize the Discord message and hand it to the workflow runner."""
+    from draftly.app.api.app import app as api_app
 
-    processor = DiscordEventProcessor()
-    asyncio.create_task(
-        processor.process(
-            event_type="MESSAGE_CREATE",
-            payload={
-                "guild_id": guild_id,
-                "channel_id": channel_id,
-                "id": message_id,
-                "content": text,
-                "author": {"id": user_id, "username": data.get("author", {}).get("username", "")},
-                "mentions": data.get("mentions", []),
-                "thread_id": thread_id,
-            },
-        )
-    )
+    app_state = getattr(api_app.state, "draftly", None)
+    if app_state is None or getattr(app_state, "events", None) is None:
+        logger.warning("discord_runtime_not_started")
+        return
+
+    payload = {
+        "guild_id": guild_id,
+        "channel_id": channel_id,
+        "id": message_id,
+        "content": text,
+        "author": {"id": user_id, "username": data.get("author", {}).get("username", "")},
+        "mentions": data.get("mentions", []),
+        "thread_ts": thread_id,
+    }
+    event = (await app_state.events.normalize_discord(payload)).model_dump()
+
+    asyncio.create_task(app_state.workflows.runner.run(event))

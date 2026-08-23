@@ -6,10 +6,11 @@ deterministic Contains evaluator; LLM-judge scoring lands in §8.2.
 
 from __future__ import annotations
 
-import logging
 from typing import Any
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 def evaluate_support_answer(

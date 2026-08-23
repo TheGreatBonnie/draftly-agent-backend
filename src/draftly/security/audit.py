@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import json
-import logging
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
-audit_logger = logging.getLogger("draftly.security.audit")
+import structlog
+
+audit_logger = structlog.get_logger("draftly.security.audit")
 
 
 @dataclass
@@ -38,7 +39,7 @@ class AuditEvent:
 class SecurityAuditLogger:
     """Structured audit trail via the ``draftly.security.audit`` logger."""
 
-    def __init__(self, logger_: logging.Logger | None = None) -> None:
+    def __init__(self, logger_: Any | None = None) -> None:
         self.logger = logger_ or audit_logger
 
     def record(self, event: AuditEvent) -> None:

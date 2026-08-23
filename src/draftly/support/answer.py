@@ -29,7 +29,11 @@ class SupportAnswerValidator:
         """Score an answer; grounded requires ≥1 evidence citation."""
         evidence = evidence or []
         found = self.citations(content)
-        cited_ids = [e.get("id") for e in evidence if e.get("id") and e.get("id") in content]
+        cited_ids = [
+            cited_id
+            for evidence_item in evidence
+            if isinstance(cited_id := evidence_item.get("id"), str) and cited_id in content
+        ]
         grounded = bool(cited_ids) or bool(found)
 
         length_ok = self.MIN_LENGTH <= len(content) <= self.MAX_LENGTH

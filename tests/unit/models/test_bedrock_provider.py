@@ -36,6 +36,8 @@ class TestBedrockProvider:
 
     def test_create_model_applies_config(self) -> None:
         """create_model should apply model_id, temperature, max_tokens from config."""
+        from strands.models import BedrockModel as StrandsBedrockModel
+
         provider = self._provider()
         config = ModelConfig(
             name="test-model",
@@ -47,6 +49,7 @@ class TestBedrockProvider:
 
         model = provider.create_model(config)
 
+        assert isinstance(model, StrandsBedrockModel)
         assert model.config["model_id"] == "global.anthropic.claude-sonnet-4-6"
         assert model.config["temperature"] == 0.5
         assert model.config["max_tokens"] == 2048
@@ -81,8 +84,8 @@ class TestBuildModelRouterWithBedrock:
 
         assert "bedrock" in router.registry.providers()
 
-    def test_build_model_router_registers_bedrock_models(self) -> None:
-        """build_model_router should register Bedrock models."""
+    def test_build_model_router_does_not_register_unreachable_bedrock_models(self) -> None:
+        """build_model_router should not register unreachable Bedrock models."""
         import os
 
         os.environ["AWS_REGION"] = "us-east-1"
@@ -94,7 +97,7 @@ class TestBuildModelRouterWithBedrock:
         bedrock_models = router.registry.list_models()
         bedrock_model_names = [m.name for m in bedrock_models if m.provider == "bedrock"]
 
-        assert "reasoning-bedrock-nova" in bedrock_model_names
-        assert "fast-bedrock-nova" in bedrock_model_names
-        assert "reasoning-bedrock-claude" in bedrock_model_names
-        assert "fast-bedrock-claude" in bedrock_model_names
+        assert "reasoning-bedrock-nova" not in bedrock_model_names
+        assert "fast-bedrock-nova" not in bedrock_model_names
+        assert "reasoning-bedrock-claude" not in bedrock_model_names
+        assert "fast-bedrock-claude" not in bedrock_model_names

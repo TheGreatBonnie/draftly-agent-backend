@@ -8,12 +8,13 @@ fail in offline/CI environments (no model keys).
 from __future__ import annotations
 
 import hashlib
-import logging
 import math
 from collections.abc import Sequence
 from typing import Any
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 FALLBACK_DIMENSIONS = 256
 

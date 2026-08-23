@@ -1,9 +1,8 @@
-import logging
-
+import structlog
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
-logger = logging.getLogger("draftly.errors")
+logger = structlog.get_logger("draftly.errors")
 
 
 def register_error_handlers(
@@ -24,10 +23,8 @@ def register_error_handlers(
 
         logger.exception(
             "Unhandled application exception.",
-            extra={
-                "request_id": request_id,
-                "path": request.url.path,
-            },
+            request_id=request_id,
+            path=request.url.path,
         )
 
         return JSONResponse(

@@ -69,6 +69,7 @@ async def test_runner_builds_experiment_and_persists(
     assert [c.name for c in experiment.cases] == ["a", "b"]
     assert experiment.task_calls  # task callable was passed through
 
+    assert record is not None
     assert report.overall_score == pytest.approx(0.5)
     assert record["org_id"] == "org-9"
     assert record["status"] == "failed"  # one case failed

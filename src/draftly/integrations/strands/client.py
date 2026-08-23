@@ -7,19 +7,21 @@ the workflow runner.
 
 from __future__ import annotations
 
-import logging
 from dataclasses import dataclass, field
 from typing import Any
+
+import structlog
 
 from draftly.integrations.strands.graph import (
     DEFAULT_SESSION_STORAGE_DIR,
     build_graph_for_run,
     build_session_manager,
 )
-from draftly.integrations.strands.models import build_model
+from draftly.integrations.strands.models import RoleAwareModelResolver, build_model
 from draftly.integrations.strands.tools import GraphTools, build_graph_tools
+from draftly.models.router import ModelRouter
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 
 @dataclass
@@ -35,6 +37,9 @@ class StrandsClient:
     def __post_init__(self) -> None:
         if self.model is None:
             self.model = build_model()
+
+        if isinstance(self.model, ModelRouter):
+            self.model = RoleAwareModelResolver(self.model)
 
     def graph_for_run(
         self,

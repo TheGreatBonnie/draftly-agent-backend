@@ -361,12 +361,19 @@ async def resume_review(
         )
 
     from draftly.integrations.strands.graph import build_graph_for_run
+    from draftly.models.router import ModelRouter
+
+    model = getattr(context, "model", None)
+    if isinstance(model, ModelRouter):
+        from draftly.integrations.strands.models import RoleAwareModelResolver
+
+        model = RoleAwareModelResolver(model)
 
     graph = build_graph_for_run(
         run_id,
         surface=surface,
         tools_registry=getattr(context, "tools", None),
-        model=getattr(context, "model", None),
+        model=model,
         hooks=list(getattr(context, "hooks", []) or []),
         storage_dir=getattr(context, "storage_dir", ".draftly/sessions"),
         memory=getattr(context, "memory", None),

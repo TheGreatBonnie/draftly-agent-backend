@@ -5,8 +5,24 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass, field
 from types import SimpleNamespace
+from typing import Any, TypeVar, cast
+
+from strands.hooks import (
+    AfterInvocationEvent,
+    AfterNodeCallEvent,
+    AfterToolCallEvent,
+    BeforeInvocationEvent,
+    BeforeNodeCallEvent,
+)
 
 from draftly.orchestration.hooks.audit import RunAuditLogger
+
+_T = TypeVar("_T")
+
+
+def _ev(event_type: type[_T], **attrs: Any) -> _T:
+    """Duck-typed stand-in for a strands hook event."""
+    return cast(_T, SimpleNamespace(**attrs))
 
 
 @dataclass
@@ -36,20 +52,22 @@ class TestRunAuditLoggerFlush:
             "event_type": "pull_request.opened",
             "project_id": "org-1",
         }
-        hook.run_start(SimpleNamespace(invocation_state=state))
+        hook.run_start(_ev(BeforeInvocationEvent, invocation_state=state))
 
-        hook.node_start(SimpleNamespace(invocation_state=state, node_id="classify"))
+        hook.node_start(_ev(BeforeNodeCallEvent, invocation_state=state, node_id="classify"))
         hook.node_end(
-            SimpleNamespace(
+            _ev(
+                AfterNodeCallEvent,
                 invocation_state=state,
                 node_id="classify",
                 result=SimpleNamespace(status="COMPLETED"),
             )
         )
 
-        hook.node_start(SimpleNamespace(invocation_state=state, node_id="context"))
+        hook.node_start(_ev(BeforeNodeCallEvent, invocation_state=state, node_id="context"))
         hook.node_end(
-            SimpleNamespace(
+            _ev(
+                AfterNodeCallEvent,
                 invocation_state=state,
                 node_id="context",
                 result=SimpleNamespace(status="COMPLETED"),
@@ -57,14 +75,15 @@ class TestRunAuditLoggerFlush:
         )
 
         hook.tool_end(
-            SimpleNamespace(
+            _ev(
+                AfterToolCallEvent,
                 invocation_state=state,
                 tool_use={"name": "search_docs"},
                 result={"status": "success"},
             )
         )
 
-        hook.run_end(SimpleNamespace(invocation_state=state))
+        hook.run_end(_ev(AfterInvocationEvent, invocation_state=state))
         await _await_pending()
 
         assert len(repo.runs) == 1
@@ -85,13 +104,16 @@ class TestRunAuditLoggerFlush:
         hook = RunAuditLogger(repo)
         state = {"run_id": "run-7"}
 
-        hook.node_start(SimpleNamespace(invocation_state=state, node_id="evaluate"))
+        hook.node_start(_ev(BeforeNodeCallEvent, invocation_state=state, node_id="evaluate"))
         hook.node_end(
-            SimpleNamespace(
-                invocation_state=state, node_id="evaluate", result=SimpleNamespace(status="FAILED")
+            _ev(
+                AfterNodeCallEvent,
+                invocation_state=state,
+                node_id="evaluate",
+                result=SimpleNamespace(status="FAILED"),
             )
         )
-        hook.run_end(SimpleNamespace(invocation_state=state))
+        hook.run_end(_ev(AfterInvocationEvent, invocation_state=state))
         await _await_pending()
 
         assert repo.finished[0]["status"] == "failed"
@@ -104,23 +126,24 @@ class TestRunAuditLoggerFlush:
 
         hook = RunAuditLogger(BrokenRepo())
         state = {"run_id": "run-9"}
-        hook.run_start(SimpleNamespace(invocation_state=state))
-        hook.run_end(SimpleNamespace(invocation_state=state))
+        hook.run_start(_ev(BeforeInvocationEvent, invocation_state=state))
+        hook.run_end(_ev(AfterInvocationEvent, invocation_state=state))
         await _await_pending()  # must not raise
 
     async def test_no_repo_degrades_to_logs(self) -> None:
         hook = RunAuditLogger(None)
         state = {"run_id": "run-11"}
-        hook.run_start(SimpleNamespace(invocation_state=state))
-        hook.node_start(SimpleNamespace(invocation_state=state, node_id="classify"))
+        hook.run_start(_ev(BeforeInvocationEvent, invocation_state=state))
+        hook.node_start(_ev(BeforeNodeCallEvent, invocation_state=state, node_id="classify"))
         hook.node_end(
-            SimpleNamespace(
+            _ev(
+                AfterNodeCallEvent,
                 invocation_state=state,
                 node_id="classify",
                 result=SimpleNamespace(status="COMPLETED"),
             )
         )
-        hook.run_end(SimpleNamespace(invocation_state=state))
+        hook.run_end(_ev(AfterInvocationEvent, invocation_state=state))
         await _await_pending()
 
 

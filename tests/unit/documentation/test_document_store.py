@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, cast
 
+from draftly.integrations.database.client import DatabaseClient
 from draftly.integrations.database.document_store import DocumentStore
 
 
@@ -56,7 +57,7 @@ def _row(**overrides: Any) -> dict[str, Any]:
 
 async def test_upsert_document_insert_sets_title_and_document_type():
     client = ScriptedClient(responses=[None, _row(title="Guide", document_type="tutorial")])
-    store = DocumentStore(client)
+    store = DocumentStore(cast(DatabaseClient, client))
 
     record = await store.upsert_document(
         org_id="demo-org",
@@ -85,7 +86,7 @@ async def test_upsert_document_update_refreshes_title_and_document_type_when_pro
             _row(title="Updated", document_type="how-to"),
         ]
     )
-    store = DocumentStore(client)
+    store = DocumentStore(cast(DatabaseClient, client))
 
     record = await store.upsert_document(
         repository="draftly/draftly-docs",
@@ -108,7 +109,7 @@ async def test_upsert_document_update_refreshes_title_and_document_type_when_pro
 
 async def test_upsert_document_without_title_leaves_existing_columns_untouched():
     client = ScriptedClient(responses=[{"id": "doc-1"}, _row()])
-    store = DocumentStore(client)
+    store = DocumentStore(cast(DatabaseClient, client))
 
     await store.upsert_document(
         repository="draftly/draftly-docs",

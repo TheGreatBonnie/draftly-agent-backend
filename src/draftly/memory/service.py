@@ -2,15 +2,16 @@
 
 from __future__ import annotations
 
-import logging
 from typing import Any
+
+import structlog
 
 from draftly.memory.models import MemoryItem
 from draftly.memory.ranking import MemoryRanking
 from draftly.memory.repository import DomainMemoryRepository, MemoryNamespaces
 from draftly.memory.retrieval import MemoryRetrieval
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 
 class MemoryService:

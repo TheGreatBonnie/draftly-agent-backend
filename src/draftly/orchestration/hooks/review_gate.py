@@ -22,14 +22,14 @@ stable across processes and session restores.
 
 from __future__ import annotations
 
-import logging
 from typing import Any
 
+import structlog
 from strands.hooks import BeforeNodeCallEvent, HookProvider, HookRegistry
 
 from draftly.orchestration.routing.policies import should_review
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 REVIEW_NODE_ID = "deliver"
 INTERRUPT_NAME = "doc-review"

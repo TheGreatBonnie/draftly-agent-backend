@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+from typing import Any, cast
+
 from strands_evals import Case
+from strands_evals.types import EvaluationData
 
 from draftly.evaluation import FailureAnalyzer, StrandsEvalsRunner
 from draftly.evaluation.evaluators import (
@@ -107,6 +110,6 @@ class TestEvaluationDataStore:
     def test_protocol_cache_roundtrip(self) -> None:
         store = DatabaseEvaluationDataStore()
         data = Case(name="c1", input="x")
-        store.save("c1", data)
+        store.save("c1", cast(EvaluationData[Any, Any], data))
         assert store.load("c1") is data
         assert store.load("missing") is None

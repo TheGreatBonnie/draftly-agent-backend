@@ -114,27 +114,30 @@ async def _dispatch_message(event: dict, context: dict, deps: SlackAppDeps) -> N
     except Exception:
         logger.warning("slack_reaction_failed", channel=channel, ts=ts)
 
-    # Dispatch to EventBus via SlackEventProcessor
-    from draftly.events.slack_events import SlackEventProcessor
+    # Normalize to a support event and hand it to the workflow runner.
+    from draftly.app.api.app import app as api_app
 
-    processor = SlackEventProcessor()
     event_type = "app_mention" if text.startswith(f"<@{bot_user_id}>") else "message"
 
-    asyncio.create_task(
-        processor.process(
-            payload={
-                "event": {
-                    "type": event_type,
-                    "channel": channel,
-                    "ts": ts,
-                    "thread_ts": thread_ts,
-                    "text": clean_text,
-                    "user": user,
-                },
-                "team_id": team_id,
-            }
-        )
-    )
+    app_state = getattr(api_app.state, "draftly", None)
+    if app_state is None or getattr(app_state, "events", None) is None:
+        logger.warning("slack_runtime_not_started")
+        return
+
+    payload = {
+        "event": {
+            "type": event_type,
+            "channel": channel,
+            "ts": ts,
+            "thread_ts": thread_ts,
+            "text": clean_text,
+            "user": user,
+        },
+        "team_id": team_id,
+    }
+    event = (await app_state.events.normalize_slack(payload)).model_dump()
+
+    asyncio.create_task(app_state.workflows.runner.run(event))
 
     logger.info(
         "slack_message_dispatched",
@@ -176,10 +179,12 @@ async def _handle_review_action(action: dict, action_id: str) -> None:
     reviewer_id = action.get("user_id", action.get("user", {}).get("id", "unknown"))
 
     try:
-        # Get the ReviewDecisionService from app state
-        from draftly.app.main import app
+        # Get the ReviewDecisionService from the API app state
+        from draftly.app.api.app import app as api_app
 
-        review_decision = getattr(app.state.draftly, "review_decision", None)
+        review_decision = getattr(
+            getattr(api_app.state, "draftly", None), "review_decision", None
+        )
         if review_decision is None:
             logger.error("review_decision_service_not_available")
             return

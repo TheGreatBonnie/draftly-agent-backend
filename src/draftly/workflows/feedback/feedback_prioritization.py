@@ -6,10 +6,11 @@ frequency × severity for the knowledge-update step.
 
 from __future__ import annotations
 
-import logging
 from typing import Any
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 SEVERITY_WEIGHTS = {
     "breaking": 3,

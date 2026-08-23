@@ -75,5 +75,42 @@ class DomainMemoryRepository:
     async def delete(self, memory_id: str) -> bool:
         return await self.repository.delete(memory_id=memory_id)
 
+    async def delete_by_metadata(
+        self,
+        *,
+        namespace: str,
+        key: str,
+        value: str,
+    ) -> int:
+        """Delete all items in a namespace whose metadata[key] == value."""
+        items = await self.repository.list_namespace(namespace=namespace)
+        deleted = 0
+        for item in items:
+            if (item.get("metadata") or {}).get(key) == value:
+                if await self.repository.delete(item["id"]):
+                    deleted += 1
+        return deleted
+
+    async def store_batch(self, items: list[Any]) -> list[dict[str, Any]]:
+        """Persist many MemoryItems with a single embed_batch call."""
+        if not items:
+            return []
+        embeddings = self.embeddings.embed_batch([item.content for item in items])
+        results: list[dict[str, Any]] = []
+        for item, embedding in zip(items, embeddings):
+            results.append(
+                await self.repository.create(
+                    namespace=item.namespace,
+                    content=item.content,
+                    memory_type=item.memory_type,
+                    importance=float(item.importance),
+                    confidence=float(item.confidence),
+                    metadata=dict(item.metadata),
+                    embedding=embedding,
+                    org_id=item.org_id,
+                )
+            )
+        return results
+
     async def list_namespace(self, namespace: str) -> list[dict[str, Any]]:
         return await self.repository.list_namespace(namespace=namespace)

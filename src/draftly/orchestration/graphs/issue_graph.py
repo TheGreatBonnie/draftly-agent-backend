@@ -5,9 +5,9 @@ review → deliver (reply on the issue).
 
 from __future__ import annotations
 
-import logging
 from typing import Any
 
+import structlog
 from strands.multiagent import GraphBuilder
 from strands.session.session_manager import SessionManager
 
@@ -30,7 +30,7 @@ from draftly.orchestration.routing.conditions import (
     route_to_update,
 )
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 ISSUE_GRAPH_ID = "draftly-issue-graph"
 
@@ -135,7 +135,8 @@ def build_issue_graph(
     builder.set_node_timeout(node_timeout)
     builder.reset_on_revisit(True)
 
-    builder.set_session_manager(session_manager)
+    if session_manager is not None:
+        builder.set_session_manager(session_manager)
     providers: list[Any] = [ReviewGate()]
     if audit_repo is not None:
         from draftly.orchestration.hooks.audit import RunAuditLogger

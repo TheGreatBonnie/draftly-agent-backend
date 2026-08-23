@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-import logging
 from typing import Any
+
+import structlog
 
 from draftly.app.composition.workflows import ComposedWorkflows
 from draftly.app.dependencies import ApplicationDependencies
@@ -10,7 +11,7 @@ from draftly.app.workers.scheduler_adapter import SchedulerClientAdapter
 from draftly.app.workers.task_runner import TaskRunner
 from draftly.app.workers.worker import DraftlyWorker
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 
 # Scheduled task name → WorkflowRegistry workflow name. Surface workflows
@@ -18,9 +19,11 @@ logger = logging.getLogger(__name__)
 # here: they run through the webhook → WorkflowRunner path (§7.4).
 TASK_REGISTRY: dict[str, str] = {
     "documentation.sync": "documentation_sync",
+    "documentation.sync_repository": "documentation_sync",
     "documentation.stale_scan": "documentation_audit",
     "support.gap_scan": "feedback_loop",
     "evaluation.loop": "evaluation_loop",
+    "onboarding.initialize": "onboarding_initialize",
 }
 
 

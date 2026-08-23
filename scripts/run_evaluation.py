@@ -1,78 +1,60 @@
 #!/usr/bin/env python3
-"""Run evaluation batch (like evaluation_worker without --watch)."""
+"""Run the documentation evaluation loop over golden datasets."""
 
 import argparse
 import asyncio
+import json
 import os
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from draftly.app.composition import build_dependencies
-from draftly.workflows.evaluation.documentation_evaluation import DocumentationEvaluationWorkflow
-from draftly.workflows.evaluation.support_evaluation import SupportEvaluationWorkflow
+from draftly.app.config import get_settings
+from draftly.app.lifecycle import create_application
+from draftly.workflows.evaluation.documentation_evaluation import run_evaluation_loop
 
 
 async def main() -> int:
-    parser = argparse.ArgumentParser(description="Run evaluation batch")
+    parser = argparse.ArgumentParser(description="Run documentation evaluation")
     parser.add_argument(
-        "--type",
-        choices=["documentation", "support", "all"],
-        default="all",
-        help="Evaluation type",
+        "--datasets",
+        default=None,
+        help="JSON file with a list of dataset dicts (default: load configured datasets)",
     )
-    parser.add_argument("--project-id", help="Specific project ID (optional)")
-    parser.add_argument("--run-id", help="Specific run ID to evaluate (optional)")
-    parser.add_argument("--limit", type=int, default=50, help="Max items to evaluate")
     args = parser.parse_args()
 
     if not os.getenv("DATABASE_URL"):
         print("ERROR: DATABASE_URL not set")
         return 1
 
-    deps = await build_dependencies()
+    datasets = None
+    if args.datasets:
+        try:
+            with open(args.datasets) as f:
+                datasets = json.load(f)
+        except (OSError, json.JSONDecodeError) as e:
+            print(f"ERROR: Cannot load datasets file: {e}")
+            return 1
 
-    if args.type in ("documentation", "all"):
-        print("Running documentation evaluation...")
-        doc_workflow = DocumentationEvaluationWorkflow(deps)
-        run_id = await doc_workflow.run(
-            {
-                "project_id": args.project_id,
-                "run_id": args.run_id,
-                "limit": args.limit,
-            }
+    print("Running documentation evaluation loop...")
+
+    application = create_application(settings=get_settings())
+    await application.startup()
+    try:
+        assert application.workflows is not None
+        state = await run_evaluation_loop(
+            application.workflows.context,
+            datasets=datasets,
         )
-        print(f"Documentation evaluation started: {run_id}")
-
-        while True:
-            run = await deps.jobs_store.get_run(run_id)
-            if not run:
-                break
-            if run.status in ("completed", "failed", "cancelled"):
-                print(f"  {run.status}: {run.result or run.error}")
-                break
-            await asyncio.sleep(3)
-
-    if args.type in ("support", "all"):
-        print("Running support evaluation...")
-        support_workflow = SupportEvaluationWorkflow(deps)
-        run_id = await support_workflow.run(
-            {
-                "project_id": args.project_id,
-                "limit": args.limit,
-            }
-        )
-        print(f"Support evaluation started: {run_id}")
-
-        while True:
-            run = await deps.jobs_store.get_run(run_id)
-            if not run:
-                break
-            if run.status in ("completed", "failed", "cancelled"):
-                print(f"  {run.status}: {run.result or run.error}")
-                break
-            await asyncio.sleep(3)
+        print(f"Evaluation finished: {state.status}")
+        if state.result is not None:
+            print(json.dumps(state.result, indent=2, default=str))
+        if state.errors:
+            for error in state.errors:
+                print(f"  error: {error}")
+    finally:
+        await application.shutdown()
 
     print("Evaluation batch complete")
     return 0

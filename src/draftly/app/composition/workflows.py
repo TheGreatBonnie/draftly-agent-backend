@@ -6,14 +6,15 @@ workflow, plus the shared ``WorkflowRunner`` used by webhook routes.
 
 from __future__ import annotations
 
-import logging
 from dataclasses import dataclass, field
 from typing import Any
+
+import structlog
 
 from .agents import AgentRegistry
 from .tools import ToolRegistry
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 
 @dataclass(frozen=True)
@@ -64,6 +65,9 @@ def build_workflows(
     from draftly.workflows.github.issue_resolution import (
         run_github_issue_workflow,
     )
+    from draftly.workflows.onboarding.initialize import (
+        run_onboarding_initialize,
+    )
     from draftly.workflows.registry import WorkflowRegistry
     from draftly.workflows.runner import WorkflowRunner
     from draftly.workflows.support.discord_support_workflow import (
@@ -98,6 +102,7 @@ def build_workflows(
     registry.register("documentation_audit", run_documentation_audit)
     registry.register("feedback_loop", run_feedback_loop)
     registry.register("evaluation_loop", run_evaluation_loop)
+    registry.register("onboarding_initialize", run_onboarding_initialize)
 
     runner = WorkflowRunner(context)
 

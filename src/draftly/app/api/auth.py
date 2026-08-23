@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import base64
 
-import jwt  # ty: ignore[unresolved-import]
-import structlog  # ty: ignore[unresolved-import]
-from fastapi import Depends, HTTPException, Request  # ty: ignore[unresolved-import]
+import jwt
+import structlog
+from fastapi import Depends, HTTPException, Request
 
 from draftly.app.config import get_settings
 

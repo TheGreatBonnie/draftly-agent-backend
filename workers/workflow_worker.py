@@ -13,11 +13,16 @@ from __future__ import annotations
 import asyncio
 import signal
 
+import structlog
+
 from draftly.app.config import get_settings
 from draftly.app.lifecycle import create_application
+from draftly.observability.logging import configure_logging
 
 
 async def run() -> None:
+    configure_logging(settings=get_settings())
+    structlog.contextvars.bind_contextvars(worker="workflow")
     application = create_application(settings=get_settings())
     await application.startup()
     try:
