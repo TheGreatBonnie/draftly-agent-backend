@@ -30,13 +30,14 @@ def _evaluations(request: Request) -> Any:
 @router.get("")
 async def list_evaluations(
     request: Request,
+    token: dict = Depends(get_verified_token),
     evaluation_type: str | None = None,
     limit: int = 50,
 ) -> dict[str, Any]:
-    """List evaluation runs (plan §9.1)."""
+    """List evaluation runs for the caller's organization."""
     repo = _evaluations(request)
     items = await repo.search(
-        org_id="",
+        org_id=str(token.get("org_id") or ""),
         evaluation_type=evaluation_type,
         limit=max(1, min(limit, 200)),
     )

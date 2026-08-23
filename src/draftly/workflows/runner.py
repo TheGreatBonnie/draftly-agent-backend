@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import time
 from collections.abc import Callable
+from types import SimpleNamespace
 from typing import Any
 from uuid import uuid4
 
@@ -21,12 +22,41 @@ import structlog
 from strands.multiagent.base import Status
 
 from draftly.events.dispatcher import EventDispatcher
+from draftly.events.stream_envelope import StreamEnvelope, filter_graph_event
+from draftly.observability.metrics import Metrics
+from draftly.observability.metrics import metrics as _default_metrics
 from draftly.workflows.context import WorkflowContext
 from draftly.workflows.state import WorkflowState, WorkflowStatus
 
 logger = structlog.get_logger(__name__)
 
 GraphFactory = Callable[[str, str], Any]
+
+# Injectable registry (tests swap this for an isolated instance).
+_metrics: Metrics = _default_metrics
+
+
+def extract_token_usage(graph_result: Any, *, model: str) -> dict[str, int]:
+    """Sum accumulated token usage across agent nodes into the registry.
+
+    Defensive by design: swarm/non-agent nodes and offline test doubles
+    carry no ``metrics``; zero totals are not recorded. Per-model
+    attribution comes from routing rows written in the same run.
+    """
+    del model  # attribution handled by routing telemetry; kept for call-site clarity
+    totals = {"input": 0, "output": 0}
+    for node in getattr(graph_result, "execution_order", None) or []:
+        node_result = getattr(node, "result", None)
+        metrics_obj = getattr(node_result, "metrics", None)
+        usage = getattr(metrics_obj, "accumulated_usage", None)
+        if isinstance(usage, dict):
+            totals["input"] += int(usage.get("inputTokens") or 0)
+            totals["output"] += int(usage.get("outputTokens") or 0)
+    if totals["input"]:
+        _metrics.increment("draftly_tokens_input_total", float(totals["input"]))
+    if totals["output"]:
+        _metrics.increment("draftly_tokens_output_total", float(totals["output"]))
+    return totals
 
 
 async def _post_run_memory(context: Any, state: Any, surface: str, *, hook: Any = None) -> None:
@@ -74,10 +104,14 @@ class WorkflowRunner:
         *,
         graph_factory: GraphFactory | None = None,
         dispatcher: EventDispatcher | None = None,
+        publisher: Any = None,
     ) -> None:
         self.context = context
         self._graph_factory = graph_factory or _default_graph_factory(context)
         self.dispatcher = dispatcher or EventDispatcher()
+        # When set, runs stream via graph.stream_async and publish filtered
+        # envelopes; outcome handling below is identical on both paths.
+        self.publisher = publisher
 
     async def run(self, event: dict[str, Any]) -> WorkflowState:
         """Execute one normalized event end-to-end."""
@@ -107,24 +141,35 @@ class WorkflowRunner:
         # 3. Invoke; runtime context rides in invocation_state, never in
         #    the prompt. ReviewGate reads review_policy before delivering.
         started = time.monotonic()
-        result = await graph.invoke_async(
-            json.dumps(event),
-            invocation_state={
-                "run_id": run_id,
-                "review_policy": self.context.review_policy(),
-                "delivery_summary": "",
-                "evaluation": {},
-                "evidence_count": 0,
-                "source": str(event.get("source") or "github"),
-                "event_type": str(event.get("event_type") or "unknown"),
-                "project_id": str(event.get("project_id") or ""),
-            },
-        )
+        invocation_state = {
+            "run_id": run_id,
+            "review_policy": self.context.review_policy(),
+            "delivery_summary": "",
+            "evaluation": {},
+            "evidence_count": 0,
+            "source": str(event.get("source") or "github"),
+            "event_type": str(event.get("event_type") or "unknown"),
+            "project_id": str(event.get("project_id") or ""),
+        }
+        if self.publisher is not None:
+            result = await self._invoke_streaming(
+                graph, json.dumps(event), invocation_state, surface
+            )
+        else:
+            result = await graph.invoke_async(
+                json.dumps(event), invocation_state=invocation_state
+            )
         await self._record_routing_outcome(
             run_id=run_id,
             success=result.status == Status.COMPLETED,
             latency_ms=(time.monotonic() - started) * 1000.0,
         )
+        try:
+            extract_token_usage(
+                result, model=str(getattr(self.context, "model", "unknown") or "unknown")
+            )
+        except Exception:
+            logger.warning("token_usage_extract_failed run_id=%s", run_id, exc_info=True)
         state.result = result
 
         # 4. Handle the outcome.
@@ -142,6 +187,68 @@ class WorkflowRunner:
         state.errors.extend(failed)
         await self._mark(event, "failed")
         return state.finish(WorkflowStatus.FAILED)
+
+    async def _invoke_streaming(
+        self,
+        graph: Any,
+        task: str,
+        invocation_state: dict[str, Any],
+        surface: str,
+    ) -> Any:
+        """Iterate graph.stream_async, publish envelopes, return GraphResult.
+
+        The stream MUST end with a terminal event: either ``result`` (the
+        original GraphResult object is recovered) or ``force_stop`` (a failed
+        result is synthesized so outcome handling matches the invoke path).
+        """
+        seq = 0
+        result: Any = None
+        started_at = time.monotonic()
+        ttft_recorded = False
+        async for raw in graph.stream_async(task, invocation_state=invocation_state):
+            shaped = raw if isinstance(raw, dict) else {}
+            envelope = filter_graph_event(
+                shaped,
+                run_id=invocation_state["run_id"],
+                surface=surface,
+            )
+            if envelope is not None:
+                if not ttft_recorded and envelope.type == "text_delta":
+                    ttft_recorded = True
+                    _metrics.observe(
+                        "draftly_run_ttft_ms", time.monotonic() - started_at
+                    )
+                seq += 1
+                envelope.seq = seq
+                await self._safe_publish(envelope)
+            if isinstance(raw, dict):
+                if "result" in raw:
+                    result = raw["result"]
+                elif raw.get("force_stop"):
+                    _metrics.increment("draftly_limit_hits_total")
+                    result = SimpleNamespace(
+                        status=Status.FAILED,
+                        interrupts=[],
+                        execution_order=[],
+                        failed_nodes=0,
+                    )
+        if result is None:
+            raise RuntimeError(
+                "stream ended without a result event "
+                f"run_id={invocation_state['run_id']}"
+            )
+        return result
+
+    async def _safe_publish(self, envelope: StreamEnvelope) -> None:
+        try:
+            await self.publisher.publish(envelope)
+        except Exception:
+            logger.warning(
+                "runner_publish_failed run_id=%s seq=%s",
+                envelope.run_id,
+                envelope.seq,
+                exc_info=True,
+            )
 
     async def _record_routing_outcome(
         self, *, run_id: str, success: bool, latency_ms: float

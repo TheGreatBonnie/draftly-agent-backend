@@ -1,9 +1,11 @@
 """Tests for onboarding API routes."""
 
+from unittest.mock import AsyncMock, MagicMock
+
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from unittest.mock import AsyncMock, MagicMock
+
 from draftly.app.api.routes import onboarding
 
 

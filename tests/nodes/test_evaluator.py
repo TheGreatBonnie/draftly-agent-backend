@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 
 import pytest
-
 from strands.agent.agent_result import AgentResult
 
 from draftly.orchestration.nodes.base import parse_node_input

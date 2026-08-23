@@ -72,6 +72,10 @@ class PerformanceRepository:
             self._stats_store.record_quality(task_type, model_name, quality)
         await self.flush_entry(task_type, model_name)
 
+    async def all(self) -> list[dict[str, Any]]:
+        """All persisted per-task/model aggregates (read-side for dashboards)."""
+        return await self._store.get_all()
+
     async def warm_start(self) -> None:
         """Load persisted aggregates into the live cache at boot."""
         if self._stats_store is None:

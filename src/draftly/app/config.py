@@ -135,6 +135,17 @@ class Settings(BaseSettings):
         )
 
     # ------------------------------------------------------------------
+    # Events streaming (spec: 2026-08-23-event-streaming-design)
+    # ------------------------------------------------------------------
+
+    redis_url: str = Field(
+        default="redis://localhost:6379/0",
+        validation_alias=AliasChoices("REDIS_URL"),
+    )
+    events_streaming_enabled: bool = False
+    events_heartbeat_seconds: int = 15
+
+    # ------------------------------------------------------------------
     # Workers
     # ------------------------------------------------------------------
 

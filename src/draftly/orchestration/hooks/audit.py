@@ -25,7 +25,13 @@ from strands.hooks import (
     HookRegistry,
 )
 
+from draftly.observability.metrics import Metrics
+from draftly.observability.metrics import metrics as _default_metrics
+
 logger = structlog.get_logger(__name__)
+
+# Injectable registry (tests swap this for an isolated instance).
+_metrics: Metrics = _default_metrics
 
 
 class RunAuditLogger(HookProvider):
@@ -163,8 +169,15 @@ async def _flush_run(
             event_type=meta.get("event_type", "unknown"),
             org_id=meta.get("org_id", ""),
         )
+        kind_counters = {
+            "node": "draftly_node_steps_total",
+            "tool": "draftly_tool_steps_total",
+        }
         for step in steps:
             await repo.record_step(run_id=run_id, **step)
+            counter = kind_counters.get(str(step.get("kind", "")))
+            if counter:
+                _metrics.increment(counter)
         failed = [s for s in steps if s["status"] == "failed"]
         await repo.finish_run(
             run_id=run_id,

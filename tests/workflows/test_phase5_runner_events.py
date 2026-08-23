@@ -345,3 +345,145 @@ class TestEventComposition:
         assert event["source"] == "discord"
         assert event["question"] == "Why does auth fail?"
         assert composition.workflow_type_for(event) == "support"
+
+
+# ================================================================
+# Streaming mode — publisher wired => stream_async path
+# ================================================================
+
+from draftly.events.stream_envelope import StreamEnvelope  # noqa: E402
+
+
+class StreamingFakeGraph(FakeGraph):
+    """Emits scripted events then the terminal result event."""
+
+    def __init__(self, result, events=None):
+        super().__init__(result)
+        self.events = list(events or [])
+
+    async def stream_async(self, task, invocation_state=None, **kwargs):
+        del kwargs
+        self.calls.append({"task": task, "invocation_state": invocation_state})
+        for raw in self.events:
+            yield raw
+        yield {"result": self.result}
+
+
+class RecordingPublisher:
+    def __init__(self):
+        self.published: list[StreamEnvelope] = []
+
+    async def publish(self, envelope):
+        self.published.append(envelope)
+
+
+STREAM_EVENTS = [
+    {"type": "multiagent_node_start", "node_id": "classify", "node_type": "agent"},
+    {"init_event_loop": True},  # noise — must be dropped
+    {
+        "type": "multiagent_node_stream",
+        "node_id": "writer",
+        "event": {"data": "hello "},
+    },
+    {
+        "type": "multiagent_node_stop",
+        "node_id": "classify",
+        "node_result": {"status": "COMPLETED", "duration": 0.5},
+    },
+    {
+        "type": "multiagent_handoff",
+        "from_node_ids": ["classify"],
+        "to_node_ids": ["write"],
+    },
+]
+
+
+class TestRunnerStreaming:
+    async def test_publisher_wired_streams_and_preserves_outcome(self) -> None:
+        publisher = RecordingPublisher()
+        context = make_context()
+        graph = StreamingFakeGraph(completed_result(), STREAM_EVENTS)
+        runner = WorkflowRunner(
+            context, graph_factory=lambda r, s: graph, publisher=publisher
+        )
+
+        state = await runner.run(dict(PR_EVENT))
+
+        assert state.status.value == "delivered"
+        types = [e.type for e in publisher.published]
+        assert types == [
+            "node_start",
+            "text_delta",
+            "node_stop",
+            "handoff",
+            "workflow_result",
+        ]
+        seqs = [e.seq for e in publisher.published]
+        assert seqs == [1, 2, 3, 4, 5]
+        assert all(e.run_id == "evt-1" for e in publisher.published)
+        assert all(e.surface == "pull_request" for e in publisher.published)
+        assert context.events.statuses["evt-1"] == "completed"
+
+    async def test_no_publisher_keeps_invoke_async_path(self) -> None:
+        context = make_context()
+        graph = FakeGraph(completed_result())
+        runner = WorkflowRunner(context, graph_factory=lambda r, s: graph)
+
+        state = await runner.run(dict(PR_EVENT))
+
+        assert state.status.value == "delivered"
+        assert len(graph.calls) == 1
+
+    async def test_streaming_interrupt_outcome_matches_invoke_path(self) -> None:
+        publisher = RecordingPublisher()
+        context = make_context()
+        graph = StreamingFakeGraph(interrupted_result(), STREAM_EVENTS[:1])
+        runner = WorkflowRunner(
+            context, graph_factory=lambda r, s: graph, publisher=publisher
+        )
+
+        state = await runner.run(dict(PR_EVENT))
+
+        assert state.status.value == "pending_review"
+        assert len(state.interrupts) == 1
+        terminal = publisher.published[-1]
+        assert terminal.type == "workflow_result"
+        assert terminal.payload["status"] == "INTERRUPTED"
+        assert terminal.payload["interrupts"][0]["id"].endswith("doc-review")
+
+    async def test_stream_missing_result_raises(self) -> None:
+        class NoResultGraph(StreamingFakeGraph):
+            async def stream_async(self, task, invocation_state=None, **kwargs):
+                del kwargs, task, invocation_state
+                for raw in self.events:
+                    yield raw
+
+        publisher = RecordingPublisher()
+        context = make_context()
+        graph = NoResultGraph(completed_result(), STREAM_EVENTS[:1])
+        runner = WorkflowRunner(
+            context, graph_factory=lambda r, s: graph, publisher=publisher
+        )
+
+        with pytest.raises(RuntimeError, match="without a result"):
+            await runner.run(dict(PR_EVENT))
+
+    async def test_force_stop_maps_to_failed_outcome(self) -> None:
+        class ForceStopGraph(FakeGraph):
+            async def stream_async(self, task, invocation_state=None, **kwargs):
+                del kwargs, task, invocation_state
+                yield {"force_stop": True, "force_stop_reason": "max_iterations"}
+
+        publisher = RecordingPublisher()
+        context = make_context()
+        graph = ForceStopGraph(completed_result())
+        runner = WorkflowRunner(
+            context, graph_factory=lambda r, s: graph, publisher=publisher
+        )
+
+        state = await runner.run(dict(PR_EVENT))
+
+        assert state.status.value == "failed"
+        terminal = publisher.published[-1]
+        assert terminal.type == "workflow_result"
+        assert terminal.payload["status"] == "FAILED"

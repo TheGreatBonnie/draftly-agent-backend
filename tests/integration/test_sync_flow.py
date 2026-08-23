@@ -1,7 +1,9 @@
 """Integration test for full documentation sync flow."""
 
-import pytest
 from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+
 from draftly.documentation.sync_service import SyncService
 
 

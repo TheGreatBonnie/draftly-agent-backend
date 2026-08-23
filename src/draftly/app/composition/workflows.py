@@ -17,6 +17,22 @@ from .tools import ToolRegistry
 logger = structlog.get_logger(__name__)
 
 
+class _TeePublisher:
+    """Persist every envelope, then fan out to Redis; never fail the run."""
+
+    def __init__(self, primary: Any, fallback_repo: Any) -> None:
+        self.primary = primary
+        self.repo = fallback_repo
+
+    async def publish(self, envelope: Any) -> None:
+        if self.repo is not None:
+            try:
+                await self.repo.append(envelope.to_dict())
+            except Exception:
+                logger.warning("workflow_event_persist_failed", exc_info=True)
+        await self.primary.publish(envelope)
+
+
 @dataclass(frozen=True)
 class ComposedWorkflows:
     """The workflow runtime handed to the application lifecycle."""
@@ -25,6 +41,7 @@ class ComposedWorkflows:
     runner: Any = None
     context: Any = None
     tasks: dict[str, Any] = field(default_factory=dict)
+    event_bus: Any = None
 
 
 def build_workflows(
@@ -120,12 +137,34 @@ def build_workflows(
     registry.register("memory_curation", run_memory_curation)
     registry.register("memory_maintenance", run_memory_maintenance)
 
-    runner = WorkflowRunner(context)
+    publisher = None
+    event_bus = None
+    if getattr(config, "events_streaming_enabled", False):
+        from draftly.events.redis_bus import RedisEventBus
+        from draftly.persistence.repositories.workflow_events import (
+            WorkflowEventRepositoryImpl,
+        )
 
-    logger.info("workflow registry built workflows=%d", len(registry.names()))
+        event_bus = RedisEventBus(url=getattr(config, "redis_url", None))
+        try:
+            fallback_repo = WorkflowEventRepositoryImpl()
+        except Exception:
+            logger.warning("workflow_events_store_unavailable", exc_info=True)
+            fallback_repo = None
+        publisher = _TeePublisher(event_bus, fallback_repo)
+        context.publisher = publisher  # per-surface workflows stream as well
+
+    runner = WorkflowRunner(context, publisher=publisher)
+
+    logger.info(
+        "workflow registry built workflows=%d streaming=%s",
+        len(registry.names()),
+        publisher is not None,
+    )
 
     return ComposedWorkflows(
         registry=registry,
         runner=runner,
         context=context,
+        event_bus=event_bus,
     )

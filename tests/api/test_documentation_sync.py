@@ -1,11 +1,12 @@
 """Tests for documentation sync API routes."""
 
+from unittest.mock import AsyncMock, MagicMock
+
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from unittest.mock import AsyncMock, MagicMock
-from draftly.app.api.routes import documentation
 
+from draftly.app.api.routes import documentation
 
 SYNC_RESULT = {
     "document_count": 2,
@@ -43,15 +44,53 @@ def client() -> TestClient:
 
 
 class TestDocumentationSyncRoutes:
-    def test_sync_runs_task_and_returns_result(self, client: TestClient) -> None:
+    def test_sync_submits_and_returns_202(self, client: TestClient) -> None:
         response = client.post(
             "/api/documentation/sync",
             json={"repository_full_name": "owner/repo"},
         )
-        assert response.status_code == 200
+        assert response.status_code == 202
         data = response.json()
-        assert data["status"] == "completed"
-        assert data["result"]["document_count"] == 2
+        assert data["status"] == "submitted"
+        assert data["job_id"]
+        assert data["run_id"] == data["job_id"]
+
+    def test_sync_marks_job_completed_after_run(self, client: TestClient) -> None:
+        import time
+
+        statuses: list[str] = []
+        client.app.state.draftly.dependencies.repositories.jobs.update_status = (
+            AsyncMock(side_effect=lambda **kw: statuses.append(kw.get("status")))
+        )
+        client.post(
+            "/api/documentation/sync",
+            json={"repository_full_name": "owner/repo"},
+        )
+        for _ in range(100):
+            if statuses:
+                break
+            time.sleep(0.01)
+        assert statuses and statuses[0] == "completed"
+
+    def test_sync_marks_job_failed_on_error(self, client: TestClient) -> None:
+        import time
+
+        client.app.state.draftly.worker.run_task = AsyncMock(
+            side_effect=RuntimeError("boom")
+        )
+        statuses: list[str] = []
+        client.app.state.draftly.dependencies.repositories.jobs.update_status = (
+            AsyncMock(side_effect=lambda **kw: statuses.append(kw.get("status")))
+        )
+        client.post(
+            "/api/documentation/sync",
+            json={"repository_full_name": "owner/repo"},
+        )
+        for _ in range(100):
+            if statuses:
+                break
+            time.sleep(0.01)
+        assert statuses and statuses[0] == "failed"
 
     def test_sync_returns_503_when_worker_disabled(self, client: TestClient) -> None:
         client.app.state.draftly.worker = None

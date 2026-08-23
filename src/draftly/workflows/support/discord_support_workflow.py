@@ -18,7 +18,7 @@ async def run_discord_support(
     event: dict[str, Any],
 ) -> WorkflowState:
     """Run the support graph for one Discord question."""
-    runner = WorkflowRunner(context)
+    runner = WorkflowRunner(context, publisher=getattr(context, "publisher", None))
     state = await runner.run(event)
     logger.info(
         "discord_support_done run_id=%s status=%s",

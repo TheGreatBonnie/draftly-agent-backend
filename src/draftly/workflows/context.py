@@ -35,6 +35,9 @@ class WorkflowContext:
     procedural: Any = None
     docgraph: Any = None
     candidates: Any = None
+    #: Streaming publisher (spec 2026-08-23-event-streaming); None ⇒ flag off.
+    #: Set by composition so per-surface workflow functions can stream too.
+    publisher: Any = None
 
     @property
     def events(self) -> Any:

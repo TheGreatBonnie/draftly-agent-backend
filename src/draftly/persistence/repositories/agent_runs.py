@@ -94,6 +94,66 @@ class AgentRunsRepository:
             datetime.now(UTC),
         )
 
+    # --------------------------------------------------------------
+    # Read-side APIs (spec §Observability surface #2)
+    # --------------------------------------------------------------
+
+    async def list_runs(
+        self,
+        *,
+        org_id: str | None = None,
+        status: str | None = None,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        if self.database is None:
+            return []
+        clauses: list[str] = []
+        params: list[Any] = []
+        if org_id:
+            params.append(org_id)
+            clauses.append(f"org_id = ${len(params)}")
+        if status:
+            params.append(status)
+            clauses.append(f"status = ${len(params)}")
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        params.append(max(1, min(limit, 200)))
+        rows = await self.database.fetch_all(
+            f"""
+            SELECT run_id, source, event_type, org_id, status, error,
+                   started_at, completed_at
+            FROM agent_runs {where}
+            ORDER BY started_at DESC
+            LIMIT ${len(params)}
+            """,
+            *params,
+        )
+        return [dict(row) for row in rows]
+
+    async def get_run(self, run_id: str) -> dict[str, Any] | None:
+        if self.database is None:
+            return None
+        row = await self.database.fetch_one(
+            """
+            SELECT run_id, source, event_type, org_id, status, error,
+                   started_at, completed_at
+            FROM agent_runs WHERE run_id = $1
+            """,
+            run_id,
+        )
+        return dict(row) if row else None
+
+    async def list_steps(self, run_id: str) -> list[dict[str, Any]]:
+        if self.database is None:
+            return []
+        rows = await self.database.fetch_all(
+            """
+            SELECT seq, kind, name, status, duration_ms, detail
+            FROM agent_steps WHERE run_id = $1 ORDER BY seq ASC
+            """,
+            run_id,
+        )
+        return [dict(row) for row in rows]
+
 
 def _to_json(value: dict[str, Any] | None) -> str:
     import json

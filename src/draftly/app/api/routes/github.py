@@ -341,6 +341,10 @@ async def resume_review(
 
     outcome = await service.decide(decision)
 
+    from draftly.observability.metrics import metrics as _metrics
+
+    _metrics.increment("draftly_review_decisions_total")
+
     if not decision.approved:
         logger.info("review_rejected run_id=%s", run_id)
         return {"status": "rejected", "run_id": run_id}

@@ -7,8 +7,14 @@ from . import (
     github,
     health,
     jobs,
+    metrics,
+    observability,
+    reviewers,
+    reviews,
+    runs,
     slack,
     support,
+    workflows,
 )
 
 __all__ = [
@@ -18,6 +24,12 @@ __all__ = [
     "github",
     "health",
     "jobs",
+    "metrics",
+    "observability",
+    "reviews",
+    "reviewers",
+    "runs",
     "slack",
     "support",
+    "workflows",
 ]

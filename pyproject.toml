@@ -36,6 +36,7 @@ dependencies = [
     "psycopg2-binary>=2.9.12",
     "openai>=1.68.0,<3.0.0",
     "websockets>=10",
+    "redis>=5.0.0",
 ]
 
 [project.optional-dependencies]
@@ -45,6 +46,7 @@ dev = [
     "pytest-xdist>=3.5.0",
     "ruff>=0.6.0",
     "mypy>=1.11.0",
+    "fakeredis>=2.23.0",
 ]
 
 [build-system]
@@ -90,4 +92,5 @@ dev = [
     "ruff>=0.15.22",
     "mypy>=1.11.0",
     "ty>=0.0.73",
+    "fakeredis>=2.23.0",
 ]

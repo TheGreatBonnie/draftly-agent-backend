@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections import Counter
 from typing import Any
+from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from draftly.app.api.auth import get_verified_token
@@ -48,8 +51,14 @@ async def sync_documentation(
     request: Request,
     body: SyncRequest,
     token: dict = Depends(get_verified_token),
-) -> dict[str, Any]:
-    """Run documentation sync for a repository (synchronous via the task runner)."""
+) -> JSONResponse:
+    """Submit documentation sync for a repository (spec: streaming plan T7).
+
+    Returns 202 immediately with the job id; the task runs in the
+    background and its outcome lands on the job record, queryable via
+    GET /sync/{job_id} (fallback polling) and observable live via the
+    workflow SSE stream once events_streaming_enabled.
+    """
     org_id = token.get("org_id")
     if not org_id:
         raise HTTPException(status_code=400, detail="No organization selected")
@@ -58,15 +67,34 @@ async def sync_documentation(
     if not worker.task_runner.has_task("documentation.sync_repository"):
         raise HTTPException(status_code=404, detail="Unknown job: documentation.sync_repository")
 
-    result = await worker.run_task(
-        "documentation.sync_repository",
-        org_id=org_id,
-        repository_full_name=body.repository_full_name,
-        include=body.include,
-        exclude=body.exclude,
+    jobs = getattr(
+        request.app.state.draftly.dependencies.repositories, "jobs", None
     )
+    if jobs is None:
+        raise HTTPException(status_code=503, detail="Jobs store unavailable")
 
-    return {"status": "completed", "result": result}
+    job_id = str(uuid4())
+
+    async def _run_and_mark() -> None:
+        try:
+            result = await worker.run_task(
+                "documentation.sync_repository",
+                org_id=org_id,
+                repository_full_name=body.repository_full_name,
+                include=body.include,
+                exclude=body.exclude,
+            )
+            await jobs.update_status(job_id=job_id, status="completed")
+            del result
+        except Exception:
+            await jobs.update_status(job_id=job_id, status="failed")
+
+    asyncio.create_task(_run_and_mark())
+
+    return JSONResponse(
+        status_code=202,
+        content={"job_id": job_id, "run_id": job_id, "status": "submitted"},
+    )
 
 
 @router.get("/sync/{job_id}")
