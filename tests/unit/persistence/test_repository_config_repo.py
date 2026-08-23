@@ -1,8 +1,9 @@
 """Unit tests for repository config repository."""
 
-import pytest
 from dataclasses import dataclass, field
 from typing import Any
+
+import pytest
 
 from draftly.persistence.repositories.repository_config import RepositoryConfigRepository
 

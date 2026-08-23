@@ -6,7 +6,7 @@ from typing import Any
 
 from strands import Agent
 
-from draftly.agents.prompts import ISSUE_RESPONDER_PROMPT
+from draftly.agents.prompts import ISSUE_RESPONDER_PROMPT, build_prompt
 from draftly.agents.schemas import AnswerDraft
 
 
@@ -18,7 +18,11 @@ def build_issue_responder(
 
     return Agent(
         name="issue_responder",
-        system_prompt=ISSUE_RESPONDER_PROMPT,
+        system_prompt=build_prompt(
+            ISSUE_RESPONDER_PROMPT,
+            output_model=AnswerDraft,
+            support_policy="support_policy",
+        ),
         model=model,
         tools=tools,
         structured_output_model=AnswerDraft,

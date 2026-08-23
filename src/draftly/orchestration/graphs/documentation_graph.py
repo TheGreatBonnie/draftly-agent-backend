@@ -92,9 +92,16 @@ def build_documentation_graph(
 
     reg = tools_registry
 
-    classifier = build_classifier(model)
+    classifier_model = resolve_model_for_role(model, "classifier")
+    context_model = resolve_model_for_role(model, "context")
+    support_model = resolve_model_for_role(model, "support_engineer")
+    research_model = resolve_model_for_role(model, "research")
+    intelligence_model = resolve_model_for_role(model, "github_intelligence")
+    delivery_model = resolve_model_for_role(model, "github_delivery")
+
+    classifier = build_classifier(classifier_model)
     context_agent = build_context_agent(
-        model,
+        context_model,
         _dedupe(
             reg.github_intelligence,
             reg.semantic_search,
@@ -106,9 +113,9 @@ def build_documentation_graph(
             reg.discord_get_thread,
         ),
     )
-    research_swarm = build_research_swarm(model, reg)
+    research_swarm = build_research_swarm(research_model, reg)
     impact_agent = build_impact_agent(
-        model,
+        intelligence_model,
         _dedupe(
             reg.semantic_search,
             reg.keyword_search,
@@ -117,7 +124,7 @@ def build_documentation_graph(
         ),
     )
     answer_agent = build_answer_writer(
-        model,
+        support_model,
         _dedupe(reg.semantic_search, reg.keyword_search),
     )
     # Two DISTINCT instances: the SDK rejects duplicate executors.
@@ -133,7 +140,7 @@ def build_documentation_graph(
         _dedupe(reg.documentation_engineer, reg.documentation),
     )
     delivery_agent = build_delivery_agent(
-        model,
+        delivery_model,
         _dedupe(reg.github_delivery, reg.slack_post_message, reg.discord_post_message),
         hitl=False,  # the graph-level ReviewGate owns human approval
     )

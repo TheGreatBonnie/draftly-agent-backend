@@ -16,11 +16,13 @@ def test_task_type_values():
     assert TaskType.DELIVERY.value == "delivery"
 
 
-def test_role_map_covers_all_nine_agent_roles():
+def test_role_map_covers_all_agent_roles():
     expected_roles = {
         "documentation_engineer", "documentation_reviewer", "github_intelligence",
         "support_engineer", "support_reviewer", "research", "deepeval",
         "github_delivery", "memory_curator",
+        # Every-agent-a-role wiring (graph builders resolve these too)
+        "classifier", "context",
     }
     assert set(ROLE_TO_TASK_TYPE) == expected_roles
     # Sensible mappings per reference §34 / existing role policies
@@ -29,6 +31,8 @@ def test_role_map_covers_all_nine_agent_roles():
     assert ROLE_TO_TASK_TYPE["github_intelligence"] is TaskType.RESEARCH
     assert ROLE_TO_TASK_TYPE["deepeval"] is TaskType.EVALUATION
     assert ROLE_TO_TASK_TYPE["memory_curator"] is TaskType.FAST
+    assert ROLE_TO_TASK_TYPE["classifier"] is TaskType.FAST
+    assert ROLE_TO_TASK_TYPE["context"] is TaskType.RESEARCH
 
 
 def test_routing_request_is_frozen():

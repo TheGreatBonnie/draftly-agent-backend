@@ -1,6 +1,6 @@
 """Unit tests for baseline snapshot."""
 
-from draftly.documentation.baseline import BaselineSnapshot, create_baseline
+from draftly.documentation.baseline import create_baseline
 
 
 def test_create_baseline_captures_all_fields():

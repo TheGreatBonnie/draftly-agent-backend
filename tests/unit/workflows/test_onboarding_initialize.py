@@ -1,7 +1,9 @@
 """Unit tests for onboarding initialization workflow."""
 
-import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+
 from draftly.workflows.onboarding.initialize import run_onboarding_initialize
 from draftly.workflows.state import WorkflowStatus
 

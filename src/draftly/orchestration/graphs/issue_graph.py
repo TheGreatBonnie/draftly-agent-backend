@@ -57,37 +57,45 @@ def build_issue_graph(
     from draftly.agents.shared.context import build_context_agent
     from draftly.agents.subagents import build_research_swarm
     from draftly.agents.support.answer_writer import build_answer_writer
+    from draftly.integrations.strands.models import resolve_model_for_role
 
     reg = tools_registry
 
-    classifier = build_classifier(model)
+    classifier_model = resolve_model_for_role(model, "classifier")
+    context_model = resolve_model_for_role(model, "context")
+    support_model = resolve_model_for_role(model, "support_engineer")
+    research_model = resolve_model_for_role(model, "research")
+    writer_model = resolve_model_for_role(model, "documentation_engineer")
+    intelligence_model = resolve_model_for_role(model, "github_intelligence")
+
+    classifier = build_classifier(classifier_model)
     context_agent = build_context_agent(
-        model,
+        context_model,
         _dedupe(
             reg.github_intelligence,
             reg.semantic_search,
             reg.keyword_search,
         ),
     )
-    research_swarm = build_research_swarm(model, reg)
+    research_swarm = build_research_swarm(research_model, reg)
     issue_analyzer = build_issue_analyzer(
-        model,
+        intelligence_model,
         _dedupe(reg.github_intelligence, reg.semantic_search),
     )
     answer_agent = build_answer_writer(
-        model,
+        support_model,
         _dedupe(reg.semantic_search, reg.keyword_search),
     )
     update_writer = build_writer_agent(
-        model,
+        writer_model,
         _dedupe(reg.documentation_engineer, reg.documentation),
     )
     create_writer = build_writer_agent(
-        model,
+        writer_model,
         _dedupe(reg.documentation_engineer, reg.documentation),
     )
     responder = build_issue_responder(
-        model,
+        intelligence_model,
         _dedupe(reg.github_intelligence),
     )
 

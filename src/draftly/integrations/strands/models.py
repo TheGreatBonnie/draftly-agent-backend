@@ -56,6 +56,8 @@ class RoleAwareModelResolver:
         prompt_text: str | None = None,
         context_tokens: int | None = None,
     ) -> Any:
+        from dataclasses import replace
+
         from draftly.models.schemas import ROLE_TO_TASK_TYPE, RoutingRequest
 
         try:
@@ -70,6 +72,15 @@ class RoleAwareModelResolver:
         decision = self._router.route(request)
 
         config = self._router.registry.get_model(decision.selected_model)
+
+        # Route the per-role output budget (factory ROLE_OUTPUT_TOKENS)
+        # onto the constructed model so every role-resolved agent is
+        # capped without changing any agent-factory signature.
+        from draftly.models.factory import ROLE_OUTPUT_TOKENS
+
+        if role in ROLE_OUTPUT_TOKENS:
+            config = replace(config, max_tokens=ROLE_OUTPUT_TOKENS[role])
+
         provider = self._router.registry.get_provider(decision.provider)
         return provider.create_model(config)
 

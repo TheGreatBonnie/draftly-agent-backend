@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-import pytest
 from typing import cast
 from unittest.mock import AsyncMock
+
+import pytest
 
 from draftly.memory.embeddings import EmbeddingService
 from draftly.memory.repository import DomainMemoryRepository

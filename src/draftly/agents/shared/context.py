@@ -20,7 +20,9 @@ def build_context_agent(
         name="context",
         system_prompt=build_prompt(
             CONTEXT_PROMPT,
+            output_model=EvidenceBundle,
             documentation_policy="documentation_policy",
+            repository_rules="repository_rules",
         ),
         model=model,
         tools=tools,

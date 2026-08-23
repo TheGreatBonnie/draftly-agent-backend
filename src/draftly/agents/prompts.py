@@ -1,15 +1,45 @@
 """System prompts for Draftly agents.
 
+Every prompt is assembled from ordered sections — role, task, output
+contract, policies, guardrails. Output contracts render directly from
+the Pydantic payloads in ``agents/schemas.py`` so prompt text can never
+drift from the structured outputs the graphs parse.
+
 Policies under ``context/*.md`` are loaded lazily and injected into the
 prompts that need them; repo configuration and DB handles stay in
-``invocation_state``, never in prompt text.
+``invocation_state``, never in prompt text. A missing policy file logs
+a warning instead of silently degrading the prompt.
 """
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
+from typing import Any
+
+from pydantic import BaseModel
+
+logger = logging.getLogger(__name__)
 
 _CONTEXT_DIR = Path(__file__).resolve().parents[3] / "context"
+
+# ------------------------------------------------------------------
+# Shared guardrail snippets (composable, appended per role)
+# ------------------------------------------------------------------
+
+GUARDRAIL_CITATIONS = (
+    "Cite source ids collected in evidence. Never invent sources."
+)
+GUARDRAIL_PATHS = (
+    "Only modify paths present in evidence or the repository tree. "
+    "Never invent file paths."
+)
+GUARDRAIL_REFUSAL = (
+    'If evidence is insufficient, choose action "none" rather than guessing.'
+)
+GUARDRAIL_BREVITY = (
+    "Be concise: under 200 words unless the question demands more."
+)
 
 
 def load_policy(name: str) -> str:
@@ -18,67 +48,188 @@ def load_policy(name: str) -> str:
     path = _CONTEXT_DIR / f"{name}.md"
 
     if not path.is_file():
+        logger.warning(
+            "policy file missing; prompt will degrade without it: %s (%s)",
+            name,
+            path,
+        )
         return ""
 
     return path.read_text(encoding="utf-8")
 
 
+def schema_contract(model: type[BaseModel]) -> str:
+    """Render a compact output contract from a Pydantic payload model."""
+
+    lines = ["Respond with JSON matching this contract:"]
+    for name, field_info in model.model_fields.items():
+        entry = f"- {name}: {field_info.annotation}"
+        if field_info.description:
+            entry = f"{entry}  # {field_info.description}"
+        lines.append(entry)
+
+    return "\n".join(lines)
+
+
+def _render_policies(sections: list[str]) -> str:
+    return "\n\n".join(section.strip() for section in sections if section.strip())
+
+
+def build_prompt(
+    template: str,
+    *,
+    output_model: type[BaseModel] | None = None,
+    **policy_names: str,
+) -> str:
+    """Render a prompt template.
+
+    Token substitution is brace-safe: ``{name}`` placeholders are
+    replaced literally, so JSON examples inside templates never break
+    rendering. ``output_model`` fills the ``{output_contract}``
+    placeholder from the Pydantic schema.
+    """
+
+    kwargs: dict[str, Any] = {
+        name: load_policy(policy) for name, policy in policy_names.items()
+    }
+    kwargs.update(
+        guardrail_citations=GUARDRAIL_CITATIONS,
+        guardrail_paths=GUARDRAIL_PATHS,
+        guardrail_refusal=GUARDRAIL_REFUSAL,
+        guardrail_brevity=GUARDRAIL_BREVITY,
+    )
+    kwargs["output_contract"] = (
+        schema_contract(output_model) if output_model else ""
+    )
+
+    rendered = template
+    for token, value in kwargs.items():
+        rendered = rendered.replace("{" + token + "}", value)
+
+    return rendered
+
+
 CLASSIFIER_PROMPT = """You classify developer events for a documentation-intelligence system.
 Classify the change type and how urgently documentation may be affected based
-on the normalized event payload (task JSON). Respond with the structured
-EventClassification shape only."""
+on the normalized event payload (task JSON).
+
+Output contract:
+{output_contract}
+"""
 
 CONTEXT_PROMPT = """You gather evidence about the incoming event.
 Use your search and GitHub tools to collect relevant code, issues, PRs, and
-documentation. Respond with an EvidenceBundle JSON payload.
+documentation. Ground every claim in tool output.
 
-{documentation_policy}"""
+Output contract:
+{output_contract}
+
+{documentation_policy}
+
+{repository_rules}
+"""
 
 RESEARCH_PROMPT = """You research the event across GitHub, Slack/Discord history, and the
-documentation store. Collect concrete evidence with source ids. Respond with
-an EvidenceBundle JSON payload.
+documentation store. Collect concrete evidence with source ids.
 
-{support_policy}"""
+{guardrail_citations}
+
+Output contract:
+{output_contract}
+
+{support_policy}
+
+{documentation_policy}
+"""
 
 IMPACT_PROMPT = """Analyze the documentation impact of this change.
 Decide whether to answer the user, update existing docs, or create new docs.
-Respond with an ImpactAnalysis JSON payload: action in
-(answer|update|create|none), affected_documents, rationale, and evidence.
 
-{documentation_policy}"""
+{guardrail_refusal}
 
-WRITER_PROMPT = """You are a documentation engineer. Produce a DocChangePlan JSON payload
-with concrete file changes (path, content, action) and a commit message.
-Follow the repository's writing style and documentation policy strictly.
+Output contract:
+{output_contract}
 
 {documentation_policy}
-{writing_style}"""
+"""
 
-ANSWER_WRITER_PROMPT = """You write a concise, accurate answer for a developer support question.
-Respond with an AnswerDraft JSON payload: content and sources.
+WRITER_PROMPT = """You are a documentation engineer. Produce a concrete change plan with
+file edits and a commit message. Follow the repository's writing style and
+policies strictly.
 
-{support_policy}"""
+{guardrail_paths}
+
+Output contract:
+{output_contract}
+
+{documentation_policy}
+
+{writing_style}
+
+{repository_rules}
+
+{security_rules}
+"""
+
+ANSWER_WRITER_PROMPT = """You write an accurate answer for a developer support question.
+
+{guardrail_citations}
+
+{guardrail_brevity}
+
+Output contract:
+{output_contract}
+
+{support_policy}
+"""
 
 REVIEWER_PROMPT = """You review a documentation change for correctness, clarity, and adherence
-to policy. Respond with an EvaluationResult JSON payload: passed, score,
-and reasons."""
+to policy. Score against the evaluation rules below; cite rule violations in
+your reasons.
+
+Output contract:
+{output_contract}
+
+{evaluation_rules}
+
+{documentation_policy}
+"""
 
 ISSUE_ANALYZER_PROMPT = """You analyze a GitHub issue to determine whether it signals a
-documentation gap. Respond with an ImpactAnalysis JSON payload."""
+documentation gap.
+
+{guardrail_refusal}
+
+Output contract:
+{output_contract}
+
+{documentation_policy}
+"""
 
 ISSUE_RESPONDER_PROMPT = """You respond to a GitHub issue with a helpful answer or pointer to
-documentation. Respond with an AnswerDraft JSON payload."""
+documentation.
+
+{guardrail_citations}
+
+{guardrail_brevity}
+
+Output contract:
+{output_contract}
+
+{support_policy}
+"""
 
 DELIVERY_PROMPT = """You deliver the final output: open a docs PR, post a reply, or send a
-message, according to the surface. Return a DeliveryReceipt JSON payload
-with the delivery reference."""
+message, according to the surface. Respect repository rules and any human
+review gates before delivering.
+
+Output contract:
+{output_contract}
+
+{repository_rules}
+
+{human_review_policy}
+"""
 
 MEMORY_CURATOR_PROMPT = """You consolidate and rank memory items: deduplicate, update importance,
-and summarize. Respond with the curated memory payload."""
-
-
-def build_prompt(template: str, **policy_names: str) -> str:
-    """Render a prompt template, injecting the requested policy files."""
-
-    kwargs = {name: load_policy(policy) for name, policy in policy_names.items()}
-    return template.format(**kwargs)
+and summarize. Prefer recent, corroborated items over stale ones."""

@@ -6,7 +6,7 @@ from typing import Any
 
 from strands import Agent
 
-from draftly.agents.prompts import DELIVERY_PROMPT
+from draftly.agents.prompts import DELIVERY_PROMPT, build_prompt
 from draftly.agents.schemas import DeliveryReceipt
 
 
@@ -18,7 +18,12 @@ def build_github_delivery_agent(
 
     return Agent(
         name="github_delivery",
-        system_prompt=DELIVERY_PROMPT,
+        system_prompt=build_prompt(
+            DELIVERY_PROMPT,
+            output_model=DeliveryReceipt,
+            repository_rules="repository_rules",
+            human_review_policy="human_review_policy",
+        ),
         model=model,
         tools=tools,
         structured_output_model=DeliveryReceipt,

@@ -6,7 +6,8 @@ from typing import Any
 
 from strands import Agent
 
-from draftly.agents.prompts import REVIEWER_PROMPT
+from draftly.agents.prompts import REVIEWER_PROMPT, build_prompt
+from draftly.agents.schemas import EvaluationResult
 
 
 def build_auditor_agent(
@@ -19,7 +20,13 @@ def build_auditor_agent(
         name="doc_auditor",
         system_prompt=(
             "You audit the documentation store for staleness, broken links, "
-            "and coverage gaps. " + REVIEWER_PROMPT
+            "and coverage gaps. "
+            + build_prompt(
+                REVIEWER_PROMPT,
+                output_model=EvaluationResult,
+                evaluation_rules="evaluation_rules",
+                documentation_policy="documentation_policy",
+            )
         ),
         model=model,
         tools=tools,

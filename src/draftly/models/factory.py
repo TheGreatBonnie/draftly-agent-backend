@@ -643,6 +643,8 @@ ROLE_POLICIES: tuple[tuple[str, str, str, tuple[str, ...]], ...] = (
     ("deepeval", "evaluation", "evaluation", ("evaluation", "tool_calling")),
     ("github_delivery", "fast", "tool_calling", ("tool_calling",)),
     ("memory_curator", "fast", "tool_calling", ("tool_calling",)),
+    ("classifier", "fast", "tool_calling", ("tool_calling",)),
+    ("context", "research", "research", ("research", "tool_calling")),
 )
 
 
@@ -665,6 +667,8 @@ ROLE_OUTPUT_TOKENS: dict[str, int] = {
     "deepeval": 4096,
     "github_delivery": 2048,
     "memory_curator": 1024,
+    "classifier": 1024,
+    "context": 2048,
 }
 
 

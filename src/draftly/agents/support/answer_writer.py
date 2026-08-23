@@ -20,6 +20,7 @@ def build_answer_writer(
         name="support_writer",
         system_prompt=build_prompt(
             ANSWER_WRITER_PROMPT,
+            output_model=AnswerDraft,
             support_policy="support_policy",
         ),
         model=model,

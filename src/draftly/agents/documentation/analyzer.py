@@ -20,6 +20,7 @@ def build_impact_agent(
         name="impact",
         system_prompt=build_prompt(
             IMPACT_PROMPT,
+            output_model=ImpactAnalysis,
             documentation_policy="documentation_policy",
         ),
         model=model,

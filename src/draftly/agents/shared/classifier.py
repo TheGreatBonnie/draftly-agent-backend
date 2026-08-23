@@ -6,7 +6,7 @@ from typing import Any
 
 from strands import Agent
 
-from draftly.agents.prompts import CLASSIFIER_PROMPT
+from draftly.agents.prompts import CLASSIFIER_PROMPT, build_prompt
 from draftly.agents.schemas import EventClassification
 
 
@@ -17,7 +17,10 @@ def build_classifier(
 
     return Agent(
         name="event_classifier",
-        system_prompt=CLASSIFIER_PROMPT,
+        system_prompt=build_prompt(
+            CLASSIFIER_PROMPT,
+            output_model=EventClassification,
+        ),
         model=model,
         structured_output_model=EventClassification,
         description="Classifies incoming developer events by surface and impact.",

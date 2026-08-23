@@ -1,7 +1,9 @@
 """Unit tests for documentation sync workflow."""
 
-import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+
 from draftly.workflows.documentation.documentation_sync import run_documentation_sync
 from draftly.workflows.state import WorkflowStatus
 

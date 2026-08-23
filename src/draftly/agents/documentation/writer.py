@@ -20,8 +20,11 @@ def build_writer_agent(
         name="doc_writer",
         system_prompt=build_prompt(
             WRITER_PROMPT,
+            output_model=DocChangePlan,
             documentation_policy="documentation_policy",
             writing_style="writing_style",
+            repository_rules="repository_rules",
+            security_rules="security_rules",
         ),
         model=model,
         tools=tools,

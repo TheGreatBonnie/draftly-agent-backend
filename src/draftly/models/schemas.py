@@ -33,6 +33,8 @@ ROLE_TO_TASK_TYPE: dict[str, TaskType] = {
     "deepeval": TaskType.EVALUATION,
     "github_delivery": TaskType.DELIVERY,
     "memory_curator": TaskType.FAST,
+    "classifier": TaskType.FAST,
+    "context": TaskType.RESEARCH,
 }
 
 

@@ -1,8 +1,8 @@
 """Unit tests for task registration."""
 
-import pytest
 from unittest.mock import MagicMock
-from draftly.app.composition.workers import build_task_runner, TASK_REGISTRY
+
+from draftly.app.composition.workers import build_task_runner
 
 
 def test_task_runner_registers_sync_repository():

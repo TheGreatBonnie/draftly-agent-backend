@@ -1,8 +1,9 @@
 """Unit tests for onboarding state repository."""
 
-import pytest
 from dataclasses import dataclass, field
 from typing import Any
+
+import pytest
 
 from draftly.persistence.repositories.onboarding import OnboardingRepository
 

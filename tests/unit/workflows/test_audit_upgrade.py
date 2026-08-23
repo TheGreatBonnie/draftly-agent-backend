@@ -1,9 +1,10 @@
 """Unit tests for upgraded documentation audit."""
 
 from datetime import UTC, datetime, timedelta
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from unittest.mock import AsyncMock, MagicMock
+
 from draftly.workflows.documentation.documentation_audit import run_documentation_audit
 from draftly.workflows.state import WorkflowStatus
 

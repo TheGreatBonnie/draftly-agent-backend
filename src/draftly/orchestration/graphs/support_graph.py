@@ -63,12 +63,20 @@ def build_support_graph(
     from draftly.agents.support.solution_researcher import (
         build_solution_researcher,
     )
+    from draftly.integrations.strands.models import resolve_model_for_role
 
     reg = tools_registry
 
-    classifier = build_classifier(model)
+    classifier_model = resolve_model_for_role(model, "classifier")
+    context_model = resolve_model_for_role(model, "context")
+    support_model = resolve_model_for_role(model, "support_engineer")
+    research_model = resolve_model_for_role(model, "research")
+    writer_model = resolve_model_for_role(model, "documentation_engineer")
+    delivery_model = resolve_model_for_role(model, "github_delivery")
+
+    classifier = build_classifier(classifier_model)
     context_agent = build_context_agent(
-        model,
+        context_model,
         _dedupe(
             reg.semantic_search,
             reg.keyword_search,
@@ -78,13 +86,13 @@ def build_support_graph(
             reg.discord_get_thread,
         ),
     )
-    research_swarm = build_research_swarm(model, reg)
+    research_swarm = build_research_swarm(research_model, reg)
     question_analyzer = build_question_analyzer(
-        model,
+        support_model,
         _dedupe(reg.semantic_search),
     )
     solution_researcher = build_solution_researcher(
-        model,
+        support_model,
         _dedupe(
             reg.semantic_search,
             reg.keyword_search,
@@ -92,19 +100,19 @@ def build_support_graph(
         ),
     )
     answer_agent = build_answer_writer(
-        model,
+        support_model,
         _dedupe(reg.semantic_search, reg.keyword_search),
     )
     update_writer = build_writer_agent(
-        model,
+        writer_model,
         _dedupe(reg.documentation_engineer, reg.documentation),
     )
     create_writer = build_writer_agent(
-        model,
+        writer_model,
         _dedupe(reg.documentation_engineer, reg.documentation),
     )
     delivery_agent = build_delivery_agent(
-        model,
+        delivery_model,
         _dedupe(reg.slack_post_message, reg.discord_post_message),
         hitl=False,  # the graph-level ReviewGate owns human approval
     )

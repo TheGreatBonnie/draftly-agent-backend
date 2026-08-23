@@ -6,7 +6,7 @@ from typing import Any
 
 from strands import Agent
 
-from draftly.agents.prompts import ISSUE_ANALYZER_PROMPT
+from draftly.agents.prompts import ISSUE_ANALYZER_PROMPT, build_prompt
 from draftly.agents.schemas import ImpactAnalysis
 
 
@@ -18,7 +18,11 @@ def build_issue_analyzer(
 
     return Agent(
         name="issue_analyzer",
-        system_prompt=ISSUE_ANALYZER_PROMPT,
+        system_prompt=build_prompt(
+            ISSUE_ANALYZER_PROMPT,
+            output_model=ImpactAnalysis,
+            documentation_policy="documentation_policy",
+        ),
         model=model,
         tools=tools or [],
         structured_output_model=ImpactAnalysis,
