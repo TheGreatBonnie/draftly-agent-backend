@@ -47,6 +47,9 @@ class SchedulerClientAdapter:
         now = datetime.now(UTC)
         due: list[DueJob] = []
 
+        if self._client is None:
+            return due
+
         for job in self._client.jobs.values():
             if job.next_run_at is None:
                 continue

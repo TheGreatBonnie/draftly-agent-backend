@@ -12,15 +12,24 @@ class OnboardingRepository:
     def __init__(self, client: Any = None) -> None:
         if client is None:
             from draftly.integrations.database.client import DatabaseClient
+
             self.client = DatabaseClient()
         else:
             self.client = client
 
     async def get(self, org_id: str) -> dict[str, Any] | None:
-        return await self.client.fetch_one(
+        row = await self.client.fetch_one(
             "SELECT * FROM onboarding_state WHERE org_id = $1",
             org_id,
         )
+        if row is None:
+            return None
+        state: dict[str, Any] = dict(row)
+        for key in ("completed_steps", "failure", "selected_repository"):
+            value = state.get(key)
+            if isinstance(value, str):
+                state[key] = json.loads(value)
+        return state
 
     async def upsert(
         self,
@@ -44,12 +53,12 @@ class OnboardingRepository:
         if not fields:
             return await self.get(org_id) or {}
 
-        set_clause = ", ".join(f"{k} = ${i+2}" for i, k in enumerate(fields.keys()))
+        set_clause = ", ".join(f"{k} = ${i + 2}" for i, k in enumerate(fields.keys()))
         values = [org_id] + list(fields.values())
 
         await self.client.execute(
             f"INSERT INTO onboarding_state (org_id, {', '.join(fields.keys())}) "
-            f"VALUES ($1, {', '.join(f'${i+2}' for i in range(len(fields)))}) "
+            f"VALUES ($1, {', '.join(f'${i + 2}' for i in range(len(fields)))}) "
             f"ON CONFLICT (org_id) DO UPDATE SET {set_clause}",
             *values,
         )

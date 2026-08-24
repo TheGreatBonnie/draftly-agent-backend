@@ -11,6 +11,9 @@ from draftly.app.api.routes import (
     github,
     health,
     jobs,
+    metrics,
+    observability,
+    onboarding,
     reviewers,
     reviews,
     runs,
@@ -91,6 +94,11 @@ def create_api_app() -> FastAPI:
 
     app.include_router(
         observability.router,
+        prefix="/api",
+    )
+
+    app.include_router(
+        onboarding.router,
         prefix="/api",
     )
 

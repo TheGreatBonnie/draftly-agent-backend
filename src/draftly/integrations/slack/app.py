@@ -39,7 +39,6 @@ def build_slack_app(
     return AsyncApp(
         signing_secret=signing_secret or settings.slack_signing_secret,
         installation_store=installation_store,
-        installation_store_bot_only=True,
     )
 
 
