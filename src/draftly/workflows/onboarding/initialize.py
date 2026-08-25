@@ -29,13 +29,33 @@ async def run_onboarding_initialize(
     *,
     org_id: str,
     selected_repository: dict[str, Any] | None = None,
+    run_id: str | None = None,
     **kwargs: Any,
 ) -> WorkflowState:
     del kwargs
-    state = WorkflowState(run_id=f"onboarding-init-{org_id}")
+    state = WorkflowState(run_id=run_id or f"onboarding-init-{org_id}")
+    seq = 0
+
+    async def _publish(envelope_type: str, payload: dict[str, Any]) -> None:
+        nonlocal seq
+        if context.publisher is None:
+            return
+        from draftly.events.stream_envelope import StreamEnvelope
+
+        seq += 1
+        await context.publisher.publish(
+            StreamEnvelope(
+                type=envelope_type,
+                run_id=state.run_id,
+                surface="onboarding",
+                seq=seq,
+                payload=payload,
+            )
+        )
 
     if not selected_repository:
         state.errors.append("No repository selected")
+        await _publish("workflow_result", {"status": "FAILED", "error": "No repository selected"})
         return state.finish(WorkflowStatus.FAILED)
 
     repo_full = selected_repository.get("full_name", "")
@@ -49,6 +69,7 @@ async def run_onboarding_initialize(
 
         github = await build_installation_client(installation["installation_id"])
         await _update_stage(onboarding_repo, org_id, "repository_ingestion")
+        await _publish("stage_change", {"stage": "repository_ingestion"})
         from draftly.documentation.sync_service import SyncService
 
         sync_service = SyncService(github=github, context=context)
@@ -72,9 +93,13 @@ async def run_onboarding_initialize(
         # Knowledge/eval/health/recommendations build on the synced corpus;
         # v1 records stage progress so the UI can render it (spec §5.3).
         await _update_stage(onboarding_repo, org_id, "knowledge_construction")
+        await _publish("stage_change", {"stage": "knowledge_construction"})
         await _update_stage(onboarding_repo, org_id, "initial_evaluation")
+        await _publish("stage_change", {"stage": "initial_evaluation"})
         await _update_stage(onboarding_repo, org_id, "health_report")
+        await _publish("stage_change", {"stage": "health_report"})
         await _update_stage(onboarding_repo, org_id, "recommendations")
+        await _publish("stage_change", {"stage": "recommendations"})
 
         if onboarding_repo:
             # Mark the required step BEFORE the terminal state so
@@ -96,6 +121,14 @@ async def run_onboarding_initialize(
             "failed_files_count": len(sync_result.failed_files),
             "baseline": sync_result.baseline.to_dict() if sync_result.baseline else None,
         }
+        await _publish(
+            "workflow_result",
+            {
+                "status": "COMPLETED",
+                "document_count": sync_result.document_count,
+                "chunk_count": sync_result.chunk_count,
+            },
+        )
         logger.info("onboarding_initialize_done org=%s docs=%d", org_id, sync_result.document_count)
         return state.finish(WorkflowStatus.DELIVERED)
 
@@ -104,6 +137,7 @@ async def run_onboarding_initialize(
         if onboarding_repo:
             await onboarding_repo.mark_failed(org_id, "initialize", {"detail": str(exc)})
         state.errors.append(str(exc))
+        await _publish("workflow_result", {"status": "FAILED", "error": str(exc)})
         return state.finish(WorkflowStatus.FAILED)
 
 
