@@ -4,7 +4,6 @@ from typing import Any
 
 import structlog
 
-from draftly.app.composition.rq_jobs import build_rq_queues
 from draftly.app.composition.workflows import ComposedWorkflows
 from draftly.app.dependencies import ApplicationDependencies
 from draftly.app.workers.task_runner import TaskRunner

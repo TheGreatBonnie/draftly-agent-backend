@@ -16,8 +16,8 @@ import sys
 import structlog
 from rq import SimpleWorker
 
-from draftly.app.config import get_settings
 from draftly.app.composition.rq_jobs import build_rq_queues
+from draftly.app.config import get_settings
 from draftly.app.lifecycle import create_application
 from draftly.observability.logging import configure_logging
 
