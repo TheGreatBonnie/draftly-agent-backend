@@ -70,3 +70,8 @@ temp/
 graphify-out/
 # Draftly runtime state
 .draftly/
+
+# Private keys / secrets — never commit
+secrets/
+*.pem
+*.pem.key

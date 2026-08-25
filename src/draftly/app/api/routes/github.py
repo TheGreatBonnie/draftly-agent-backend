@@ -1,7 +1,7 @@
 from typing import Any
 
 import structlog
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, Response
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 
@@ -33,10 +33,29 @@ class LinkGitHubRequest(BaseModel):
     installation_id: int
 
 
+RETURN_TO_COOKIE = "gh_install_return_to"
+ALLOWED_RETURN_TO = frozenset({"/onboarding/github", "/integrations/github"})
+
+
 @router.get("/install-url")
-async def github_install_url(token: dict = Depends(get_verified_token)) -> dict[str, str]:
+async def github_install_url(
+    response: Response,
+    return_to: str | None = None,
+    token: dict = Depends(get_verified_token),
+) -> dict[str, str]:
     if not settings.github_app_slug:
         raise HTTPException(status_code=500, detail="GitHub App slug not configured")
+    if return_to is not None:
+        if return_to not in ALLOWED_RETURN_TO:
+            raise HTTPException(status_code=400, detail="Invalid return_to path")
+        response.set_cookie(
+            RETURN_TO_COOKIE,
+            return_to,
+            max_age=600,
+            httponly=True,
+            samesite="lax",
+            path="/api",
+        )
     return {"install_url": f"https://github.com/apps/{settings.github_app_slug}/installations/new"}
 
 
@@ -52,10 +71,9 @@ async def delete_github_installation(
 
 
 @router.get("/installations")
-async def github_installations(token: dict = Depends(get_verified_token)) -> list[dict]:
-    from draftly.persistence.repositories.github import list_github_installations
-
-    return await list_github_installations()
+async def github_installations(request: Request, token: dict = Depends(get_verified_token)) -> list[dict]:
+    repos = request.app.state.draftly.dependencies.repositories
+    return await repos.github_installations.list_by_org(token.get("org_id") or "")
 
 
 @router.post("/link")
@@ -147,14 +165,28 @@ async def link_github(
 
 @router.get("/setup-callback")
 async def github_setup_callback(
+    request: Request,
     installation_id: int | None = None,
     setup_action: str | None = None,
 ) -> RedirectResponse:
-    settings = get_settings()
-    frontend_url = f"{settings.frontend_url}/integrations/github"
+    """GitHub App post-install redirect (official setup URL contract).
+
+    GitHub redirects here after installation with ?installation_id= (and
+    setup_action=install). Per GitHub docs this parameter is spoofable, so
+    nothing is persisted from it here — the authenticated link happens later
+    via POST /onboarding/github/connect, which validates the installation
+    through the App-JWT-authed GitHub API before storing it. This endpoint
+    only routes the browser back to where the install was initiated.
+    """
+    return_to = request.cookies.get(RETURN_TO_COOKIE)
+    if return_to not in ALLOWED_RETURN_TO:
+        return_to = "/integrations/github"
+    frontend_url = f"{settings.frontend_url}{return_to}"
     if installation_id:
         frontend_url += f"?installation_id={installation_id}"
-    return RedirectResponse(url=frontend_url)
+    response = RedirectResponse(url=frontend_url)
+    response.delete_cookie(RETURN_TO_COOKIE, path="/api")
+    return response
 
 
 @router.post("/webhook")

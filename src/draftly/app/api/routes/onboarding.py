@@ -68,6 +68,8 @@ async def get_status(
     token: dict = Depends(get_verified_token),
 ) -> dict[str, Any]:
     org_id = token.get("org_id")
+    if not isinstance(org_id, str):
+        raise HTTPException(status_code=401, detail="Missing organization ID")
     repos = _repos(request)
     state = await repos.onboarding.get(org_id)
     if state is None:
@@ -82,6 +84,8 @@ async def create_workspace(
     token: dict = Depends(get_verified_token),
 ) -> dict[str, Any]:
     org_id = token.get("org_id")
+    if not isinstance(org_id, str):
+        raise HTTPException(status_code=401, detail="Missing organization ID")
     repos = _repos(request)
     current = await repos.onboarding.get(org_id)
     current_state = current["state"] if current else "NOT_STARTED"
@@ -103,15 +107,31 @@ async def connect_github(
     token: dict = Depends(get_verified_token),
 ) -> dict[str, Any]:
     org_id = token.get("org_id")
+    if not isinstance(org_id, str):
+        raise HTTPException(status_code=401, detail="Missing organization ID")
     repos = _repos(request)
     current = await repos.onboarding.get(org_id)
     current_state = current["state"] if current else "NOT_STARTED"
     if current_state not in ("WORKSPACE_CREATED", "GITHUB_CONNECTED"):
         raise HTTPException(status_code=409, detail=f"Cannot connect GitHub from {current_state}")
     from draftly.integrations.github.app_auth import get_installation_info
+    from draftly.persistence.repositories.github import store_github_installation
+    from draftly.persistence.repositories.organizations import update_org_github
 
     info = await get_installation_info(body.installation_id)
-    github_org = (info.get("account") or {}).get("login", "unknown")
+    account = info.get("account")
+    github_org = account.get("login") if isinstance(account, dict) else None
+    if not isinstance(github_org, str) or not github_org:
+        raise HTTPException(
+            status_code=502,
+            detail="GitHub installation has no organization account",
+        )
+    await store_github_installation(
+        org_id=org_id,
+        installation_id=body.installation_id,
+        github_org=github_org,
+    )
+    await update_org_github(org_id=org_id, github_org=github_org)
     await repos.onboarding.upsert(
         org_id,
         state="GITHUB_CONNECTED",
@@ -201,13 +221,10 @@ async def discover_documentation(
     installation_id = ((current or {}).get("selected_repository") or {}).get("installation_id")
     if not installation_id:
         raise HTTPException(status_code=409, detail="No GitHub App installation configured")
-    tok = await get_installation_token(int(installation_id))
-    try:
-        github = GitHubClient()
-    except RuntimeError:
-        from draftly.integrations.github.auth import GitHubAuth
+    from draftly.integrations.github.auth import GitHubAuth
 
-        github = GitHubClient(auth=GitHubAuth(token="installation-token-auth"))
+    tok = await get_installation_token(int(installation_id))
+    github = GitHubClient(auth=GitHubAuth(token=tok))
     owner, repo = repo_full.split("/", 1)
     repo_info = await github.get_repository(repo_full)
     default_branch = repo_info.get("default_branch", "main")
