@@ -37,6 +37,8 @@ dependencies = [
     "openai>=1.68.0,<3.0.0",
     "websockets>=10",
     "redis>=5.0.0",
+    "rq>=1.16.0",
+    "rq-scheduler>=0.10.0",
 ]
 
 [project.optional-dependencies]

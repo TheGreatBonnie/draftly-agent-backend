@@ -146,6 +146,17 @@ class Settings(BaseSettings):
     events_heartbeat_seconds: int = 15
 
     # ------------------------------------------------------------------
+    # Redis subsystems
+    # ------------------------------------------------------------------
+
+    semantic_cache_enabled: bool = True
+    semantic_cache_similarity_threshold: float = 0.90
+    vector_search_backend: str = "dual"  # "redis" | "pgvector" | "dual"
+    event_bus_backend: str = "dual"  # "pubsub" | "stream" | "dual"
+    rate_limiting_enabled: bool = True
+    api_cache_enabled: bool = True
+
+    # ------------------------------------------------------------------
     # Workers
     # ------------------------------------------------------------------
 
@@ -157,6 +168,14 @@ class Settings(BaseSettings):
     # ------------------------------------------------------------------
 
     scheduler_enabled: bool = True
+
+    # ------------------------------------------------------------------
+    # Redis Queue (RQ)
+    # ------------------------------------------------------------------
+
+    rq_queue_prefix: str = "draftly"
+    rq_scheduler_enabled: bool = True
+    rq_worker_queues: list[str] = ["scheduled", "webhooks", "default"]
 
     # ------------------------------------------------------------------
     # Security
