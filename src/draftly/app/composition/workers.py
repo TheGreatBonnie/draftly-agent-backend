@@ -4,6 +4,7 @@ from typing import Any
 
 import structlog
 
+from draftly.app.composition.rq_jobs import build_rq_queues
 from draftly.app.composition.workflows import ComposedWorkflows
 from draftly.app.dependencies import ApplicationDependencies
 from draftly.app.workers.scheduler import DraftlyScheduler
@@ -127,6 +128,49 @@ def build_scheduler_client(
     del task_runner
 
     return None
+
+
+def build_rq_worker(
+    *,
+    task_runner: TaskRunner,
+    redis_url: str,
+    prefix: str = "draftly",
+) -> dict[str, Any]:
+    """Build RQ infrastructure: queues, scheduler config, task handlers.
+
+    Returns a dict with:
+        - rq_queues: dict of queue_name → Queue
+        - task_handlers: dict of task_name → async handler
+        - rq_scheduler: Scheduler instance (or None if disabled)
+        - rq_connection: sync Redis connection
+    """
+    import redis as sync_redis
+    from rq_scheduler import Scheduler
+
+    conn = sync_redis.Redis.from_url(redis_url, decode_responses=True)
+    queues = build_rq_queues(conn, prefix=prefix)
+
+    task_handlers = {}
+    for task_name in TASK_REGISTRY:
+        if task_runner.has_task(task_name):
+            handler = task_runner._tasks.get(task_name)
+            if handler is not None:
+                task_handlers[task_name] = handler
+
+    scheduler = Scheduler(connection=conn)
+
+    logger.info(
+        "rq worker built queues=%d tasks=%d",
+        len(queues),
+        len(task_handlers),
+    )
+
+    return {
+        "rq_queues": queues,
+        "task_handlers": task_handlers,
+        "rq_scheduler": scheduler,
+        "rq_connection": conn,
+    }
 
 
 def build_worker(
