@@ -20,7 +20,6 @@ from draftly.app.dependencies import (
     ApplicationDependencies,
     build_dependencies,
 )
-from draftly.app.workers.worker import DraftlyWorker
 from draftly.observability.logging import configure_logging
 
 logger = structlog.get_logger(__name__)
@@ -43,11 +42,12 @@ class DraftlyApplication:
     workflows: ComposedWorkflows | None = None
     events: EventComposition | None = None
 
-    worker: DraftlyWorker | None = None
     session_manager: Any = None
 
     review_notification: Any = None
     review_decision: Any = None
+
+    redis_client: Any = None
 
     _started: bool = False
     _gateway_task: Any = None
@@ -105,9 +105,6 @@ class DraftlyApplication:
                 self._slack_task = asyncio.create_task(start_socket_mode())
                 logger.info("slack_socket_mode_started")
 
-            if self.worker is not None:
-                await self.worker.start()
-
         except Exception:
             await self.shutdown()
             raise
@@ -123,40 +120,34 @@ class DraftlyApplication:
         if not self._started:
             return
 
-        try:
-            if self.worker is not None:
-                await self.worker.stop()
-        except Exception:
-            logger.exception("Failed to stop worker during shutdown")
-        finally:
-            # Stop Slack Bolt app
-            if self._slack_task is not None:
-                try:
-                    self._slack_task.cancel()
-                    await self._slack_task
-                except asyncio.CancelledError:
-                    pass
-                except Exception:
-                    logger.exception("slack_socket_mode_stop_failed")
-                finally:
-                    self._slack_task = None
-            # Stop Discord Gateway
-            if self._gateway_task is not None:
-                try:
-                    self._gateway_task.cancel()
-                    await self._gateway_task
-                except asyncio.CancelledError:
-                    pass
-                except Exception:
-                    logger.exception("discord_gateway_stop_failed")
-                finally:
-                    self._gateway_task = None
+        # Stop Slack Bolt app
+        if self._slack_task is not None:
             try:
-                await self._stop_infrastructure()
+                self._slack_task.cancel()
+                await self._slack_task
+            except asyncio.CancelledError:
+                pass
             except Exception:
-                logger.exception("Failed to stop infrastructure during shutdown")
+                logger.exception("slack_socket_mode_stop_failed")
             finally:
-                self._started = False
+                self._slack_task = None
+        # Stop Discord Gateway
+        if self._gateway_task is not None:
+            try:
+                self._gateway_task.cancel()
+                await self._gateway_task
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                logger.exception("discord_gateway_stop_failed")
+            finally:
+                self._gateway_task = None
+        try:
+            await self._stop_infrastructure()
+        except Exception:
+            logger.exception("Failed to stop infrastructure during shutdown")
+        finally:
+            self._started = False
 
     # ========================================================
     # Infrastructure
@@ -205,33 +196,12 @@ class DraftlyApplication:
             model=self._resolve_runtime_model(),
             hooks=[],
             audit_repo=audit_repo,
+            redis_client=self.redis_client,
         )
 
         self.events = build_event_system(
             workflows=self.workflows,
         )
-
-        # Build worker after workflows are ready
-        if self.settings.worker_enabled:
-            from draftly.app.composition.workers import (
-                build_scheduler_client,
-                build_task_runner,
-                build_worker,
-            )
-
-            task_runner = build_task_runner(
-                workflows=self.workflows,
-                dependencies=self.dependencies,
-            )
-
-            scheduler_client = build_scheduler_client(
-                task_runner=task_runner,
-            )
-
-            self.worker = build_worker(
-                task_runner=task_runner,
-                scheduler_client=scheduler_client,
-            )
 
     def _build_memory_service(self) -> Any:
         """Build the §8.1 memory service over the persistence repo."""
@@ -297,6 +267,9 @@ class DraftlyApplication:
         # await self._maybe_stop(
         #     self.dependencies.memory,
         # )
+
+        if self.redis_client is not None:
+            await self.redis_client.close()
 
         await self._maybe_stop(
             self.dependencies.database,
@@ -388,21 +361,18 @@ def create_application(
     )
 
     # --------------------------------------------------------
+    # Redis (shared by all subsystems)
+    # --------------------------------------------------------
+
+    from draftly.integrations.redis import RedisClient
+
+    redis_client = RedisClient(url=settings.redis_url)
+
+    # --------------------------------------------------------
     # Tools
     # --------------------------------------------------------
 
     tools = build_tools()
-
-    # --------------------------------------------------------
-    # Worker (background jobs)
-    # --------------------------------------------------------
-
-    # Task runner and scheduler will be built after workflows in startup
-    worker: DraftlyWorker | None = None
-
-    if settings.worker_enabled:
-        # Worker will be built in startup after workflows are ready
-        pass
 
     return DraftlyApplication(
         settings=settings,
@@ -411,7 +381,7 @@ def create_application(
         agents=None,  # built in startup
         workflows=None,  # built in startup
         events=None,  # built in startup
-        worker=worker,
+        redis_client=redis_client,
     )
 
 
@@ -456,6 +426,14 @@ async def lifespan(
 
     try:
         await application.startup()
+
+        # Wire dashboard broadcaster for SSE push updates.
+        if application.redis_client is not None:
+            from draftly.events.dashboard_broadcaster import DashboardBroadcaster
+
+            app.state.dashboard_broadcaster = DashboardBroadcaster(
+                application.redis_client.native,
+            )
 
         yield
 

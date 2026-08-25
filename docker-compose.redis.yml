@@ -9,3 +9,16 @@ services:
       interval: 5s
       timeout: 3s
       retries: 5
+
+  rq-worker:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.worker
+    command: ["python", "-m", "workers.rq_worker"]
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - DATABASE_URL=${DATABASE_URL}
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped

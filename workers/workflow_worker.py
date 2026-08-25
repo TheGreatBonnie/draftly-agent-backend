@@ -1,8 +1,7 @@
-"""Workflow resume/retry worker entrypoint (plan §9.2).
+"""Workflow resume/retry worker entrypoint.
 
-Boots the DraftlyApplication runtime and keeps the background worker
-(scheduler + task runner) processing periodic jobs — including review
-expiry and workflow retries — until interrupted.
+Now delegates to the RQ worker. This file is kept for backwards
+compatibility but simply calls the RQ worker.
 
 Usage:
     python -m workers.workflow_worker
@@ -10,39 +9,7 @@ Usage:
 
 from __future__ import annotations
 
-import asyncio
-import signal
-
-import structlog
-
-from draftly.app.config import get_settings
-from draftly.app.lifecycle import create_application
-from draftly.observability.logging import configure_logging
-
-
-async def run() -> None:
-    configure_logging(settings=get_settings())
-    structlog.contextvars.bind_contextvars(worker="workflow")
-    application = create_application(settings=get_settings())
-    await application.startup()
-    try:
-        worker = application.worker
-        if worker is None:
-            raise RuntimeError("worker_enabled=false; nothing to run")
-        await worker.start()
-        stop = asyncio.Event()
-        loop = asyncio.get_running_loop()
-        for sig in (signal.SIGINT, signal.SIGTERM):
-            loop.add_signal_handler(sig, stop.set)
-        await stop.wait()
-        await worker.stop()
-    finally:
-        await application.shutdown()
-
-
-def main() -> None:
-    asyncio.run(run())
-
+from workers.rq_worker import main
 
 if __name__ == "__main__":
     main()
