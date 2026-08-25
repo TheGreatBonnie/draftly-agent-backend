@@ -37,6 +37,8 @@ def client() -> TestClient:
         return_value={"org_id": "test-org", "state": "COMPLETED", "stages": []}
     )
     app.state.draftly = state
+    from draftly.app.api.routes.workflows import TicketStore
+    app.state.tickets = TicketStore()
 
     return TestClient(app)
 
@@ -186,7 +188,9 @@ class TestOnboardingRoutes:
         response = client.post("/onboarding/initialize")
         assert response.status_code == 200
         data = response.json()
-        assert data["state"] == "COMPLETED"
+        assert data["state"] == "INITIALIZING"
+        assert "run_id" in data
+        assert "ticket" in data
         args = state.worker.run_task.await_args
         assert args.args[0] == "onboarding.initialize"
 
@@ -445,6 +449,35 @@ class TestOrgGuards:
         assert resp.json() == {"detail": "Missing organization ID"}
 
 
+class TestInitializeTicketAndRunId:
+    """POST /onboarding/initialize returns run_id + ticket for SSE streaming."""
+
+    def test_initialize_returns_run_id_and_ticket(self, client):
+        """POST /onboarding/initialize should return run_id and ticket for SSE."""
+        repos = client.app.state.draftly.dependencies.repositories
+        repos.onboarding.get = AsyncMock(return_value={
+            "org_id": "test-org",
+            "state": "PREFERENCES_CONFIGURED",
+            "selected_repository": {"full_name": "t/r"},
+        })
+        client.app.state.draftly.worker.task_runner.has_task = MagicMock(
+            return_value=True,
+        )
+        client.app.state.draftly.worker.run_task = AsyncMock(
+            return_value={"state": "COMPLETED"}
+        )
+        from draftly.app.api.routes.workflows import TicketStore
+        client.app.state.tickets = TicketStore()
+
+        resp = client.post("/onboarding/initialize")
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert "run_id" in body
+        assert "ticket" in body
+        assert body["state"] == "INITIALIZING"
+
+
 class TestStateMachineGuards:
     """POST endpoints enforce the linear §5.2 machine; same-state replays stay legal."""
 
@@ -618,7 +651,10 @@ class TestInitializeRobustness:
         resp = client.post(path)
 
         assert resp.status_code == 200
-        assert resp.json()["state"] == "COMPLETED"
+        body = resp.json()
+        assert body["state"] == "INITIALIZING"
+        assert "run_id" in body
+        assert "ticket" in body
 
     @pytest.mark.parametrize(("path", "from_state"), INIT_PATHS)
     def test_workflow_state_success_maps_to_completed(self, client, path, from_state):
@@ -631,9 +667,9 @@ class TestInitializeRobustness:
 
         assert resp.status_code == 200
         body = resp.json()
-        assert body["state"] == "COMPLETED"
-        assert body["result"]["run_id"] == "r1"
-        assert body["result"]["status"] == "delivered"
+        assert body["state"] == "INITIALIZING"
+        assert "run_id" in body
+        assert "ticket" in body
 
     @pytest.mark.parametrize(("path", "from_state"), INIT_PATHS)
     def test_workflow_state_failed_marks_failed_and_502(self, client, path, from_state):
@@ -654,15 +690,7 @@ class TestInitializeRobustness:
         self._set_state(client, "PREFERENCES_CONFIGURED")
         state = client.app.state.draftly
 
-        class Exploding:
-            @property
-            def status(self):  # pragma: no cover - exercised via route
-                raise RuntimeError("shape")
-
-            def get(self, *_args, **_kwargs):  # pragma: no cover
-                raise AssertionError("route must not treat results as dicts")
-
-        state.worker.run_task = AsyncMock(return_value=Exploding())
+        state.worker.run_task = AsyncMock(side_effect=RuntimeError("shape"))
 
         resp = client.post("/onboarding/initialize")
 

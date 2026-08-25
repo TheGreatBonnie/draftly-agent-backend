@@ -354,15 +354,22 @@ def _init_worker_guard(request: Request):
 
 
 async def _execute_initialization(
-    repos, org_id: str, worker, selected_repository: dict | None
+    repos, org_id: str, worker, selected_repository: dict | None, *, request: Request
 ) -> dict[str, Any]:
     """Flip to INITIALIZING, run the task, and convert any failure to FAILED + 502.
 
+    Returns a ticket + run_id so the caller can stream results over SSE.
     Accepts both the real worker result (WorkflowState) and plain dicts so
     tests/legacy callers keep working. All post-run shaping stays inside the
     try so nothing after a successful run can strand the row in INITIALIZING.
     """
+    from uuid import uuid4
+
+    from draftly.app.api.routes.workflows import _tickets
     from draftly.workflows.state import WorkflowState, WorkflowStatus
+
+    run_id = f"onboarding-init-{org_id}-{uuid4().hex[:8]}"
+    ticket = _tickets(request).issue(run_id, org_id=org_id)
 
     await repos.onboarding.upsert(org_id, state="INITIALIZING", failure=None)
     try:
@@ -370,6 +377,7 @@ async def _execute_initialization(
             "onboarding.initialize",
             org_id=org_id,
             selected_repository=selected_repository,
+            run_id=run_id,
         )
         if isinstance(raw, WorkflowState):
             if raw.status == WorkflowStatus.FAILED:
@@ -380,9 +388,7 @@ async def _execute_initialization(
                     failure={"step": "initialization", "detail": detail},
                 )
                 raise HTTPException(status_code=502, detail="Initialization failed")
-            return {"state": "COMPLETED", "result": raw.to_dict()}
-        result = raw
-        return {"state": result.get("state", "COMPLETED"), "result": result}
+        return {"state": "INITIALIZING", "run_id": run_id, "ticket": ticket}
     except HTTPException:
         raise
     except Exception as exc:
@@ -410,7 +416,7 @@ async def start_initialization(
         raise HTTPException(status_code=409, detail=f"Cannot initialize from {current_state}")
     worker = _init_worker_guard(request)
     return await _execute_initialization(
-        repos, org_id, worker, _selected(current)
+        repos, org_id, worker, _selected(current), request=request
     )
 
 
@@ -445,7 +451,9 @@ async def retry_initialize(
     if not current or current.get("state") != "FAILED":
         raise HTTPException(status_code=409, detail="Can only retry from FAILED state")
     worker = _init_worker_guard(request)
-    return await _execute_initialization(repos, org_id, worker, _selected(current))
+    return await _execute_initialization(
+        repos, org_id, worker, _selected(current), request=request
+    )
 
 
 @router.post("/complete")
