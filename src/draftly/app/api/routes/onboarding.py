@@ -18,6 +18,17 @@ router = APIRouter(
 
 REQUIRED_STEPS = {"workspace", "github", "repository", "documentation", "initialization"}
 
+# Linear §5.2 state machine: target state -> states it may be reached from.
+# Same-state replays are allowed (idempotent POSTs); skipping is not.
+_TRANSITIONS: dict[str, set[str]] = {
+    "WORKSPACE_CREATED": {"NOT_STARTED", "WORKSPACE_CREATED"},
+    "GITHUB_CONNECTED": {"WORKSPACE_CREATED", "GITHUB_CONNECTED"},
+    "REPOSITORY_SELECTED": {"GITHUB_CONNECTED", "REPOSITORY_SELECTED"},
+    "DOCUMENTATION_DISCOVERED": {"REPOSITORY_SELECTED", "DOCUMENTATION_DISCOVERED"},
+    "INTEGRATIONS_CONFIGURED": {"DOCUMENTATION_DISCOVERED", "INTEGRATIONS_CONFIGURED"},
+    "PREFERENCES_CONFIGURED": {"INTEGRATIONS_CONFIGURED", "PREFERENCES_CONFIGURED"},
+}
+
 
 def _repos(request: Request):
     """Repositories bundle via composition — mirrors routes/documentation.py."""
@@ -30,6 +41,27 @@ def _worker(request: Request):
     if worker is None:
         raise HTTPException(status_code=503, detail="Background worker is disabled")
     return worker
+
+
+def _org_id(token: dict) -> str:
+    """Extract and validate the organization ID from the verified token."""
+    org_id = token.get("org_id")
+    if not isinstance(org_id, str):
+        raise HTTPException(status_code=401, detail="Missing organization ID")
+    return org_id
+
+
+def _selected(current: dict | None) -> dict:
+    """Selected-repository metadata blob for the onboarding record."""
+    return (current or {}).get("selected_repository") or {}
+
+
+def _require_transition(current: dict | None, target: str, action: str) -> str:
+    """Enforce the linear §5.2 machine; returns the current state."""
+    current_state = (current or {}).get("state", "NOT_STARTED")
+    if current_state not in _TRANSITIONS[target]:
+        raise HTTPException(status_code=409, detail=f"Cannot {action} from {current_state}")
+    return current_state
 
 
 class WorkspaceRequest(BaseModel):
@@ -67,9 +99,7 @@ async def get_status(
     request: Request,
     token: dict = Depends(get_verified_token),
 ) -> dict[str, Any]:
-    org_id = token.get("org_id")
-    if not isinstance(org_id, str):
-        raise HTTPException(status_code=401, detail="Missing organization ID")
+    org_id = _org_id(token)
     repos = _repos(request)
     state = await repos.onboarding.get(org_id)
     if state is None:
@@ -83,14 +113,10 @@ async def create_workspace(
     request: Request,
     token: dict = Depends(get_verified_token),
 ) -> dict[str, Any]:
-    org_id = token.get("org_id")
-    if not isinstance(org_id, str):
-        raise HTTPException(status_code=401, detail="Missing organization ID")
+    org_id = _org_id(token)
     repos = _repos(request)
     current = await repos.onboarding.get(org_id)
-    current_state = current["state"] if current else "NOT_STARTED"
-    if current_state not in ("NOT_STARTED", "WORKSPACE_CREATED"):
-        raise HTTPException(status_code=409, detail=f"Cannot create workspace from {current_state}")
+    _require_transition(current, "WORKSPACE_CREATED", "create workspace")
     await repos.onboarding.upsert(
         org_id,
         state="WORKSPACE_CREATED",
@@ -106,14 +132,10 @@ async def connect_github(
     request: Request,
     token: dict = Depends(get_verified_token),
 ) -> dict[str, Any]:
-    org_id = token.get("org_id")
-    if not isinstance(org_id, str):
-        raise HTTPException(status_code=401, detail="Missing organization ID")
+    org_id = _org_id(token)
     repos = _repos(request)
     current = await repos.onboarding.get(org_id)
-    current_state = current["state"] if current else "NOT_STARTED"
-    if current_state not in ("WORKSPACE_CREATED", "GITHUB_CONNECTED"):
-        raise HTTPException(status_code=409, detail=f"Cannot connect GitHub from {current_state}")
+    _require_transition(current, "GITHUB_CONNECTED", "connect GitHub")
     from draftly.integrations.github.app_auth import get_installation_info
     from draftly.persistence.repositories.github import store_github_installation
     from draftly.persistence.repositories.organizations import update_org_github
@@ -136,7 +158,7 @@ async def connect_github(
         org_id,
         state="GITHUB_CONNECTED",
         selected_repository={
-            **((current or {}).get("selected_repository") or {}),
+            **_selected(current),
             "github_org": github_org,
             "installation_id": body.installation_id,
         },
@@ -151,23 +173,19 @@ async def list_github_repositories(
     token: dict = Depends(get_verified_token),
 ) -> dict[str, Any]:
     """List repositories accessible via the linked installation."""
-    org_id = token.get("org_id")
+    org_id = _org_id(token)
     repos = _repos(request)
     current = await repos.onboarding.get(org_id)
-    installation_id = ((current or {}).get("selected_repository") or {}).get("installation_id")
+    installation_id = _selected(current).get("installation_id")
     if not installation_id:
         raise HTTPException(status_code=409, detail="GitHub not connected yet")
     from draftly.integrations.github.app_auth import get_installation_token
+    from draftly.integrations.github.auth import GitHubAuth
     from draftly.integrations.github.client import GitHubClient
 
-    token_value = await get_installation_token(installation_id)
-    try:
-        github = GitHubClient()
-    except RuntimeError:
-        from draftly.integrations.github.auth import GitHubAuth
-
-        github = GitHubClient(auth=GitHubAuth(token="installation-token-auth"))
-    repositories = await github.get_installation_repositories(token_value)
+    tok = await get_installation_token(int(installation_id))
+    github = GitHubClient(auth=GitHubAuth(token=tok))
+    repositories = await github.get_installation_repositories(tok)
     return {"repositories": repositories}
 
 
@@ -177,16 +195,27 @@ async def select_repository(
     request: Request,
     token: dict = Depends(get_verified_token),
 ) -> dict[str, Any]:
-    org_id = token.get("org_id")
+    org_id = _org_id(token)
     repos = _repos(request)
     current = await repos.onboarding.get(org_id)
-    current_state = current["state"] if current else "NOT_STARTED"
-    if current_state not in ("GITHUB_CONNECTED", "REPOSITORY_SELECTED"):
+    _require_transition(current, "REPOSITORY_SELECTED", "select repository")
+    installation_id = _selected(current).get("installation_id")
+    if not installation_id:
+        raise HTTPException(status_code=409, detail="GitHub not connected yet")
+    if "/" not in body.full_name:
+        raise HTTPException(status_code=422, detail="full_name must be 'owner/repo'")
+    from draftly.integrations.github.app_auth import get_installation_token
+    from draftly.integrations.github.auth import GitHubAuth
+    from draftly.integrations.github.client import GitHubClient
+
+    tok = await get_installation_token(int(installation_id))
+    github = GitHubClient(auth=GitHubAuth(token=tok))
+    accessible = await github.get_installation_repositories(tok)
+    if body.full_name not in {r.get("full_name") for r in accessible}:
         raise HTTPException(
-            status_code=409,
-            detail=f"Cannot select repository from {current_state}",
+            status_code=422,
+            detail=f"Repository {body.full_name} is not accessible via this installation",
         )
-    installation_id = ((current or {}).get("selected_repository") or {}).get("installation_id")
     await repos.repository_config.upsert(
         org_id, body.full_name, default_branch=body.default_branch, installation_id=installation_id
     )
@@ -194,7 +223,7 @@ async def select_repository(
         org_id,
         state="REPOSITORY_SELECTED",
         selected_repository={
-            **((current or {}).get("selected_repository") or {}),
+            **_selected(current),
             "full_name": body.full_name,
             "default_branch": body.default_branch,
         },
@@ -208,17 +237,17 @@ async def discover_documentation(
     request: Request,
     token: dict = Depends(get_verified_token),
 ) -> dict[str, Any]:
-    org_id = token.get("org_id")
+    org_id = _org_id(token)
     repos = _repos(request)
     current = await repos.onboarding.get(org_id)
-    repo_full = ((current or {}).get("selected_repository") or {}).get("full_name", "")
-    if not repo_full:
-        raise HTTPException(status_code=409, detail="Select a repository before discovery")
+    repo_full = _selected(current).get("full_name", "")
+    if not repo_full or "/" not in repo_full:
+        raise HTTPException(status_code=409, detail="Select a valid repository before discovery")
     from draftly.documentation.discovery import discover_documentation as discover
     from draftly.integrations.github.app_auth import get_installation_token
     from draftly.integrations.github.client import GitHubClient
 
-    installation_id = ((current or {}).get("selected_repository") or {}).get("installation_id")
+    installation_id = _selected(current).get("installation_id")
     if not installation_id:
         raise HTTPException(status_code=409, detail="No GitHub App installation configured")
     from draftly.integrations.github.auth import GitHubAuth
@@ -244,10 +273,11 @@ async def confirm_sources(
     request: Request,
     token: dict = Depends(get_verified_token),
 ) -> dict[str, Any]:
-    org_id = token.get("org_id")
+    org_id = _org_id(token)
     repos = _repos(request)
     current = await repos.onboarding.get(org_id)
-    repo_full = ((current or {}).get("selected_repository") or {}).get("full_name", "")
+    _require_transition(current, "DOCUMENTATION_DISCOVERED", "confirm sources")
+    repo_full = _selected(current).get("full_name", "")
     if body.include or body.exclude:
         await repos.repository_config.upsert(
             org_id, repo_full, doc_include=body.include, doc_exclude=body.exclude
@@ -257,7 +287,7 @@ async def confirm_sources(
         await repos.onboarding.upsert(
             org_id,
             selected_repository={
-                **((current or {}).get("selected_repository") or {}),
+                **_selected(current),
                 "doc_include": body.include,
                 "doc_exclude": body.exclude,
             },
@@ -273,14 +303,15 @@ async def configure_integrations(
     request: Request,
     token: dict = Depends(get_verified_token),
 ) -> dict[str, Any]:
-    org_id = token.get("org_id")
+    org_id = _org_id(token)
     repos = _repos(request)
     current = await repos.onboarding.get(org_id)
+    _require_transition(current, "INTEGRATIONS_CONFIGURED", "configure integrations")
     await repos.onboarding.upsert(
         org_id,
         state="INTEGRATIONS_CONFIGURED",
         selected_repository={
-            **((current or {}).get("selected_repository") or {}),
+            **_selected(current),
             "integrations": {"slack": body.slack, "discord": body.discord},
         },
     )
@@ -294,14 +325,15 @@ async def configure_preferences(
     request: Request,
     token: dict = Depends(get_verified_token),
 ) -> dict[str, Any]:
-    org_id = token.get("org_id")
+    org_id = _org_id(token)
     repos = _repos(request)
     current = await repos.onboarding.get(org_id)
+    _require_transition(current, "PREFERENCES_CONFIGURED", "configure preferences")
     await repos.onboarding.upsert(
         org_id,
         state="PREFERENCES_CONFIGURED",
         selected_repository={
-            **((current or {}).get("selected_repository") or {}),
+            **_selected(current),
             "preferences": {
                 "style": body.style,
                 "review_policy": body.review_policy,
@@ -313,18 +345,33 @@ async def configure_preferences(
     return {"state": "PREFERENCES_CONFIGURED"}
 
 
-async def _run_initialize(
-    request: Request, org_id: str, selected_repository: dict | None
-) -> dict[str, Any]:
-    """Shared initialize path: worker guard + registered task execution."""
+def _init_worker_guard(request: Request):
+    """Worker + registered-task check; must run BEFORE any state mutation."""
     worker = _worker(request)
     if not worker.task_runner.has_task("onboarding.initialize"):
         raise HTTPException(status_code=404, detail="Unknown job: onboarding.initialize")
-    return await worker.run_task(
-        "onboarding.initialize",
-        org_id=org_id,
-        selected_repository=selected_repository,
-    )
+    return worker
+
+
+async def _execute_initialization(
+    repos, org_id: str, worker, selected_repository: dict | None
+) -> dict[str, Any]:
+    """Flip to INITIALIZING, run the task, and convert crashes to FAILED + 502."""
+    await repos.onboarding.upsert(org_id, state="INITIALIZING", failure=None)
+    try:
+        result = await worker.run_task(
+            "onboarding.initialize",
+            org_id=org_id,
+            selected_repository=selected_repository,
+        )
+    except Exception as exc:
+        await repos.onboarding.upsert(
+            org_id,
+            state="FAILED",
+            failure={"step": "initialization", "detail": str(exc)[:300]},
+        )
+        raise HTTPException(status_code=502, detail="Initialization failed") from exc
+    return {"state": result.get("state", "COMPLETED"), "result": result}
 
 
 @router.post("/initialize")
@@ -332,20 +379,19 @@ async def start_initialization(
     request: Request,
     token: dict = Depends(get_verified_token),
 ) -> dict[str, Any]:
-    org_id = token.get("org_id")
+    org_id = _org_id(token)
     repos = _repos(request)
     current = await repos.onboarding.get(org_id)
     current_state = (current or {}).get("state", "NOT_STARTED")
     # Idempotent per spec §5.2: already initializing → report as-is.
-    if not org_id:
-        raise HTTPException(status_code=400, detail="No organization selected")
     if current_state == "INITIALIZING":
         return {"state": "INITIALIZING"}
     if current_state != "PREFERENCES_CONFIGURED":
         raise HTTPException(status_code=409, detail=f"Cannot initialize from {current_state}")
-    await repos.onboarding.upsert(org_id, state="INITIALIZING")
-    result = await _run_initialize(request, org_id, (current or {}).get("selected_repository"))
-    return {"state": result.get("state", "COMPLETED"), "result": result}
+    worker = _init_worker_guard(request)
+    return await _execute_initialization(
+        repos, org_id, worker, _selected(current)
+    )
 
 
 @router.get("/initialize/status")
@@ -353,15 +399,18 @@ async def get_initialize_status(
     request: Request,
     token: dict = Depends(get_verified_token),
 ) -> dict[str, Any]:
-    org_id = token.get("org_id")
+    org_id = _org_id(token)
     repos = _repos(request)
     current = await repos.onboarding.get(org_id)
     if not current:
         return {"state": "NOT_STARTED", "stage": None}
+    failure = current.get("failure")
+    if isinstance(failure, dict) and len(str(failure.get("detail", ""))) > 300:
+        failure = {**failure, "detail": str(failure.get("detail"))[:300]}
     return {
         "state": current.get("state"),
-        "stage": ((current or {}).get("selected_repository") or {}).get("init_stage"),
-        "failure": current.get("failure"),
+        "stage": _selected(current).get("init_stage"),
+        "failure": failure,
     }
 
 
@@ -370,16 +419,13 @@ async def retry_initialize(
     request: Request,
     token: dict = Depends(get_verified_token),
 ) -> dict[str, Any]:
-    org_id = token.get("org_id")
+    org_id = _org_id(token)
     repos = _repos(request)
     current = await repos.onboarding.get(org_id)
     if not current or current.get("state") != "FAILED":
         raise HTTPException(status_code=409, detail="Can only retry from FAILED state")
-    if not org_id:
-        raise HTTPException(status_code=400, detail="No organization selected")
-    await repos.onboarding.upsert(org_id, state="INITIALIZING", failure=None)
-    result = await _run_initialize(request, org_id, (current or {}).get("selected_repository"))
-    return {"state": result.get("state", "COMPLETED"), "result": result}
+    worker = _init_worker_guard(request)
+    return await _execute_initialization(repos, org_id, worker, _selected(current))
 
 
 @router.post("/complete")
@@ -388,7 +434,7 @@ async def complete_onboarding(
     token: dict = Depends(get_verified_token),
 ) -> dict[str, Any]:
     """Spec §5.2: verify COMPLETED prerequisites; finalize. Idempotent."""
-    org_id = token.get("org_id")
+    org_id = _org_id(token)
     repos = _repos(request)
     current = await repos.onboarding.get(org_id)
     current_state = (current or {}).get("state", "NOT_STARTED")
@@ -396,7 +442,10 @@ async def complete_onboarding(
         return {"state": "COMPLETED"}
     steps = (current or {}).get("completed_steps") or []
     if isinstance(steps, str):
-        steps = json.loads(steps)
+        try:
+            steps = json.loads(steps)
+        except json.JSONDecodeError:
+            steps = []
     missing = sorted(REQUIRED_STEPS - set(steps))
     if missing:
         raise HTTPException(
