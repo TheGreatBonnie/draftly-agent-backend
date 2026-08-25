@@ -102,10 +102,16 @@ class SyncService:
                 if not content:
                     continue
 
-                # Content-hash skip against persisted source_hash
+                # Content-hash skip against persisted source_hash. A row
+                # without stored chunks is an orphan (e.g. a previous run
+                # crashed mid-file): reprocess it instead of skipping.
                 content_hash = hashlib.sha256(content.encode()).hexdigest()
                 existing = await documents.get_by_org_and_path(org_id=org_id, path=path)
-                if existing and existing.get("source_hash") == content_hash:
+                if (
+                    existing
+                    and existing.get("source_hash") == content_hash
+                    and ((existing.get("metadata") or {}).get("chunk_count") or 0) > 0
+                ):
                     result.skipped_count += 1
                     continue
 

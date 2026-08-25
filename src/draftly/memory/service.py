@@ -43,6 +43,22 @@ class MemoryService:
     async def forget(self, memory_id: str) -> bool:
         return await self.repository.delete(memory_id)
 
+    async def delete_by_metadata(
+        self,
+        *,
+        namespace: str,
+        key: str,
+        value: str,
+    ) -> int:
+        """Delete items in a namespace whose metadata[key] == value."""
+        return await self.repository.delete_by_metadata(
+            namespace=namespace, key=key, value=value
+        )
+
+    async def store_batch(self, items: list[Any]) -> list[dict[str, Any]]:
+        """Persist many memory items with a single embed_batch call."""
+        return await self.repository.store_batch(items)
+
     async def supersede(
         self,
         old_id: str,

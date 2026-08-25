@@ -144,7 +144,14 @@ async def test_sync_skips_unchanged_documents():
         files={"README.md": content},
     )
     documents = FakeDocuments(
-        documents=[{"org_id": "test-org", "path": "README.md", "source_hash": content_hash}]
+        documents=[
+            {
+                "org_id": "test-org",
+                "path": "README.md",
+                "source_hash": content_hash,
+                "metadata": {"chunk_count": 2},
+            }
+        ]
     )
     memory = FakeMemory()
 
@@ -160,6 +167,44 @@ async def test_sync_skips_unchanged_documents():
 
     assert result.document_count == 0  # Skipped
     assert not memory.stored
+
+
+@pytest.mark.asyncio
+async def test_sync_reprocesses_orphaned_documents_without_chunks():
+    """A matching hash without stored chunks is an orphan, not a skip."""
+    import hashlib
+
+    content = "# Hello\n\nWorld."
+    content_hash = hashlib.sha256(content.encode()).hexdigest()
+
+    github = FakeGitHubClient(
+        tree=[{"path": "README.md", "type": "blob"}],
+        files={"README.md": content},
+    )
+    documents = FakeDocuments(
+        documents=[
+            {
+                "org_id": "test-org",
+                "path": "README.md",
+                "source_hash": content_hash,
+            }
+        ]
+    )
+    memory = FakeMemory()
+
+    service = SyncService(
+        github=github, context=_context(documents, memory, {"installation_id": 42})
+    )
+    result = await service.sync(
+        org_id="test-org",
+        repository_full_name="owner/repo",
+        include=["README.md"],
+        exclude=[],
+    )
+
+    assert result.skipped_count == 0
+    assert result.document_count == 1
+    assert memory.stored
 
 
 @pytest.mark.asyncio
