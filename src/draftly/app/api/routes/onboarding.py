@@ -457,6 +457,14 @@ async def complete_onboarding(
     org_id = _org_id(token)
     repos = _repos(request)
     current = await repos.onboarding.get(org_id)
+    # Fake-success guard: completion requires an indexed corpus. Applies to
+    # the idempotent path too, so a poisoned COMPLETED row cannot masquerade.
+    selected = (current or {}).get("selected_repository") or {}
+    if not selected.get("document_count"):
+        raise HTTPException(
+            status_code=409,
+            detail="Cannot complete onboarding; no documents indexed",
+        )
     current_state = (current or {}).get("state", "NOT_STARTED")
     if current_state == "COMPLETED":
         return {"state": "COMPLETED"}

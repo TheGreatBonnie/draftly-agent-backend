@@ -61,6 +61,14 @@ async def run_onboarding_initialize(
             exclude=exclude,
         )
 
+        # A sync that stored nothing while failing every file is a hard
+        # failure, not success (R-C): raise so mark_failed records it.
+        if sync_result.document_count == 0 and sync_result.failed_files:
+            raise RuntimeError(
+                "Documentation sync stored 0 documents; "
+                f"{len(sync_result.failed_files)} file(s) failed"
+            )
+
         # Knowledge/eval/health/recommendations build on the synced corpus;
         # v1 records stage progress so the UI can render it (spec §5.3).
         await _update_stage(onboarding_repo, org_id, "knowledge_construction")
@@ -85,6 +93,7 @@ async def run_onboarding_initialize(
         state.result = {
             "document_count": sync_result.document_count,
             "chunk_count": sync_result.chunk_count,
+            "failed_files_count": len(sync_result.failed_files),
             "baseline": sync_result.baseline.to_dict() if sync_result.baseline else None,
         }
         logger.info("onboarding_initialize_done org=%s docs=%d", org_id, sync_result.document_count)

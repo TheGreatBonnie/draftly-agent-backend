@@ -131,8 +131,8 @@ class DocumentStore:
             fields = ["content = $1"]
             params: list[Any] = [content]
 
-            fields.append(f"metadata = ${len(params) + 1}")
-            params.append(metadata or {})
+            fields.append(f"metadata = ${len(params) + 1}::jsonb")
+            params.append(json.dumps(metadata or {}))
 
             if title is not None:
                 fields.append(f"title = ${len(params) + 1}")
@@ -167,7 +167,7 @@ class DocumentStore:
         else:
             # Build INSERT dynamically so optional sync columns are included
             columns = ["repository", "path", "content", "metadata"]
-            values: list[Any] = [repository, path, content, metadata or {}]
+            values: list[Any] = [repository, path, content, json.dumps(metadata or {})]
             for column, value in (
                 ("org_id", org_id),
                 ("title", title),
@@ -180,7 +180,9 @@ class DocumentStore:
                     columns.append(column)
                     values.append(value)
 
-            placeholders = ", ".join(f"${i}" for i in range(1, len(values) + 1))
+            placeholder_list = [f"${i}" for i in range(1, len(values) + 1)]
+            placeholder_list[columns.index("metadata")] += "::jsonb"
+            placeholders = ", ".join(placeholder_list)
             row = await self.client.fetch_one(
                 f"""
                 INSERT INTO documentation ({", ".join(columns)})
@@ -221,7 +223,7 @@ class DocumentStore:
                 metadata
             )
             VALUES (
-                $1, $2, $3, $4, $5, $6, 'draft', $7
+                $1, $2, $3, $4, $5, $6, 'draft', $7::jsonb
             )
             RETURNING {_DOCUMENT_COLUMNS}
             """,
@@ -231,7 +233,7 @@ class DocumentStore:
             title,
             content,
             document_type,
-            metadata,
+            json.dumps(metadata or {}),
         )
 
         return self._row_to_dict(row)

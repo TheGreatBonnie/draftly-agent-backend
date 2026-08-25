@@ -2,11 +2,19 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from typing import Any, cast
 
 from draftly.integrations.database.client import DatabaseClient
 from draftly.integrations.database.document_store import DocumentStore
+
+METADATA: dict[str, Any] = {
+    "source_url": "https://github.com/draftly/draftly-docs/blob/main/guide.md",
+    "branch": "main",
+    "section_count": 4,
+    "chunk_count": 3,
+}
 
 
 @dataclass
@@ -122,3 +130,65 @@ async def test_upsert_document_without_title_leaves_existing_columns_untouched()
     assert "title = $" not in update_sql
     assert "document_type = $" not in update_sql
     assert "content = $" in update_sql
+
+
+def _assert_metadata_serialized_for_jsonb(sql: str, args: tuple) -> None:
+    """asyncpg requires JSONB params pre-serialized as strings (R-A/R-B)."""
+    assert "::jsonb" in sql
+    assert json.dumps(METADATA) in args
+    assert not any(isinstance(arg, dict) for arg in args)
+
+
+async def test_upsert_document_insert_serializes_metadata_for_jsonb():
+    client = ScriptedClient(responses=[None, _row()])
+    store = DocumentStore(cast(DatabaseClient, client))
+
+    await store.upsert_document(
+        org_id="demo-org",
+        repository="draftly/draftly-docs",
+        path="guide.md",
+        title="Guide",
+        content="# Guide",
+        status="indexed",
+        metadata=METADATA,
+    )
+
+    insert_sql, insert_args = client.calls[-1]
+    assert "INSERT INTO documentation" in insert_sql
+    _assert_metadata_serialized_for_jsonb(insert_sql, insert_args)
+
+
+async def test_upsert_document_update_serializes_metadata_for_jsonb():
+    client = ScriptedClient(responses=[{"id": "doc-1"}, _row()])
+    store = DocumentStore(cast(DatabaseClient, client))
+
+    await store.upsert_document(
+        repository="draftly/draftly-docs",
+        path="guide.md",
+        title="Guide v2",
+        content="# Guide v2",
+        status="indexed",
+        metadata=METADATA,
+    )
+
+    update_sql, update_args = client.calls[-1]
+    assert "UPDATE documentation" in update_sql
+    _assert_metadata_serialized_for_jsonb(update_sql, update_args)
+
+
+async def test_insert_serializes_metadata_for_jsonb():
+    client = ScriptedClient(responses=[_row()])
+    store = DocumentStore(cast(DatabaseClient, client))
+
+    await store.insert(
+        org_id="demo-org",
+        path="guide.md",
+        title="Guide",
+        content="# Guide",
+        document_type="tutorial",
+        metadata=METADATA,
+    )
+
+    insert_sql, insert_args = client.calls[-1]
+    assert "INSERT INTO documentation" in insert_sql
+    _assert_metadata_serialized_for_jsonb(insert_sql, insert_args)

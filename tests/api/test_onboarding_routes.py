@@ -196,6 +196,7 @@ class TestOnboardingRoutes:
             "org_id": "test-org",
             "state": "PREFERENCES_CONFIGURED",
             "completed_steps": ["workspace"],
+            "selected_repository": {"full_name": "owner/repo", "document_count": 3},
         })
         response = client.post("/onboarding/complete")
         assert response.status_code == 409
@@ -209,9 +210,64 @@ class TestOnboardingRoutes:
             "completed_steps": [
                 "workspace", "github", "repository", "documentation", "initialization",
             ],
+            "selected_repository": {"full_name": "owner/repo", "document_count": 2},
         }
         repos.onboarding.get = AsyncMock(return_value=record)
         assert client.post("/onboarding/complete").status_code == 200
+
+    def test_complete_rejected_for_completed_row_with_zero_documents(
+        self, client: TestClient,
+    ) -> None:
+        """A poisoned COMPLETED row must not masquerade as done (fake-success guard)."""
+        repos = client.app.state.draftly.dependencies.repositories
+        repos.onboarding.get = AsyncMock(return_value={
+            "org_id": "test-org",
+            "state": "COMPLETED",
+            "completed_steps": [
+                "workspace", "github", "repository", "documentation", "initialization",
+            ],
+            "selected_repository": {"full_name": "owner/repo", "document_count": 0},
+        })
+        repos.onboarding.upsert = AsyncMock(return_value={})
+        response = client.post("/onboarding/complete")
+        assert response.status_code == 409
+        assert "no documents indexed" in response.json()["detail"]
+        repos.onboarding.upsert.assert_not_awaited()
+
+    def test_complete_rejected_when_corpus_empty_before_finalize(
+        self, client: TestClient,
+    ) -> None:
+        repos = client.app.state.draftly.dependencies.repositories
+        repos.onboarding.get = AsyncMock(return_value={
+            "org_id": "test-org",
+            "state": "PREFERENCES_CONFIGURED",
+            "completed_steps": [
+                "workspace", "github", "repository", "documentation", "initialization",
+            ],
+            "selected_repository": {"full_name": "owner/repo"},
+        })
+        repos.onboarding.upsert = AsyncMock(return_value={})
+        response = client.post("/onboarding/complete")
+        assert response.status_code == 409
+        assert "no documents indexed" in response.json()["detail"]
+
+    def test_complete_finalizes_non_completed_row_with_documents(
+        self, client: TestClient,
+    ) -> None:
+        repos = client.app.state.draftly.dependencies.repositories
+        repos.onboarding.get = AsyncMock(return_value={
+            "org_id": "test-org",
+            "state": "PREFERENCES_CONFIGURED",
+            "completed_steps": [
+                "workspace", "github", "repository", "documentation", "initialization",
+            ],
+            "selected_repository": {"full_name": "owner/repo", "document_count": 5},
+        })
+        repos.onboarding.upsert = AsyncMock(return_value={})
+        response = client.post("/onboarding/complete")
+        assert response.status_code == 200
+        upsert_kwargs = repos.onboarding.upsert.await_args.kwargs
+        assert upsert_kwargs.get("state") == "COMPLETED"
 
 
 class TestConnectGithub:

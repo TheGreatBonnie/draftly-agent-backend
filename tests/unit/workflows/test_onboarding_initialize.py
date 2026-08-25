@@ -97,3 +97,55 @@ async def test_initialize_workflow_marks_failed_on_sync_error(installation_clien
         )
     assert state.status == WorkflowStatus.FAILED
     context.repositories.onboarding.mark_failed.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_initialize_workflow_fails_when_sync_stores_zero_documents(installation_client):
+    """All-files-failed sync must not masquerade as DELIVERED (R-C)."""
+    from draftly.documentation.sync_service import SyncResult
+
+    sync_result = SyncResult(
+        commit_sha="unknown",
+        repository="owner/repo",
+        document_count=0,
+        chunk_count=0,
+        failed_files=["README.md", "docs/guide.md"],
+    )
+
+    with patch("draftly.documentation.sync_service.SyncService") as service_cls:
+        service_cls.return_value.sync = AsyncMock(return_value=sync_result)
+        context = _context()
+        state = await run_onboarding_initialize(
+            context,
+            org_id="test-org",
+            selected_repository={"full_name": "owner/repo"},
+        )
+
+    assert state.status == WorkflowStatus.FAILED
+    context.repositories.onboarding.mark_failed.assert_awaited_once()
+    assert any("2 file" in err for err in state.errors)
+
+
+@pytest.mark.asyncio
+async def test_initialize_workflow_surfaces_partial_failures(installation_client):
+    """Partial success stays DELIVERED but exposes failure count (R-D)."""
+    from draftly.documentation.sync_service import SyncResult
+
+    sync_result = SyncResult(
+        commit_sha="abc123",
+        repository="owner/repo",
+        document_count=1,
+        chunk_count=2,
+        failed_files=["docs/broken.md"],
+    )
+
+    with patch("draftly.documentation.sync_service.SyncService") as service_cls:
+        service_cls.return_value.sync = AsyncMock(return_value=sync_result)
+        state = await run_onboarding_initialize(
+            _context(),
+            org_id="test-org",
+            selected_repository={"full_name": "owner/repo"},
+        )
+
+    assert state.status == WorkflowStatus.DELIVERED
+    assert state.result["failed_files_count"] == 1
