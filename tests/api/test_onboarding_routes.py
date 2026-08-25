@@ -37,8 +37,7 @@ def client() -> TestClient:
         return_value={"org_id": "test-org", "state": "COMPLETED", "stages": []}
     )
     app.state.draftly = state
-    from draftly.app.api.routes.workflows import TicketStore
-    app.state.tickets = TicketStore()
+    app.state.redis_tickets = MagicMock()
 
     return TestClient(app)
 
@@ -466,8 +465,7 @@ class TestInitializeTicketAndRunId:
         client.app.state.draftly.worker.run_task = AsyncMock(
             return_value={"state": "COMPLETED"}
         )
-        from draftly.app.api.routes.workflows import TicketStore
-        client.app.state.tickets = TicketStore()
+        client.app.state.redis_tickets = MagicMock()
 
         resp = client.post("/onboarding/initialize")
 
