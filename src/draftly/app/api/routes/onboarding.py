@@ -411,7 +411,13 @@ async def start_initialization(
     current_state = (current or {}).get("state", "NOT_STARTED")
     # Idempotent per spec §5.2: already initializing → report as-is.
     if current_state == "INITIALIZING":
-        return {"state": "INITIALIZING"}
+        from uuid import uuid4
+
+        from draftly.app.api.routes.workflows import _tickets
+
+        run_id = f"onboarding-init-{org_id}-{uuid4().hex[:8]}"
+        ticket = _tickets(request).issue(run_id, org_id=org_id)
+        return {"state": "INITIALIZING", "run_id": run_id, "ticket": ticket}
     if current_state != "PREFERENCES_CONFIGURED":
         raise HTTPException(status_code=409, detail=f"Cannot initialize from {current_state}")
     worker = _init_worker_guard(request)

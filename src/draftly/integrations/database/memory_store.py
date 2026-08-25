@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Sequence
 from typing import Any
 from uuid import uuid4
@@ -60,7 +61,7 @@ class DatabaseMemoryStore:
             content,
             importance,
             confidence,
-            metadata or {},
+            json.dumps(metadata or {}),
         )
 
         async with self.client.transaction() as conn:
@@ -78,7 +79,7 @@ class DatabaseMemoryStore:
                     metadata
                 )
                 VALUES (
-                    $1, $2, $3, $4, $5, $6, $7, $8
+                    $1, $2, $3, $4, $5, $6, $7, $8::jsonb
                 )
                 RETURNING {_MEMORY_COLUMNS}
                 """,
@@ -152,8 +153,8 @@ class DatabaseMemoryStore:
             params.append(confidence)
 
         if metadata is not None:
-            fields.append(f"metadata = ${len(params) + 1}")
-            params.append(metadata)
+            fields.append(f"metadata = ${len(params) + 1}::jsonb")
+            params.append(json.dumps(metadata))
 
         if not fields:
             raise ValueError("No fields were provided for update.")

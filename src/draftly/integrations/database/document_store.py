@@ -399,6 +399,7 @@ class DocumentStore:
             "document_type": row["document_type"],
             "version": row["version"],
             "commit_sha": row["commit_sha"],
+            "source_hash": row["source_hash"],
             "status": row["status"],
             "metadata": row["metadata"],
             "stale": row["stale"],

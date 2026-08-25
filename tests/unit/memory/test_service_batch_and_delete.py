@@ -27,7 +27,7 @@ async def test_delete_by_metadata_delegates_to_repository():
 
     assert deleted == 3
     repository.delete_by_metadata.assert_awaited_once_with(
-        namespace="documents", key="document_id", value="doc-1"
+        namespace="documents", key="document_id", value="doc-1", org_id=None
     )
 
 

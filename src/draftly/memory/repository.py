@@ -107,11 +107,14 @@ class DomainMemoryRepository:
         namespace: str,
         key: str,
         value: str,
+        org_id: str | None = None,
     ) -> int:
-        """Delete all items in a namespace whose metadata[key] == value."""
+        """Delete items in a namespace whose metadata[key] == value, scoped to org."""
         items = await self.repository.list_namespace(namespace=namespace)
         deleted = 0
         for item in items:
+            if org_id and item.get("org_id") != org_id:
+                continue
             if (item.get("metadata") or {}).get(key) == value:
                 if await self.repository.delete(item["id"]):
                     deleted += 1

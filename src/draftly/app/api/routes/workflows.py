@@ -99,6 +99,7 @@ async def _event_source(
     replayed: list[dict[str, Any]] | None = None,
     min_live_seq: int = 0,
 ) -> AsyncIterator[str]:
+    replayed_done = False
     for row in replayed or []:
         envelope = StreamEnvelope(
             type=str(row.get("type", "unknown")),
@@ -110,6 +111,13 @@ async def _event_source(
             payload=dict(row.get("payload") or {}),
         )
         yield _format_envelope(envelope)
+        if envelope.type == "workflow_result":
+            replayed_done = True
+
+    # If the workflow already completed before this connection opened,
+    # all events were replayed from the store — no live subscription needed.
+    if replayed_done:
+        return
 
     gen = bus.subscribe(run_id)
     while True:
@@ -157,22 +165,27 @@ async def stream_events(
         )
     )
 
-    # Last-Event-ID resume: replay stored rows past the client's seq first.
+    # Replay stored events: on initial connection (no Last-Event-ID) replay
+    # the full history so the client sees all workflow progress even if the
+    # workflow completed before the SSE connection was opened.
     replayed: list[dict[str, Any]] = []
     min_live_seq = 0
     last_event_id = request.headers.get("last-event-id", "")
-    if last_event_id.isdigit():
-        min_live_seq = int(last_event_id)
-        events_repo = getattr(
-            getattr(request.app.state.draftly.dependencies, "repositories", None),
-            "workflow_events",
-            None,
-        )
-        if events_repo is not None:
-            try:
+
+    events_repo = getattr(
+        getattr(request.app.state.draftly.dependencies, "repositories", None),
+        "workflow_events",
+        None,
+    )
+    if events_repo is not None:
+        try:
+            if last_event_id.isdigit():
+                min_live_seq = int(last_event_id)
                 replayed = await events_repo.list_after(run_id, seq=min_live_seq)
-            except Exception:
-                logger.warning("sse_replay_failed run_id=%s", run_id, exc_info=True)
+            else:
+                replayed = await events_repo.list_after(run_id, seq=0)
+        except Exception:
+            logger.warning("sse_replay_failed run_id=%s", run_id, exc_info=True)
 
     return StreamingResponse(
         _event_source(

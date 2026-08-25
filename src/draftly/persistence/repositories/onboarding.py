@@ -91,3 +91,40 @@ class OnboardingRepository:
 
     async def mark_failed(self, org_id: str, step: str, detail: dict) -> dict[str, Any]:
         return await self.upsert(org_id, state="FAILED", failure={"step": step, **detail})
+
+    async def mark_step_and_set_state(
+        self, org_id: str, step: str, state: str, **extra_fields: Any
+    ) -> dict[str, Any]:
+        """Atomically append a step AND set state in one SQL statement.
+
+        Prevents a crash between mark_step and upsert from stranding the
+        row in INITIALIZING with the step already recorded.
+        """
+        set_parts = [
+            "completed_steps = ("
+            "  SELECT COALESCE(jsonb_agg(s), '[]'::jsonb)"
+            "  FROM ("
+            "    SELECT DISTINCT jsonb_array_elements_text("
+            "      onboarding_state.completed_steps || $2::jsonb"
+            "    ) AS s"
+            "  ) dedup"
+            ")",
+            f"state = ${3}",
+        ]
+        params: list[Any] = [org_id, json.dumps([step]), state]
+        idx = 4
+        for key, value in extra_fields.items():
+            set_parts.append(f"{key} = ${idx}")
+            if isinstance(value, (dict, list)):
+                params.append(json.dumps(value))
+            else:
+                params.append(value)
+            idx += 1
+
+        await self.client.execute(
+            f"INSERT INTO onboarding_state (org_id, completed_steps, state) "
+            f"VALUES ($1, $2::jsonb, $3) "
+            f"ON CONFLICT (org_id) DO UPDATE SET {', '.join(set_parts)}",
+            *params,
+        )
+        return await self.get(org_id) or {"org_id": org_id}

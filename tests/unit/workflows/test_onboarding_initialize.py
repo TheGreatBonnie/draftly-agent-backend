@@ -18,6 +18,7 @@ def _context():
     context.repositories.onboarding.upsert = AsyncMock(return_value={})
     context.repositories.onboarding.mark_step = AsyncMock(return_value={})
     context.repositories.onboarding.mark_failed = AsyncMock(return_value={})
+    context.repositories.onboarding.mark_step_and_set_state = AsyncMock(return_value={})
     context.repositories.github_installations.first_for_org = AsyncMock(
         return_value={"installation_id": 42}
     )
@@ -173,6 +174,7 @@ def fake_repositories():
     repos.onboarding.get = AsyncMock(return_value=None)
     repos.onboarding.upsert = AsyncMock()
     repos.onboarding.mark_step = AsyncMock()
+    repos.onboarding.mark_step_and_set_state = AsyncMock()
     return repos
 
 

@@ -55,7 +55,7 @@ class FakeMemory:
     stored: list = field(default_factory=list)
     deleted: list = field(default_factory=list)
 
-    async def delete_by_metadata(self, *, namespace, key, value):
+    async def delete_by_metadata(self, *, namespace, key, value, org_id=None):
         self.deleted.append((namespace, key, value))
         return 0
 

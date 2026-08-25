@@ -102,17 +102,17 @@ async def run_onboarding_initialize(
         await _publish("stage_change", {"stage": "recommendations"})
 
         if onboarding_repo:
-            # Mark the required step BEFORE the terminal state so
-            # POST /onboarding/complete's prerequisite check passes.
-            await onboarding_repo.mark_step(org_id, "initialization")
             # Mirror final counts into selected_repository so the
             # completion screen can render real numbers.
             current = await onboarding_repo.get(org_id)
             selected = dict((current or {}).get("selected_repository") or {})
             selected["document_count"] = sync_result.document_count
             selected["chunk_count"] = sync_result.chunk_count
-            await onboarding_repo.upsert(
-                org_id, state="COMPLETED", selected_repository=selected
+            # Atomic: mark step + set COMPLETED so a crash between them
+            # never strands the row in INITIALIZING.
+            await onboarding_repo.mark_step_and_set_state(
+                org_id, "initialization", "COMPLETED",
+                selected_repository=selected,
             )
 
         state.result = {

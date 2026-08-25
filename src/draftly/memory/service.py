@@ -49,10 +49,11 @@ class MemoryService:
         namespace: str,
         key: str,
         value: str,
+        org_id: str | None = None,
     ) -> int:
         """Delete items in a namespace whose metadata[key] == value."""
         return await self.repository.delete_by_metadata(
-            namespace=namespace, key=key, value=value
+            namespace=namespace, key=key, value=value, org_id=org_id
         )
 
     async def store_batch(self, items: list[Any]) -> list[dict[str, Any]]:

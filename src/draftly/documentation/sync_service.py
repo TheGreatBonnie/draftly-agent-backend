@@ -145,6 +145,7 @@ class SyncService:
                         namespace=MemoryNamespaces.DOCUMENTS,
                         key="document_id",
                         value=document_id,
+                        org_id=org_id,
                     )
                     items = [
                         Document(
