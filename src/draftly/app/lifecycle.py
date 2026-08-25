@@ -13,7 +13,9 @@ from fastapi import FastAPI
 
 from draftly.app.composition.agents import AgentRegistry, build_agents
 from draftly.app.composition.events import EventComposition, build_event_system
+from draftly.app.composition.rq_jobs import build_rq_queues
 from draftly.app.composition.tools import ToolRegistry, build_tools
+from draftly.app.composition.workers import build_task_runner
 from draftly.app.composition.workflows import ComposedWorkflows, build_workflows
 from draftly.app.config import Settings, get_settings
 from draftly.app.dependencies import (
@@ -48,6 +50,9 @@ class DraftlyApplication:
     review_decision: Any = None
 
     redis_client: Any = None
+
+    rq_queues: Any = None
+    task_handlers: Any = None
 
     _started: bool = False
     _gateway_task: Any = None
@@ -88,6 +93,20 @@ class DraftlyApplication:
 
             # Build agents and workflows after checkpointer is ready
             await self._build_agents_and_workflows()
+
+            # Build task runner and RQ queues for the API server
+            task_runner = build_task_runner(
+                workflows=self.workflows,
+                dependencies=self.dependencies,
+            )
+            self.task_handlers = task_runner._tasks
+
+            if self.redis_client is not None:
+                rq_conn = self.redis_client.get_rq_connection()
+                self.rq_queues = build_rq_queues(
+                    rq_conn,
+                    prefix=self.settings.rq_queue_prefix,
+                )
 
             # Start Discord Gateway if bot token is configured
             if self.settings.discord_bot_token:

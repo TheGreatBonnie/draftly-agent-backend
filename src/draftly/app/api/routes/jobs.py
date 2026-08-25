@@ -59,6 +59,7 @@ async def run_job(
     # Sync to Postgres jobs table for frontend polling
     store = DatabaseJobsStore()
     await store.insert(
+        job_id=job.id,
         org_id="system",
         name=body.job_name,
         job_type=body.job_name,

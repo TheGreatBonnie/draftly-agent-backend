@@ -14,15 +14,17 @@ class DatabaseJobsStore:
     async def insert(
         self,
         *,
+        job_id: Any = None,
         org_id: str,
         name: str,
         job_type: str,
         schedule: str,
         configuration: dict[str, Any],
-        status: str = "active",
+        status: str = "pending",
     ) -> dict[str, Any]:
 
-        job_id = uuid4()
+        if job_id is None:
+            job_id = uuid4()
 
         row = await self.client.fetch_one(
             """
