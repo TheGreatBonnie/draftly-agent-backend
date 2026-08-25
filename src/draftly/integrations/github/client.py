@@ -435,12 +435,14 @@ class GitHubClient:
     async def get_repository(
         self,
         repository: str,
+        token: str | None = None,
     ) -> dict[str, Any]:
         return cast(
             dict[str, Any],
             await self._request(
                 "GET",
                 f"/repos/{repository}",
+                token=token,
             ),
         )
 

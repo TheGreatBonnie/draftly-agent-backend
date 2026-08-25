@@ -35,18 +35,14 @@ async def run_documentation_sync(
         return state.finish(WorkflowStatus.FAILED)
 
     try:
+        installation = await context.repositories.github_installations.first_for_org(org_id)
+        if installation is None:
+            raise RuntimeError(f"No GitHub installation found for org {org_id}")
+        from draftly.integrations.github.app_auth import build_installation_client
+
+        github = await build_installation_client(installation["installation_id"])
+
         from draftly.documentation.sync_service import SyncService
-
-        # Build a minimal GitHub client for sync. Sync authenticates each
-        # call with an installation token, so the client-level default
-        # auth is only a fallback and need not be configured.
-        from draftly.integrations.github.client import GitHubClient
-        try:
-            github = GitHubClient()
-        except RuntimeError:
-            from draftly.integrations.github.auth import GitHubAuth
-
-            github = GitHubClient(auth=GitHubAuth(token="installation-token-auth"))
 
         service = SyncService(github=github, context=context)
         result = await service.sync(

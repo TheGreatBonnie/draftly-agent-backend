@@ -8,6 +8,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from draftly.app.api.routes import onboarding
+from draftly.workflows.state import WorkflowState, WorkflowStatus
 
 
 @pytest.fixture()
@@ -562,6 +563,56 @@ class TestInitializeRobustness:
 
         assert resp.status_code == 200
         assert resp.json()["state"] == "COMPLETED"
+
+    @pytest.mark.parametrize(("path", "from_state"), INIT_PATHS)
+    def test_workflow_state_success_maps_to_completed(self, client, path, from_state):
+        self._set_state(client, from_state)
+        client.app.state.draftly.worker.run_task = AsyncMock(
+            return_value=WorkflowState(run_id="r1").finish(WorkflowStatus.DELIVERED)
+        )
+
+        resp = client.post(path)
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["state"] == "COMPLETED"
+        assert body["result"]["run_id"] == "r1"
+        assert body["result"]["status"] == "delivered"
+
+    @pytest.mark.parametrize(("path", "from_state"), INIT_PATHS)
+    def test_workflow_state_failed_marks_failed_and_502(self, client, path, from_state):
+        self._set_state(client, from_state)
+        state = client.app.state.draftly
+        wf = WorkflowState(run_id="r2", errors=["boom"])
+        wf.finish(WorkflowStatus.FAILED)
+        state.worker.run_task = AsyncMock(return_value=wf)
+
+        resp = client.post(path)
+
+        assert resp.status_code == 502
+        upsert = state.dependencies.repositories.onboarding.upsert.await_args
+        assert upsert.kwargs["state"] == "FAILED"
+        assert "boom" in upsert.kwargs["failure"]["detail"]
+
+    def test_post_run_shape_crash_cannot_strand_initializing(self, client):
+        self._set_state(client, "PREFERENCES_CONFIGURED")
+        state = client.app.state.draftly
+
+        class Exploding:
+            @property
+            def status(self):  # pragma: no cover - exercised via route
+                raise RuntimeError("shape")
+
+            def get(self, *_args, **_kwargs):  # pragma: no cover
+                raise AssertionError("route must not treat results as dicts")
+
+        state.worker.run_task = AsyncMock(return_value=Exploding())
+
+        resp = client.post("/onboarding/initialize")
+
+        assert resp.status_code == 502
+        upserts = state.dependencies.repositories.onboarding.upsert.await_args_list
+        assert upserts[-1].kwargs["state"] == "FAILED"
 
 
 class TestRepositoriesAndCompleteHardening:

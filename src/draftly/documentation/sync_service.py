@@ -75,8 +75,9 @@ class SyncService:
             raise RuntimeError(f"No GitHub installation found for org {org_id}")
         token = await self.github.get_installation_token(installation["installation_id"])
 
-        # 2. Get repository info
-        repo_info = await self.github.get_repository(repository_full_name)
+        # 2. Get repository info (per-call token — constructor header may be
+        # a stale app-level PAT)
+        repo_info = await self.github.get_repository(repository_full_name, token)
         default_branch = repo_info.get("default_branch", "main")
         commit_sha = repo_info.get("commit_sha", "unknown")
 

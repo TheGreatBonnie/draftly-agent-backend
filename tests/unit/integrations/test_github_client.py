@@ -26,7 +26,12 @@ async def test_get_tree_returns_recursive_entries():
     }
     mock_response.raise_for_status = AsyncMock()
 
-    with patch.object(client, "_request", new_callable=AsyncMock, return_value=mock_response.json.return_value):
+    with patch.object(
+        client,
+        "_request",
+        new_callable=AsyncMock,
+        return_value=mock_response.json.return_value,
+    ):
         result = await client.get_tree("owner", "repo", "main", "token123")
         assert len(result) == 2
         assert result[0]["path"] == "README.md"
@@ -46,9 +51,29 @@ async def test_get_file_contents_returns_decoded_string():
 
 
 @pytest.mark.asyncio
+async def test_get_repository_forwards_per_call_token():
+    client = _client()
+    with patch.object(
+        client, "_request", new_callable=AsyncMock, return_value={"name": "repo"}
+    ) as req:
+        result = await client.get_repository("owner/repo", token="token123")
+        assert result == {"name": "repo"}
+        assert req.await_args.kwargs["token"] == "token123"
+
+        # Default call stays compatible: no explicit override required.
+        await client.get_repository("owner/repo")
+        assert req.await_args.kwargs.get("token") is None
+
+
+@pytest.mark.asyncio
 async def test_get_file_contents_skips_large_files():
     client = _client()
     # Simulate a file > 1MB by returning empty content
-    with patch.object(client, "_request", new_callable=AsyncMock, return_value={"content": "", "encoding": "base64"}):
+    with patch.object(
+        client,
+        "_request",
+        new_callable=AsyncMock,
+        return_value={"content": "", "encoding": "base64"},
+    ):
         result = await client.get_file_contents("owner", "repo", "huge.md", "main", "token123")
         assert result == ""

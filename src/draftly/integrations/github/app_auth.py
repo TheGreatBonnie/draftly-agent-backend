@@ -58,6 +58,19 @@ async def get_installation_token(installation_id: int) -> str:
         return cast(str, token_data["token"])
 
 
+async def build_installation_client(installation_id: int):
+    """Build a GitHubClient authenticated as the installation.
+
+    Never falls back to an app-level/env token — stale credentials there
+    cause confusing 401s deep inside workflows.
+    """
+    from draftly.integrations.github.auth import GitHubAuth
+    from draftly.integrations.github.client import GitHubClient
+
+    token = await get_installation_token(int(installation_id))
+    return GitHubClient(auth=GitHubAuth(token=token))
+
+
 def verify_webhook_signature(payload: bytes, signature: str) -> bool:
     """Validate webhook authenticity using HMAC SHA256."""
     if not signature:

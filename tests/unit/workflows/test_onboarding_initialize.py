@@ -17,11 +17,24 @@ def _context():
     context.repositories.onboarding.upsert = AsyncMock(return_value={})
     context.repositories.onboarding.mark_step = AsyncMock(return_value={})
     context.repositories.onboarding.mark_failed = AsyncMock(return_value={})
+    context.repositories.github_installations.first_for_org = AsyncMock(
+        return_value={"installation_id": 42}
+    )
     return context
 
 
+@pytest.fixture()
+def installation_client():
+    """Patch the installation-authed client builder used by the workflow."""
+    with patch(
+        "draftly.integrations.github.app_auth.build_installation_client",
+        new=AsyncMock(return_value=MagicMock()),
+    ) as builder:
+        yield builder
+
+
 @pytest.mark.asyncio
-async def test_initialize_workflow_completes():
+async def test_initialize_workflow_completes(installation_client):
     """SyncService runs through its stages; repo row ends COMPLETED."""
     from draftly.documentation.baseline import BaselineSnapshot
     from draftly.documentation.sync_service import SyncResult
@@ -48,6 +61,7 @@ async def test_initialize_workflow_completes():
     assert state.status == WorkflowStatus.DELIVERED
     assert state.result["document_count"] == 2
     assert state.result["baseline"]["commit_sha"] == "abc123"
+    installation_client.assert_awaited_once_with(42)
 
 
 @pytest.mark.asyncio
@@ -58,7 +72,22 @@ async def test_initialize_workflow_fails_without_repository():
 
 
 @pytest.mark.asyncio
-async def test_initialize_workflow_marks_failed_on_sync_error():
+async def test_initialize_workflow_fails_without_installation(installation_client):
+    context = _context()
+    context.repositories.github_installations.first_for_org = AsyncMock(
+        return_value=None
+    )
+    state = await run_onboarding_initialize(
+        context,
+        org_id="test-org",
+        selected_repository={"full_name": "owner/repo"},
+    )
+    assert state.status == WorkflowStatus.FAILED
+    assert any("installation" in err.lower() for err in state.errors)
+
+
+@pytest.mark.asyncio
+async def test_initialize_workflow_marks_failed_on_sync_error(installation_client):
     with patch("draftly.documentation.sync_service.SyncService") as service_cls:
         service_cls.return_value.sync = AsyncMock(side_effect=RuntimeError("github down"))
         context = _context()

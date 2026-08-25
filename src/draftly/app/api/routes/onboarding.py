@@ -356,14 +356,35 @@ def _init_worker_guard(request: Request):
 async def _execute_initialization(
     repos, org_id: str, worker, selected_repository: dict | None
 ) -> dict[str, Any]:
-    """Flip to INITIALIZING, run the task, and convert crashes to FAILED + 502."""
+    """Flip to INITIALIZING, run the task, and convert any failure to FAILED + 502.
+
+    Accepts both the real worker result (WorkflowState) and plain dicts so
+    tests/legacy callers keep working. All post-run shaping stays inside the
+    try so nothing after a successful run can strand the row in INITIALIZING.
+    """
+    from draftly.workflows.state import WorkflowState, WorkflowStatus
+
     await repos.onboarding.upsert(org_id, state="INITIALIZING", failure=None)
     try:
-        result = await worker.run_task(
+        raw = await worker.run_task(
             "onboarding.initialize",
             org_id=org_id,
             selected_repository=selected_repository,
         )
+        if isinstance(raw, WorkflowState):
+            if raw.status == WorkflowStatus.FAILED:
+                detail = "; ".join(raw.errors)[:300] or "Initialization workflow failed"
+                await repos.onboarding.upsert(
+                    org_id,
+                    state="FAILED",
+                    failure={"step": "initialization", "detail": detail},
+                )
+                raise HTTPException(status_code=502, detail="Initialization failed")
+            return {"state": "COMPLETED", "result": raw.to_dict()}
+        result = raw
+        return {"state": result.get("state", "COMPLETED"), "result": result}
+    except HTTPException:
+        raise
     except Exception as exc:
         await repos.onboarding.upsert(
             org_id,
@@ -371,7 +392,6 @@ async def _execute_initialization(
             failure={"step": "initialization", "detail": str(exc)[:300]},
         )
         raise HTTPException(status_code=502, detail="Initialization failed") from exc
-    return {"state": result.get("state", "COMPLETED"), "result": result}
 
 
 @router.post("/initialize")

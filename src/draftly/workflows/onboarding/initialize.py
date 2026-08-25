@@ -24,19 +24,6 @@ STAGES = [
 ]
 
 
-def _build_github():
-    """Sync authenticates per-call with installation tokens, so a default
-    app-level token is only a fallback and need not be configured."""
-    from draftly.integrations.github.client import GitHubClient
-
-    try:
-        return GitHubClient()
-    except RuntimeError:
-        from draftly.integrations.github.auth import GitHubAuth
-
-        return GitHubClient(auth=GitHubAuth(token="installation-token-auth"))
-
-
 async def run_onboarding_initialize(
     context: WorkflowContext,
     *,
@@ -55,10 +42,16 @@ async def run_onboarding_initialize(
     onboarding_repo = getattr(context.repositories, "onboarding", None)
 
     try:
+        installation = await context.repositories.github_installations.first_for_org(org_id)
+        if installation is None:
+            raise RuntimeError(f"No GitHub installation found for org {org_id}")
+        from draftly.integrations.github.app_auth import build_installation_client
+
+        github = await build_installation_client(installation["installation_id"])
         await _update_stage(onboarding_repo, org_id, "repository_ingestion")
         from draftly.documentation.sync_service import SyncService
 
-        sync_service = SyncService(github=_build_github(), context=context)
+        sync_service = SyncService(github=github, context=context)
         include = selected_repository.get("doc_include", ["README.md", "docs/**", "*.md", "*.mdx"])
         exclude = selected_repository.get("doc_exclude", ["node_modules/**", "dist/**"])
         sync_result = await sync_service.sync(

@@ -15,6 +15,7 @@ class FakeGitHubClient:
     repository: dict = field(
         default_factory=lambda: {"default_branch": "main", "commit_sha": "abc123"}
     )
+    calls: dict = field(default_factory=dict)
 
     async def get_tree(self, owner, repo, ref, token):
         return self.tree
@@ -22,7 +23,8 @@ class FakeGitHubClient:
     async def get_file_contents(self, owner, repo, path, ref, token):
         return self.files.get(path, "")
 
-    async def get_repository(self, repository):
+    async def get_repository(self, repository, token=None):
+        self.calls["get_repository"] = (repository, token)
         return self.repository
 
     async def get_installation_token(self, installation_id):
@@ -84,7 +86,9 @@ async def test_sync_discovers_and_stores_documents():
     documents = FakeDocuments()
     memory = FakeMemory()
 
-    service = SyncService(github=github, context=_context(documents, memory, {"installation_id": 42}))
+    service = SyncService(
+        github=github, context=_context(documents, memory, {"installation_id": 42})
+    )
     result = await service.sync(
         org_id="test-org",
         repository_full_name="owner/repo",
@@ -107,6 +111,29 @@ async def test_sync_discovers_and_stores_documents():
 
 
 @pytest.mark.asyncio
+async def test_sync_get_repository_uses_minted_token():
+    github = FakeGitHubClient(
+        tree=[{"path": "README.md", "type": "blob"}],
+        files={"README.md": "# x"},
+    )
+    service = SyncService(
+        github=github,
+        context=_context(FakeDocuments(), FakeMemory(), {"installation_id": 42}),
+    )
+
+    await service.sync(
+        org_id="test-org",
+        repository_full_name="owner/repo",
+        include=["README.md"],
+        exclude=[],
+    )
+
+    repository, token = github.calls["get_repository"]
+    assert repository == "owner/repo"
+    assert token == "fake-token"
+
+
+@pytest.mark.asyncio
 async def test_sync_skips_unchanged_documents():
     import hashlib
     content = "# Hello\n\nWorld."
@@ -121,7 +148,9 @@ async def test_sync_skips_unchanged_documents():
     )
     memory = FakeMemory()
 
-    service = SyncService(github=github, context=_context(documents, memory, {"installation_id": 42}))
+    service = SyncService(
+        github=github, context=_context(documents, memory, {"installation_id": 42})
+    )
     result = await service.sync(
         org_id="test-org",
         repository_full_name="owner/repo",

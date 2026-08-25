@@ -16,8 +16,17 @@ def _context(installation):
     return context
 
 
+@pytest.fixture()
+def installation_client():
+    with patch(
+        "draftly.integrations.github.app_auth.build_installation_client",
+        new=AsyncMock(return_value=MagicMock()),
+    ) as builder:
+        yield builder
+
+
 @pytest.mark.asyncio
-async def test_sync_workflow_completes_delivered():
+async def test_sync_workflow_completes_delivered(installation_client):
     """Happy path: installation resolves, sync service succeeds."""
     from draftly.documentation.sync_service import SyncResult
 
@@ -39,6 +48,7 @@ async def test_sync_workflow_completes_delivered():
     assert state.status == WorkflowStatus.DELIVERED
     assert state.result["document_count"] == 3
     assert state.result["chunk_count"] == 9
+    installation_client.assert_awaited_once_with(42)
 
 
 @pytest.mark.asyncio
