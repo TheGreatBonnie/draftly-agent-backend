@@ -56,6 +56,7 @@ def build_workflows(
     model: Any = None,
     hooks: list[Any] | None = None,
     audit_repo: Any = None,
+    redis_client: Any = None,
 ) -> ComposedWorkflows:
     """Compose the workflow registry, context, and runner."""
     del agents  # graphs build agents per-run via build_graph_for_run
@@ -140,12 +141,24 @@ def build_workflows(
     publisher = None
     event_bus = None
     if getattr(config, "events_streaming_enabled", False):
-        from draftly.events.redis_bus import RedisEventBus
         from draftly.persistence.repositories.workflow_events import (
             WorkflowEventRepositoryImpl,
         )
 
-        event_bus = RedisEventBus(url=getattr(config, "redis_url", None))
+        event_bus_mode = getattr(config, "event_bus_backend", "dual")
+
+        if event_bus_mode in ("stream", "dual"):
+            from draftly.events.redis_stream_bus import RedisStreamBus
+
+            event_bus = RedisStreamBus(redis_client.native)
+        else:
+            from draftly.events.redis_bus import RedisEventBus
+
+            event_bus = RedisEventBus(
+                redis_client=redis_client.native if redis_client is not None else None,
+                url=getattr(config, "redis_url", None) if redis_client is None else None,
+            )
+
         try:
             fallback_repo = WorkflowEventRepositoryImpl()
         except Exception:

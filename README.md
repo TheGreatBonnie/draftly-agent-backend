@@ -39,6 +39,7 @@ flowchart TD
         MEM[("Memory store<br/>Postgres + vector search")]
         EVAL["Evaluation framework"]
         MODELS["Model router<br/>Bedrock · Mantle · OpenRouter · NVIDIA"]
+        REDIS[("Redis<br/>cache · streams · rate limit · state")]
     end
 
     GH --> WH
@@ -47,6 +48,7 @@ flowchart TD
     DISP --> RUN
     AGENTS <--> MEM
     AGENTS --> MODELS
+    AGENTS <--> REDIS
     GATE -- "approved" --> DELIVER["Delivery service<br/>GitHub PRs & comments · Slack · Discord"]
     GATE -- "changes requested" --> FEEDBACK["Feedback loop"]
     EVAL --> FEEDBACK
@@ -63,6 +65,7 @@ Events arrive via webhook routes under `/api/*`, are normalized by the dispatche
 | API           | FastAPI + Uvicorn                                          |
 | Agents        | [Strands Agents](https://github.com/strands-agents) SDK    |
 | Database      | PostgreSQL (asyncpg / psycopg), NeonDB-compatible          |
+| Cache/Stream  | Redis (semantic cache, event streams, rate limiting, distributed state, API cache, dashboard push) |
 | Auth          | Clerk (JWT), Slack/Discord/GitHub app auth                 |
 | Observability | structlog, tracing, metrics, audit logging                 |
 
@@ -96,12 +99,17 @@ draftly-agent-backend/
 │   └── Dockerfile.worker
 ├── docs/
 │   ├── architecture/                 # overview, system-design, event-driven,
-│   │                                 # multi-agent, memory, feedback-loop
+│   │                                 # multi-agent, memory, feedback-loop,
+│   │                                 # orchestration, documentation-pipeline,
+│   │                                 # persistence, integrations, security,
+│   │                                 # delivery, evaluation, review,
+│   │                                 # observability, support, tools,
+│   │                                 # redis, models-router
 │   ├── agents/                       # agent-overview, subagents, skills
-│   ├── api/                          # webhooks
-│   ├── workflows/                    # documentation-sync, github-pr, github-issue,
-│   │                                 # support, feedback-loop
-│   └── deployment/                   # aws, cockroachdb, production
+│   ├── api/                          # routes, webhooks
+│   ├── workflows/                    # overview, documentation-sync, github-pr,
+│   │                                 # github-issue, support, feedback-loop
+│   └── deployment/                   # aws, cockroachdb, production, redis
 ├── infra/
 │   └── aws/diagrams/architecture.md
 ├── scripts/                          # bootstrap, seed_demo, run_workflow,
@@ -285,6 +293,10 @@ Key environment variables (see [`.env.example`](.env.example) for the full list)
 | Variable                                                                         | Description                                 |
 | -------------------------------------------------------------------------------- | ------------------------------------------- |
 | `DATABASE_URL`                                                                   | PostgreSQL connection string                |
+| `REDIS_URL`                                                                      | Redis connection string (default: `redis://localhost:6379/0`) |
+| `SEMANTIC_CACHE_ENABLED`                                                         | Enable LLM semantic cache (default: `True`) |
+| `VECTOR_SEARCH_BACKEND`                                                          | `redis`, `pgvector`, or `dual` (default: `dual`) |
+| `EVENT_BUS_BACKEND`                                                              | `pubsub`, `stream`, or `dual` (default: `dual`) |
 | `AWS_REGION`                                                                     | Region for Amazon Bedrock                   |
 | `BEDROCK_CLAUDE_REASONING_MODEL` / `BEDROCK_CLAUDE_FAST_MODEL`                   | Claude model overrides                      |
 | `EMBEDDING_MODEL_ID`                                                             | Embedding model for semantic search         |
@@ -311,6 +323,12 @@ uv run mypy src
 
 ## Documentation
 
-Additional design documents live in [`docs/`](docs), covering architecture (event-driven design, multi-agent topology, memory, feedback loop), workflows (documentation sync, GitHub PR/issue/release, support), agents and skills, and deployment (AWS, production).
+Design documents live in [`docs/`](docs), covering:
+
+- **Architecture** — system overview & design, event-driven design, multi-agent topology, orchestration graphs, memory, feedback loop, documentation pipeline, persistence, integrations, security, delivery, evaluation, review, observability, support, tools, Redis, and the models router
+- **Agents** — agent overview, subagents (Research Swarm), and the 20 packaged skills
+- **API** — route reference and webhook handling for GitHub/Slack/Discord/Clerk
+- **Workflows** — workflow system overview plus documentation sync, GitHub PR/issue, support, and feedback loop guides
+- **Deployment** — AWS, production checklist, CockroachDB, and Redis operations
 
 [`simulation/scenarios/`](simulation/scenarios) contains end-to-end scenarios used to exercise auth flows (OAuth, PKCE), RBAC, token rotation, API key deprecation, and SDK breaking changes against the platform.

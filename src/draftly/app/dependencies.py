@@ -467,6 +467,61 @@ class ApplicationDependencies:
 
 
 # ============================================================
+# Redis Dependency Injection
+# ============================================================
+
+
+def get_redis_client(app_state: Any) -> Any:
+    """Retrieve the shared RedisClient from app.state.draftly, or None."""
+    draftly = getattr(app_state, "draftly", None)
+    if draftly is None:
+        return None
+    return getattr(draftly, "redis_client", None)
+
+
+def get_ticket_store(app_state: Any) -> Any:
+    """Build a RedisTicketStore from the shared RedisClient, or None."""
+    redis_client = get_redis_client(app_state)
+    if redis_client is None:
+        return None
+    try:
+        from draftly.integrations.ticket_store import RedisTicketStore
+
+        return RedisTicketStore(redis_client.native)
+    except Exception as exc:
+        logger.warning("ticket_store_unavailable: %s", exc)
+        return None
+
+
+def get_ema_stats_store(app_state: Any) -> Any:
+    """Build a RedisEMAStatsStore from the shared RedisClient, or None."""
+    redis_client = get_redis_client(app_state)
+    if redis_client is None:
+        return None
+    try:
+        from draftly.models.redis_performance import RedisEMAStatsStore
+
+        return RedisEMAStatsStore(redis_client.native)
+    except Exception as exc:
+        logger.warning("redis_ema_stats_store_unavailable: %s", exc)
+        return None
+
+
+def get_provider_health(app_state: Any) -> Any:
+    """Build a RedisProviderHealth from the shared RedisClient, or None."""
+    redis_client = get_redis_client(app_state)
+    if redis_client is None:
+        return None
+    try:
+        from draftly.models.redis_health import RedisProviderHealth
+
+        return RedisProviderHealth(redis_client.native)
+    except Exception as exc:
+        logger.warning("redis_provider_health_unavailable: %s", exc)
+        return None
+
+
+# ============================================================
 # Dependency Factory
 # ============================================================
 

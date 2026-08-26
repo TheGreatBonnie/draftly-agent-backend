@@ -10,8 +10,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import secrets
-import time
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -21,6 +19,7 @@ from fastapi.responses import StreamingResponse
 
 from draftly.app.api.auth import get_verified_token
 from draftly.events.stream_envelope import StreamEnvelope
+from draftly.integrations.ticket_store import RedisTicketStore
 
 logger = structlog.get_logger(__name__)
 
@@ -29,33 +28,14 @@ router = APIRouter(prefix="/workflows", tags=["workflows"])
 _DEFAULT_HEARTBEAT_SECONDS = 15.0
 
 
-class TicketStore:
-    """Single-use, TTL-bound stream tickets (in-process)."""
-
-    def __init__(self, ttl_seconds: int = 60) -> None:
-        self._ttl = ttl_seconds
-        self._tickets: dict[str, tuple[str, str, float]] = {}
-
-    def issue(self, run_id: str, *, org_id: str) -> str:
-        ticket = secrets.token_urlsafe(32)
-        self._tickets[ticket] = (run_id, org_id, time.monotonic() + self._ttl)
-        return ticket
-
-    def consume(self, ticket: str) -> tuple[str, str] | None:
-        entry = self._tickets.pop(ticket, None)
-        if entry is None:
-            return None
-        run_id, org_id, expires_at = entry
-        if time.monotonic() > expires_at:
-            return None
-        return run_id, org_id
-
-
-def _tickets(request: Request) -> TicketStore:
-    store = getattr(request.app.state, "tickets", None)
+def _tickets(request: Request) -> RedisTicketStore:
+    store = getattr(request.app.state, "redis_tickets", None)
     if store is None:
-        store = TicketStore()
-        request.app.state.tickets = store
+        redis_client = getattr(request.app.state, "redis_client", None)
+        if redis_client is None:
+            raise HTTPException(status_code=503, detail="Redis unavailable for tickets")
+        store = RedisTicketStore(redis_client.native, ttl_seconds=60)
+        request.app.state.redis_tickets = store
     return store
 
 
@@ -83,7 +63,7 @@ async def issue_ticket(
             status_code=403, detail="Run belongs to another organization"
         )
 
-    return {"ticket": _tickets(request).issue(run_id, org_id=org_id)}
+    return {"ticket": await _tickets(request).issue(run_id, org_id=org_id)}
 
 
 def _format_envelope(envelope: StreamEnvelope) -> str:
@@ -147,7 +127,7 @@ async def stream_events(
     request: Request,
     heartbeat: float | None = None,
 ) -> StreamingResponse:
-    claimed = _tickets(request).consume(ticket)
+    claimed = await _tickets(request).consume(ticket)
     if claimed is None or claimed[0] != run_id:
         raise HTTPException(status_code=403, detail="Invalid or expired ticket")
 
@@ -195,6 +175,66 @@ async def stream_events(
             replayed=replayed,
             min_live_seq=min_live_seq,
         ),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+# ============================================================
+# Dashboard SSE Endpoint
+# ============================================================
+
+_DASHBOARD_TICKET_SENTINEL = "_dashboard_"
+
+
+@router.post("/dashboard-ticket")
+async def issue_dashboard_ticket(
+    request: Request,
+    token: dict[str, Any] = Depends(get_verified_token),
+) -> dict[str, Any]:
+    """Exchange a Clerk token for a single-use dashboard SSE ticket."""
+    org_id = str(token.get("org_id") or "")
+    if not org_id:
+        raise HTTPException(status_code=400, detail="No organization selected")
+    ticket = await _tickets(request).issue(_DASHBOARD_TICKET_SENTINEL, org_id=org_id)
+    return {"ticket": ticket}
+
+
+@router.get("/events/dashboard")
+async def stream_dashboard_events(
+    ticket: str,
+    request: Request,
+    heartbeat: float | None = None,
+) -> StreamingResponse:
+    """SSE stream of dashboard events (review, job, run lifecycle)."""
+    claimed = await _tickets(request).consume(ticket)
+    if claimed is None:
+        raise HTTPException(status_code=403, detail="Invalid or expired ticket")
+
+    _, org_id = claimed
+    broadcaster = getattr(request.app.state, "dashboard_broadcaster", None)
+    if broadcaster is None:
+        raise HTTPException(status_code=503, detail="Dashboard broadcaster unavailable")
+
+    heartbeat_seconds = float(heartbeat if heartbeat and heartbeat > 0 else 15.0)
+
+    async def _dashboard_source():
+        gen = broadcaster.subscribe(org_id)
+        while True:
+            try:
+                event = await asyncio.wait_for(
+                    gen.__anext__(), timeout=heartbeat_seconds
+                )
+            except StopAsyncIteration:
+                return
+            except TimeoutError:
+                yield ": ping\n\n"
+                continue
+            body = json.dumps(event)
+            yield f"event: {event.get('type', 'unknown')}\ndata: {body}\n\n"
+
+    return StreamingResponse(
+        _dashboard_source(),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )

@@ -13,9 +13,10 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from draftly.app.api.auth import get_verified_token
-from draftly.app.api.routes.workflows import TicketStore, router
+from draftly.app.api.routes.workflows import router
 from draftly.events.redis_bus import RedisEventBus
 from draftly.events.stream_envelope import StreamEnvelope
+from draftly.integrations.ticket_store import RedisTicketStore
 
 
 class FakeJobsRepo:
@@ -32,7 +33,9 @@ def make_app(bus: RedisEventBus | None = None, token: dict[str, Any] | None = No
     app = FastAPI()
     app.include_router(router)
     app.dependency_overrides[get_verified_token] = lambda: token or {"org_id": "org-1"}
-    app.state.tickets = TicketStore(ttl_seconds=60)
+    fake_redis = FakeRedis(decode_responses=True)
+    app.state.redis_client = type("Native", (), {"native": fake_redis})()
+    app.state.redis_tickets = RedisTicketStore(fake_redis, ttl_seconds=60)
 
     state = SimpleNamespaceState()
     state.dependencies.repositories.jobs = FakeJobsRepo()
@@ -53,21 +56,27 @@ class SimpleNamespaceState:
         self.workflows = SimpleNamespace(event_bus=None)
 
 
-def issue(app: FastAPI, run_id: str = "evt-1") -> str:
-    return app.state.tickets.issue(run_id, org_id="org-1")
+async def issue(app: FastAPI, run_id: str = "evt-1") -> str:
+    return await app.state.redis_tickets.issue(run_id, org_id="org-1")
 
 
 class TestTickets:
-    def test_tickets_are_single_use(self) -> None:
-        store = TicketStore(ttl_seconds=60)
-        ticket = store.issue("evt-1", org_id="org-1")
-        assert store.consume(ticket) == ("evt-1", "org-1")
-        assert store.consume(ticket) is None
+    @pytest.mark.asyncio
+    async def test_tickets_are_single_use(self) -> None:
+        fake_redis = FakeRedis(decode_responses=True)
+        store = RedisTicketStore(fake_redis, ttl_seconds=60)
+        ticket = await store.issue("evt-1", org_id="org-1")
+        assert await store.consume(ticket) == ("evt-1", "org-1")
+        assert await store.consume(ticket) is None
 
-    def test_expired_ticket_rejected(self) -> None:
-        store = TicketStore(ttl_seconds=-1)
-        ticket = store.issue("evt-1", org_id="org-1")
-        assert store.consume(ticket) is None
+    @pytest.mark.asyncio
+    async def test_expired_ticket_rejected(self) -> None:
+        fake_redis = FakeRedis(decode_responses=True)
+        store = RedisTicketStore(fake_redis, ttl_seconds=1)
+        ticket = await store.issue("evt-1", org_id="org-1")
+        import asyncio
+        await asyncio.sleep(1.1)
+        assert await store.consume(ticket) is None
 
 
 class TestTicketRoute:
@@ -97,7 +106,7 @@ class TestEventStream:
         resp = client.get("/workflows/evt-1/events", params={"ticket": "bogus"})
         assert resp.status_code == 403
 
-    def test_stream_frames_and_terminal(self) -> None:
+    async def test_stream_frames_and_terminal(self) -> None:
         bus = RedisEventBus(redis_client=FakeRedis())
         app = make_app(bus=bus)
         client = TestClient(app)
@@ -122,7 +131,7 @@ class TestEventStream:
         thread = threading.Thread(target=publish, daemon=True)
         thread.start()
 
-        ticket = issue(app)
+        ticket = await issue(app)
         with client.stream(
             "GET", "/workflows/evt-1/events", params={"ticket": ticket}
         ) as resp:
@@ -133,14 +142,14 @@ class TestEventStream:
         assert "event: node_start" in body
         assert '"workflow_result"' in body.replace("'", '"')
         # ticket consumed exactly once
-        assert app.state.tickets.consume(ticket) is None
+        assert await app.state.redis_tickets.consume(ticket) is None
 
-    def test_heartbeat_when_idle(self) -> None:
+    async def test_heartbeat_when_idle(self) -> None:
         bus = RedisEventBus(redis_client=FakeRedis())
         app = make_app(bus=bus)
         app.state.draftly.heartbeat = 0.05
         client = TestClient(app)
-        ticket = issue(app)
+        ticket = await issue(app)
         with client.stream(
             "GET",
             "/workflows/evt-1/events",
@@ -150,7 +159,7 @@ class TestEventStream:
             first_chunk = next(resp.iter_raw())
         assert first_chunk.startswith(b": ping")
 
-    def test_replays_after_last_event_id(self) -> None:
+    async def test_replays_after_last_event_id(self) -> None:
 
         bus = RedisEventBus(redis_client=FakeRedis())
 
@@ -173,7 +182,7 @@ class TestEventStream:
         repos = app.state.draftly.dependencies.repositories
         repos.workflow_events = FakeEventsRepo()
         client = TestClient(app)
-        ticket = issue(app)
+        ticket = await issue(app)
 
         with client.stream(
             "GET",
@@ -187,10 +196,10 @@ class TestEventStream:
         assert first_frame.startswith("id: 2")
         assert "event: node_stop" in first_frame
 
-    def test_bus_unavailable_503(self) -> None:
+    async def test_bus_unavailable_503(self) -> None:
         app = make_app(bus=None)
         client = TestClient(app)
-        ticket = issue(app)
+        ticket = await issue(app)
         resp = client.get("/workflows/evt-1/events", params={"ticket": ticket})
         assert resp.status_code == 503
 
