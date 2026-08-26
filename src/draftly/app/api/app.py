@@ -1,6 +1,7 @@
 # app/api/app.py
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 from draftly.app.api.middleware.logging import RequestLoggingMiddleware
 from draftly.app.api.routes import (
@@ -36,6 +37,17 @@ def create_api_app() -> FastAPI:
     )
 
     app.add_middleware(RequestLoggingMiddleware)
+
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=[
+            "http://localhost:3000",
+            "https://grit-flagstone-recreate.ngrok-free.dev",
+        ],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
     app.include_router(
         health.router,

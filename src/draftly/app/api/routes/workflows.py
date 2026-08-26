@@ -101,25 +101,48 @@ async def _event_source(
     if replayed_done:
         return
 
-    gen = bus.subscribe(run_id)
-    while True:
+    # Use a queue to decouple the async-generator subscription from the
+    # heartbeat timeout.  asyncio.wait_for() on gen.__anext__() is an
+    # anti-pattern: cancelling __anext__ can cause StopAsyncIteration to
+    # escape the async-generator frame (CPython converts it to RuntimeError).
+    queue: asyncio.Queue[StreamEnvelope | None] = asyncio.Queue()
+    _SENTINEL = None
+
+    async def _pump() -> None:
         try:
-            envelope = await asyncio.wait_for(
-                gen.__anext__(), timeout=heartbeat_seconds
-            )
-        except StopAsyncIteration:
-            return
-        except TimeoutError:
-            yield ": ping\n\n"
-            continue
+            async for envelope in bus.subscribe(run_id):
+                await queue.put(envelope)
+        except Exception:
+            pass
+        finally:
+            await queue.put(_SENTINEL)
 
-        if envelope.seq <= min_live_seq:
-            continue
+    pump_task = asyncio.create_task(_pump())
+    try:
+        while True:
+            try:
+                envelope = await asyncio.wait_for(
+                    queue.get(), timeout=heartbeat_seconds
+                )
+            except TimeoutError:
+                yield ": ping\n\n"
+                continue
 
-        yield _format_envelope(envelope)
-        if envelope.type == "workflow_result":
-            await gen.aclose()
-            return
+            if envelope is _SENTINEL:
+                return
+
+            if envelope.seq <= min_live_seq:
+                continue
+
+            yield _format_envelope(envelope)
+            if envelope.type == "workflow_result":
+                return
+    finally:
+        pump_task.cancel()
+        try:
+            await pump_task
+        except asyncio.CancelledError:
+            pass
 
 
 @router.get("/{run_id}/events")
