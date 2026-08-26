@@ -21,7 +21,7 @@ class EpisodicService:
 
     async def record_episode(self, **fields: Any) -> dict[str, Any]:
         summary = fields.get("summary") or fields.get("trigger_summary") or ""
-        fields["embedding"] = self.embeddings.embed(summary)
+        fields["embedding"] = await self.embeddings.embed(summary)
         record = await self.store.insert(fields=fields)
         logger.debug("episode_recorded id=%s", record.get("id"))
         return record
@@ -35,7 +35,7 @@ class EpisodicService:
     ) -> list[dict[str, Any]]:
         try:
             return await self.store.search(
-                embedding=self.embeddings.embed(query),
+                embedding=await self.embeddings.embed(query),
                 org_id=org_id,
                 limit=limit,
             )

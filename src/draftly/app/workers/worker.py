@@ -15,11 +15,12 @@ class DraftlyWorker:
     """
     Draftly background worker runtime.
 
-    The worker coordinates the task runner and scheduler.
+    The worker coordinates the task runner and optional scheduler.
+    When RQ handles scheduling externally, scheduler may be None.
     """
 
     task_runner: Any
-    scheduler: Any
+    scheduler: Any = None
 
     _started: bool = False
 
@@ -31,7 +32,8 @@ class DraftlyWorker:
         if self._started:
             return
 
-        await self.scheduler.start()
+        if self.scheduler is not None:
+            await self.scheduler.start()
 
         self._started = True
 
@@ -47,7 +49,8 @@ class DraftlyWorker:
         if not self._started:
             return
 
-        await self.scheduler.stop()
+        if self.scheduler is not None:
+            await self.scheduler.stop()
 
         self._started = False
 

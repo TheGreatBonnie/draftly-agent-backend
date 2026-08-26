@@ -66,9 +66,6 @@ tmp/
 temp/
 *.tmp
 
-# UV
-uv.lock
-
 # Project-specific
 .graphify-out/
 .simulation/

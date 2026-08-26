@@ -7,7 +7,7 @@ from tests.fakes.memory_stores import FakeProceduresStore
 
 
 class StaticEmbedder:
-    def embed(self, text: str) -> list[float]:
+    async def embed(self, text: str) -> list[float]:
         return [1.0, 0.0]
 
 

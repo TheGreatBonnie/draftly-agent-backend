@@ -61,10 +61,10 @@ class StubEmbeddings:
     def __init__(self):
         self.batch_calls: list[list[str]] = []
 
-    def embed(self, text: str) -> list[float]:
+    async def embed(self, text: str) -> list[float]:
         return [0.0, 0.1]
 
-    def embed_batch(self, texts: list[str]) -> list[list[float]]:
+    async def embed_batch(self, texts: list[str]) -> list[list[float]]:
         self.batch_calls.append(list(texts))
         return [[0.0, 0.1] for _ in texts]
 

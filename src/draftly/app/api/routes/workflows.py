@@ -31,7 +31,9 @@ _DEFAULT_HEARTBEAT_SECONDS = 15.0
 def _tickets(request: Request) -> RedisTicketStore:
     store = getattr(request.app.state, "redis_tickets", None)
     if store is None:
-        redis_client = getattr(request.app.state, "redis_client", None)
+        # Redis client lives on DraftlyApplication (app.state.draftly), not app.state directly.
+        draftly = getattr(request.app.state, "draftly", None)
+        redis_client = getattr(draftly, "redis_client", None) if draftly is not None else None
         if redis_client is None:
             raise HTTPException(status_code=503, detail="Redis unavailable for tickets")
         store = RedisTicketStore(redis_client.native, ttl_seconds=60)

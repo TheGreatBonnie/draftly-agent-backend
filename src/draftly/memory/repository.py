@@ -38,7 +38,7 @@ class DomainMemoryRepository:
 
     async def store(self, item: Any) -> dict[str, Any]:
         """Persist a MemoryItem; embedding is generated here."""
-        embedding = self.embeddings.embed(item.content)
+        embedding = await self.embeddings.embed(item.content)
         return await self.repository.create(
             namespace=item.namespace,
             content=item.content,
@@ -60,7 +60,7 @@ class DomainMemoryRepository:
         query: str,
         limit: int = 10,
     ) -> list[dict[str, Any]]:
-        embedding = self.embeddings.embed(query)
+        embedding = await self.embeddings.embed(query)
         return await self.repository.semantic_search(
             namespace=namespace,
             embedding=embedding,
@@ -69,7 +69,7 @@ class DomainMemoryRepository:
 
     async def update(self, memory_id: str, **fields: Any) -> dict[str, Any] | None:
         if "content" in fields and fields["content"]:
-            fields["embedding"] = self.embeddings.embed(fields["content"])
+            fields["embedding"] = await self.embeddings.embed(fields["content"])
         return await self.repository.update(memory_id=memory_id, **fields)
 
     async def delete(self, memory_id: str) -> bool:
@@ -124,7 +124,7 @@ class DomainMemoryRepository:
         """Persist many MemoryItems with a single embed_batch call."""
         if not items:
             return []
-        embeddings = self.embeddings.embed_batch([item.content for item in items])
+        embeddings = await self.embeddings.embed_batch([item.content for item in items])
         results: list[dict[str, Any]] = []
         for item, embedding in zip(items, embeddings):
             results.append(

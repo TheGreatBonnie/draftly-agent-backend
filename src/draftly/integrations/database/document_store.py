@@ -183,10 +183,61 @@ class DocumentStore:
             placeholder_list = [f"${i}" for i in range(1, len(values) + 1)]
             placeholder_list[columns.index("metadata")] += "::jsonb"
             placeholders = ", ".join(placeholder_list)
+
+            # Build ON CONFLICT update set for the optional sync columns so
+            # concurrent upserts don't race on the (org_id, path) unique key.
+            on_conflict_fields: list[str] = []
+            on_conflict_set: list[str] = []
+            if org_id is not None:
+                on_conflict_fields = ["org_id", "path"]
+                n = len(values)
+                on_conflict_set = [
+                    f"content = ${n + 1}",
+                    f"metadata = ${n + 2}::jsonb",
+                ]
+                conflict_params: list[Any] = [content, json.dumps(metadata or {})]
+                if title is not None:
+                    n = len(values) + len(conflict_params)
+                    on_conflict_set.append(f"title = ${n + 1}")
+                    conflict_params.append(title)
+                if document_type is not None:
+                    n = len(values) + len(conflict_params)
+                    on_conflict_set.append(f"document_type = ${n + 1}")
+                    conflict_params.append(document_type)
+                for column, value in (
+                    ("status", status),
+                    ("commit_sha", commit_sha),
+                    ("source_hash", source_hash),
+                ):
+                    if value is not None:
+                        n = len(values) + len(conflict_params)
+                        on_conflict_set.append(f"{column} = ${n + 1}")
+                        conflict_params.append(value)
+                on_conflict_set.append("updated_at = CURRENT_TIMESTAMP")
+            else:
+                on_conflict_fields = ["repository", "path"]
+                n = len(values)
+                on_conflict_set = [
+                    f"content = ${n + 1}",
+                    f"metadata = ${n + 2}::jsonb",
+                ]
+                conflict_params = [content, json.dumps(metadata or {})]
+                on_conflict_set.append("updated_at = CURRENT_TIMESTAMP")
+
+            conflict_clause = ""
+            if on_conflict_fields:
+                conflict_cols = ", ".join(on_conflict_fields)
+                conflict_clause = (
+                    f" ON CONFLICT ({conflict_cols}) DO UPDATE SET "
+                    + ", ".join(on_conflict_set)
+                )
+                values.extend(conflict_params)
+
             row = await self.client.fetch_one(
                 f"""
                 INSERT INTO documentation ({", ".join(columns)})
                 VALUES ({placeholders})
+                {conflict_clause}
                 RETURNING {_DOCUMENT_COLUMNS}
                 """,
                 *values,

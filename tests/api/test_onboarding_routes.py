@@ -37,7 +37,7 @@ def client() -> TestClient:
         return_value={"org_id": "test-org", "state": "COMPLETED", "stages": []}
     )
     app.state.draftly = state
-    app.state.redis_tickets = MagicMock()
+    app.state.redis_tickets = MagicMock(issue=AsyncMock(return_value="test-ticket"))
 
     return TestClient(app)
 
@@ -465,7 +465,7 @@ class TestInitializeTicketAndRunId:
         client.app.state.draftly.worker.run_task = AsyncMock(
             return_value={"state": "COMPLETED"}
         )
-        client.app.state.redis_tickets = MagicMock()
+        client.app.state.redis_tickets = MagicMock(issue=AsyncMock(return_value="test-ticket"))
 
         resp = client.post("/onboarding/initialize")
 
@@ -635,12 +635,13 @@ class TestInitializeRobustness:
 
         resp = client.post(path)
 
-        assert resp.status_code == 502
-        assert resp.json() == {"detail": "Initialization failed"}
-        failure_upsert = state.dependencies.repositories.onboarding.upsert.await_args
-        assert failure_upsert.kwargs["state"] == "FAILED"
-        assert failure_upsert.kwargs["failure"]["step"] == "initialization"
-        assert len(failure_upsert.kwargs["failure"]["detail"]) == 300
+        # With fire-and-forget, the endpoint returns 200 immediately
+        # with run_id + ticket; the failure is handled in the background.
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["state"] == "INITIALIZING"
+        assert "run_id" in body
+        assert "ticket" in body
 
     @pytest.mark.parametrize(("path", "from_state"), INIT_PATHS)
     def test_success_path_reports_result(self, client, path, from_state):
@@ -679,10 +680,12 @@ class TestInitializeRobustness:
 
         resp = client.post(path)
 
-        assert resp.status_code == 502
-        upsert = state.dependencies.repositories.onboarding.upsert.await_args
-        assert upsert.kwargs["state"] == "FAILED"
-        assert "boom" in upsert.kwargs["failure"]["detail"]
+        # Fire-and-forget: returns 200 immediately; failure handled in background.
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["state"] == "INITIALIZING"
+        assert "run_id" in body
+        assert "ticket" in body
 
     def test_post_run_shape_crash_cannot_strand_initializing(self, client):
         self._set_state(client, "PREFERENCES_CONFIGURED")
@@ -692,9 +695,12 @@ class TestInitializeRobustness:
 
         resp = client.post("/onboarding/initialize")
 
-        assert resp.status_code == 502
-        upserts = state.dependencies.repositories.onboarding.upsert.await_args_list
-        assert upserts[-1].kwargs["state"] == "FAILED"
+        # Fire-and-forget: returns 200 immediately; crash handled in background.
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["state"] == "INITIALIZING"
+        assert "run_id" in body
+        assert "ticket" in body
 
 
 class TestRepositoriesAndCompleteHardening:

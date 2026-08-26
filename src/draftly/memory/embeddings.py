@@ -52,17 +52,21 @@ class EmbeddingService:
                 self._router = False
         return self._router or None
 
-    def embed(self, text: str) -> list[float]:
+    async def embed(self, text: str) -> list[float]:
         """Embed one text; deterministic fallback when no provider works."""
         router = self.router
         if router is not None:
             try:
-                vector = router.embed(text)
+                import asyncio
+                vector = await asyncio.to_thread(router.embed, text)
                 if vector:
                     return list(vector)
             except Exception as exc:
                 logger.warning("embedder_fallback_used error=%s", exc)
         return _hash_embed(text)
 
-    def embed_batch(self, texts: Sequence[str]) -> list[list[float]]:
-        return [self.embed(text) for text in texts]
+    async def embed_batch(self, texts: Sequence[str]) -> list[list[float]]:
+        import asyncio
+        return list(
+            await asyncio.gather(*(self.embed(text) for text in texts))
+        )

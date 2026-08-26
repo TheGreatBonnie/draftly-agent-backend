@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import hashlib
+import json
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -17,6 +19,8 @@ from .discovery import discover_documentation
 from .parser import parse_markdown
 
 logger = structlog.get_logger(__name__)
+
+ProgressCallback = Callable[[int, int], None]  # (document_count, chunk_count)
 
 
 @dataclass
@@ -51,6 +55,7 @@ class SyncService:
         repository_full_name: str,
         include: list[str] | None = None,
         exclude: list[str] | None = None,
+        on_progress: ProgressCallback | None = None,
     ) -> SyncResult:
         """Run a full documentation sync."""
         include = include or [
@@ -107,13 +112,16 @@ class SyncService:
                 # crashed mid-file): reprocess it instead of skipping.
                 content_hash = hashlib.sha256(content.encode()).hexdigest()
                 existing = await documents.get_by_org_and_path(org_id=org_id, path=path)
-                if (
-                    existing
-                    and existing.get("source_hash") == content_hash
-                    and ((existing.get("metadata") or {}).get("chunk_count") or 0) > 0
-                ):
-                    result.skipped_count += 1
-                    continue
+                if existing and existing.get("source_hash") == content_hash:
+                    existing_meta = existing.get("metadata") or {}
+                    if isinstance(existing_meta, str):
+                        try:
+                            existing_meta = json.loads(existing_meta)
+                        except (json.JSONDecodeError, TypeError):
+                            existing_meta = {}
+                    if (existing_meta.get("chunk_count") or 0) > 0:
+                        result.skipped_count += 1
+                        continue
 
                 # Parse and chunk
                 parse_result = parse_markdown(content)
@@ -175,6 +183,9 @@ class SyncService:
                 result.document_count += 1
                 result.section_count += len(parse_result.headings)
                 result.chunk_count += len(chunks)
+
+                if on_progress is not None:
+                    on_progress(result.document_count, result.chunk_count)
 
             except Exception:
                 logger.exception("sync_file_failed path=%s", path)

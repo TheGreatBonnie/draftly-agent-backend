@@ -6,6 +6,7 @@ initial evaluation -> health calculation -> recommendations -> mark COMPLETED
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 import structlog
@@ -53,10 +54,45 @@ async def run_onboarding_initialize(
             )
         )
 
+    async def _stage_start(stage: str, stats: dict[str, Any] | None = None) -> None:
+        payload: dict[str, Any] = {"stage": stage, "status": "started"}
+        if stats:
+            payload["stats"] = stats
+        await _publish("stage_change", payload)
+        await asyncio.sleep(0)  # yield so the SSE subscriber can pick up the event
+
+    async def _stage_complete(stage: str, stats: dict[str, Any] | None = None) -> None:
+        payload: dict[str, Any] = {"stage": stage, "status": "completed"}
+        if stats:
+            payload["stats"] = stats
+        await _publish("stage_change", payload)
+        await asyncio.sleep(0)
+
+    # Buffer for intermediate progress updates during repository_ingestion.
+    # Coalesced so we don't flood the stream with per-file events.
+    _progress_lock = asyncio.Lock()
+    _latest_progress: dict[str, Any] = {}
+
+    def _on_sync_progress(document_count: int, chunk_count: int) -> None:
+        nonlocal _latest_progress
+        _latest_progress = {"document_count": document_count, "chunk_count": chunk_count}
+
+    async def _flush_progress() -> None:
+        if _latest_progress:
+            await _publish("tool_progress", {
+                "name": "documentation_sync",
+                **_latest_progress,
+            })
+            await asyncio.sleep(0)
+
     if not selected_repository:
         state.errors.append("No repository selected")
         await _publish("workflow_result", {"status": "FAILED", "error": "No repository selected"})
         return state.finish(WorkflowStatus.FAILED)
+
+    # Publish an immediate "started" event so the SSE connection has
+    # something to receive before heavy work begins (prevents 60s idle timeout).
+    await _publish("stage_change", {"stage": "initialization_started", "status": "started"})
 
     repo_full = selected_repository.get("full_name", "")
     onboarding_repo = getattr(context.repositories, "onboarding", None)
@@ -69,7 +105,7 @@ async def run_onboarding_initialize(
 
         github = await build_installation_client(installation["installation_id"])
         await _update_stage(onboarding_repo, org_id, "repository_ingestion")
-        await _publish("stage_change", {"stage": "repository_ingestion"})
+        await _stage_start("repository_ingestion")
         from draftly.documentation.sync_service import SyncService
 
         sync_service = SyncService(github=github, context=context)
@@ -80,7 +116,10 @@ async def run_onboarding_initialize(
             repository_full_name=repo_full,
             include=include,
             exclude=exclude,
+            on_progress=_on_sync_progress,
         )
+        # Flush any buffered progress after sync completes
+        await _flush_progress()
 
         # A sync that stored nothing while failing every file is a hard
         # failure, not success (R-C): raise so mark_failed records it.
@@ -90,16 +129,32 @@ async def run_onboarding_initialize(
                 f"{len(sync_result.failed_files)} file(s) failed"
             )
 
+        await _stage_complete(
+            "repository_ingestion",
+            {"document_count": sync_result.document_count, "chunk_count": sync_result.chunk_count},
+        )
+
         # Knowledge/eval/health/recommendations build on the synced corpus;
         # v1 records stage progress so the UI can render it (spec §5.3).
         await _update_stage(onboarding_repo, org_id, "knowledge_construction")
-        await _publish("stage_change", {"stage": "knowledge_construction"})
+        await _stage_start("knowledge_construction", {"document_count": sync_result.document_count})
+        await asyncio.sleep(0)  # yield to allow event delivery
+        await _stage_complete("knowledge_construction")
+
         await _update_stage(onboarding_repo, org_id, "initial_evaluation")
-        await _publish("stage_change", {"stage": "initial_evaluation"})
+        await _stage_start("initial_evaluation")
+        await asyncio.sleep(0)
+        await _stage_complete("initial_evaluation")
+
         await _update_stage(onboarding_repo, org_id, "health_report")
-        await _publish("stage_change", {"stage": "health_report"})
+        await _stage_start("health_report")
+        await asyncio.sleep(0)
+        await _stage_complete("health_report")
+
         await _update_stage(onboarding_repo, org_id, "recommendations")
-        await _publish("stage_change", {"stage": "recommendations"})
+        await _stage_start("recommendations")
+        await asyncio.sleep(0)
+        await _stage_complete("recommendations")
 
         if onboarding_repo:
             # Mirror final counts into selected_repository so the

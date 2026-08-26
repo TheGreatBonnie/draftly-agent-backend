@@ -51,6 +51,8 @@ class DraftlyApplication:
 
     redis_client: Any = None
 
+    worker: Any = None
+
     rq_queues: Any = None
     task_handlers: Any = None
 
@@ -100,6 +102,11 @@ class DraftlyApplication:
                 dependencies=self.dependencies,
             )
             self.task_handlers = task_runner._tasks
+
+            # Build worker (scheduler handled externally by RQ)
+            from draftly.app.workers.worker import DraftlyWorker
+
+            self.worker = DraftlyWorker(task_runner=task_runner)
 
             if self.redis_client is not None:
                 rq_conn = self.redis_client.get_rq_connection()

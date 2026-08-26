@@ -356,48 +356,55 @@ def _init_worker_guard(request: Request):
 async def _execute_initialization(
     repos, org_id: str, worker, selected_repository: dict | None, *, request: Request
 ) -> dict[str, Any]:
-    """Flip to INITIALIZING, run the task, and convert any failure to FAILED + 502.
+    """Kick off the task in the background, return run_id + ticket immediately.
 
-    Returns a ticket + run_id so the caller can stream results over SSE.
-    Accepts both the real worker result (WorkflowState) and plain dicts so
-    tests/legacy callers keep working. All post-run shaping stays inside the
-    try so nothing after a successful run can strand the row in INITIALIZING.
+    The frontend needs the run_id + ticket to open an SSE stream BEFORE
+    the workflow starts emitting events. Running the task in the background
+    ensures the SSE connection is ready to receive stage_change events in
+    real time.
     """
+    import asyncio
     from uuid import uuid4
 
     from draftly.app.api.routes.workflows import _tickets
-    from draftly.workflows.state import WorkflowState, WorkflowStatus
 
     run_id = f"onboarding-init-{org_id}-{uuid4().hex[:8]}"
-    ticket = _tickets(request).issue(run_id, org_id=org_id)
+    ticket = await _tickets(request).issue(run_id, org_id=org_id)
 
     await repos.onboarding.upsert(org_id, state="INITIALIZING", failure=None)
-    try:
-        raw = await worker.run_task(
-            "onboarding.initialize",
-            org_id=org_id,
-            selected_repository=selected_repository,
-            run_id=run_id,
-        )
-        if isinstance(raw, WorkflowState):
-            if raw.status == WorkflowStatus.FAILED:
-                detail = "; ".join(raw.errors)[:300] or "Initialization workflow failed"
-                await repos.onboarding.upsert(
-                    org_id,
-                    state="FAILED",
-                    failure={"step": "initialization", "detail": detail},
-                )
-                raise HTTPException(status_code=502, detail="Initialization failed")
-        return {"state": "INITIALIZING", "run_id": run_id, "ticket": ticket}
-    except HTTPException:
-        raise
-    except Exception as exc:
-        await repos.onboarding.upsert(
-            org_id,
-            state="FAILED",
-            failure={"step": "initialization", "detail": str(exc)[:300]},
-        )
-        raise HTTPException(status_code=502, detail="Initialization failed") from exc
+
+    async def _run_background() -> None:
+        from draftly.workflows.state import WorkflowState, WorkflowStatus
+
+        try:
+            raw = await worker.run_task(
+                "onboarding.initialize",
+                org_id=org_id,
+                selected_repository=selected_repository,
+                run_id=run_id,
+            )
+            if isinstance(raw, WorkflowState):
+                if raw.status == WorkflowStatus.FAILED:
+                    detail = "; ".join(raw.errors)[:300] or "Initialization workflow failed"
+                    await repos.onboarding.upsert(
+                        org_id,
+                        state="FAILED",
+                        failure={"step": "initialization", "detail": detail},
+                    )
+        except Exception as exc:
+            import structlog
+            structlog.get_logger(__name__).exception(
+                "onboarding_initialize_background_failed org=%s", org_id
+            )
+            await repos.onboarding.upsert(
+                org_id,
+                state="FAILED",
+                failure={"step": "initialization", "detail": str(exc)[:300]},
+            )
+
+    asyncio.create_task(_run_background())
+
+    return {"state": "INITIALIZING", "run_id": run_id, "ticket": ticket}
 
 
 @router.post("/initialize")
@@ -409,15 +416,12 @@ async def start_initialization(
     repos = _repos(request)
     current = await repos.onboarding.get(org_id)
     current_state = (current or {}).get("state", "NOT_STARTED")
-    # Idempotent per spec §5.2: already initializing → report as-is.
+    # Re-run if stuck in INITIALIZING (previous attempt may have timed out).
     if current_state == "INITIALIZING":
-        from uuid import uuid4
-
-        from draftly.app.api.routes.workflows import _tickets
-
-        run_id = f"onboarding-init-{org_id}-{uuid4().hex[:8]}"
-        ticket = _tickets(request).issue(run_id, org_id=org_id)
-        return {"state": "INITIALIZING", "run_id": run_id, "ticket": ticket}
+        worker = _init_worker_guard(request)
+        return await _execute_initialization(
+            repos, org_id, worker, _selected(current), request=request
+        )
     if current_state != "PREFERENCES_CONFIGURED":
         raise HTTPException(status_code=409, detail=f"Cannot initialize from {current_state}")
     worker = _init_worker_guard(request)

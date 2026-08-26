@@ -15,7 +15,7 @@ class RedisClient:
     def __init__(self, url: str = "redis://localhost:6379/0") -> None:
         import redis.asyncio as aioredis
 
-        self._client = aioredis.from_url(url, decode_responses=True)
+        self._client = aioredis.from_url(url, decode_responses=True, socket_timeout=20)
 
     @property
     def native(self) -> Any:

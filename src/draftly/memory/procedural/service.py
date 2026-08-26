@@ -41,7 +41,7 @@ class ProceduralService:
                 "steps": steps or [],
                 "applicability_context": applicability_context,
                 "confidence": 0.5,
-                "embedding": self.embeddings.embed(pattern_description),
+                "embedding": await self.embeddings.embed(pattern_description),
             }
         )
 
@@ -54,7 +54,7 @@ class ProceduralService:
     ) -> list[dict[str, Any]]:
         try:
             return await self.store.search(
-                embedding=self.embeddings.embed(query),
+                embedding=await self.embeddings.embed(query),
                 org_id=org_id,
                 limit=limit,
             )
