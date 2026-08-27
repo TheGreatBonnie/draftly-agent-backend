@@ -77,3 +77,24 @@ async def test_get_file_contents_skips_large_files():
     ):
         result = await client.get_file_contents("owner", "repo", "huge.md", "main", "token123")
         assert result == ""
+
+
+@pytest.mark.asyncio
+async def test_get_last_commit_date_returns_date():
+    client = _client()
+    mock_data = [{"commit": {"committer": {"date": "2026-08-27T10:30:00Z"}}}]
+    with patch.object(client, "_request", new_callable=AsyncMock, return_value=mock_data):
+        result = await client.get_last_commit_date("owner", "repo", "README.md", "main", "tok")
+    assert result is not None
+    assert result.year == 2026
+    assert result.month == 8
+
+
+@pytest.mark.asyncio
+async def test_get_last_commit_date_returns_none_on_error():
+    client = _client()
+    with patch.object(
+        client, "_request", new_callable=AsyncMock, side_effect=RuntimeError("rate limit")
+    ):
+        result = await client.get_last_commit_date("owner", "repo", "README.md", "main", "tok")
+    assert result is None

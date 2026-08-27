@@ -88,6 +88,8 @@ def configure_logging(settings: Settings) -> None:
 
     # Third-party noise control.
     logging.getLogger("slack_bolt").setLevel(logging.ERROR)
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("strands").setLevel(logging.WARNING)
 
     structlog.configure(
         processors=_shared_processors()

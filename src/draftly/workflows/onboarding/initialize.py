@@ -24,6 +24,14 @@ STAGES = [
     "recommendations",
 ]
 
+STAGE_LABELS: dict[str, str] = {
+    "repository_ingestion": "Processing documentation",
+    "knowledge_construction": "Building knowledge base",
+    "initial_evaluation": "Running evaluation",
+    "health_report": "Calculating health",
+    "recommendations": "Preparing recommendations",
+}
+
 
 async def run_onboarding_initialize(
     context: WorkflowContext,
@@ -72,10 +80,20 @@ async def run_onboarding_initialize(
     # Coalesced so we don't flood the stream with per-file events.
     _progress_lock = asyncio.Lock()
     _latest_progress: dict[str, Any] = {}
+    _sync_total_files: int = 0
 
     def _on_sync_progress(document_count: int, chunk_count: int) -> None:
-        nonlocal _latest_progress
+        nonlocal _latest_progress, _sync_total_files
         _latest_progress = {"document_count": document_count, "chunk_count": chunk_count}
+        if document_count > _sync_total_files:
+            _sync_total_files = document_count
+
+    async def _emit_stage_progress(stage: str, progress: int) -> None:
+        await _publish("stage_progress", {
+            "stage": stage,
+            "progress": min(max(progress, 0), 100),
+        })
+        await asyncio.sleep(0)
 
     async def _flush_progress() -> None:
         if _latest_progress:
@@ -83,7 +101,10 @@ async def run_onboarding_initialize(
                 "name": "documentation_sync",
                 **_latest_progress,
             })
-            await asyncio.sleep(0)
+        doc_count = _latest_progress.get("document_count", 0) if _latest_progress else 0
+        total = max(_sync_total_files, 1)
+        progress = min(int((doc_count / total) * 92), 92) if _sync_total_files > 0 else 0
+        await _emit_stage_progress("repository_ingestion", progress)
 
     if not selected_repository:
         state.errors.append("No repository selected")
@@ -93,6 +114,15 @@ async def run_onboarding_initialize(
     # Publish an immediate "started" event so the SSE connection has
     # something to receive before heavy work begins (prevents 60s idle timeout).
     await _publish("stage_change", {"stage": "initialization_started", "status": "started"})
+
+    # Emit stage manifest so the frontend can dynamically render the task list
+    await _publish("stage_manifest", {
+        "stages": [
+            {"id": s, "label": STAGE_LABELS.get(s, s), "order": i}
+            for i, s in enumerate(STAGES)
+        ]
+    })
+    await asyncio.sleep(0)
 
     repo_full = selected_repository.get("full_name", "")
     onboarding_repo = getattr(context.repositories, "onboarding", None)
@@ -134,37 +164,75 @@ async def run_onboarding_initialize(
             {"document_count": sync_result.document_count, "chunk_count": sync_result.chunk_count},
         )
 
-        # Knowledge/eval/health/recommendations build on the synced corpus;
-        # v1 records stage progress so the UI can render it (spec §5.3).
+        # Stage 2: Knowledge construction — extract from synced chunks
         await _update_stage(onboarding_repo, org_id, "knowledge_construction")
         await _stage_start("knowledge_construction", {"document_count": sync_result.document_count})
-        await asyncio.sleep(0)  # yield to allow event delivery
-        await _stage_complete("knowledge_construction")
+        from draftly.workflows.onboarding.stages import (
+            run_health_report,
+            run_initial_evaluation,
+            run_knowledge_construction,
+            run_recommendations,
+        )
 
+        await _emit_stage_progress("knowledge_construction", 10)
+        extraction = await run_knowledge_construction(
+            context, org_id=org_id, publish=_publish,
+        )
+        await _emit_stage_progress("knowledge_construction", 100)
+        await _stage_complete("knowledge_construction", {
+            "knowledge_count": extraction.knowledge_count,
+            "relationship_count": extraction.relationship_count,
+            "candidate_count": extraction.candidate_count,
+        })
+
+        # Stage 3: Initial evaluation — score corpus quality
         await _update_stage(onboarding_repo, org_id, "initial_evaluation")
         await _stage_start("initial_evaluation")
-        await asyncio.sleep(0)
-        await _stage_complete("initial_evaluation")
+        await _emit_stage_progress("initial_evaluation", 20)
+        eval_result = await run_initial_evaluation(context, org_id=org_id, publish=_publish)
+        await _emit_stage_progress("initial_evaluation", 100)
+        await _stage_complete("initial_evaluation", {"score": eval_result.score})
 
+        # Stage 4: Health report — aggregate scores
         await _update_stage(onboarding_repo, org_id, "health_report")
         await _stage_start("health_report")
-        await asyncio.sleep(0)
-        await _stage_complete("health_report")
+        await _emit_stage_progress("health_report", 30)
+        health_result = run_health_report(
+            eval_result=eval_result,
+            document_count=sync_result.document_count,
+            section_count=sync_result.baseline.section_count if sync_result.baseline else 0,
+            last_committed_dates=sync_result.last_committed_dates,
+        )
+        await _emit_stage_progress("health_report", 100)
+        await _stage_complete("health_report", {"score": health_result.score})
 
+        # Stage 5: Recommendations — generate suggestions
         await _update_stage(onboarding_repo, org_id, "recommendations")
         await _stage_start("recommendations")
-        await asyncio.sleep(0)
-        await _stage_complete("recommendations")
+        await _emit_stage_progress("recommendations", 15)
+        recs = await run_recommendations(
+            context,
+            eval_result=eval_result,
+            health_result=health_result,
+            document_count=sync_result.document_count,
+            chunk_count=sync_result.chunk_count,
+        )
+        await _emit_stage_progress("recommendations", 100)
+        await _stage_complete("recommendations", {"count": len(recs)})
 
         if onboarding_repo:
-            # Mirror final counts into selected_repository so the
-            # completion screen can render real numbers.
             current = await onboarding_repo.get(org_id)
             selected = dict((current or {}).get("selected_repository") or {})
             selected["document_count"] = sync_result.document_count
             selected["chunk_count"] = sync_result.chunk_count
-            # Atomic: mark step + set COMPLETED so a crash between them
-            # never strands the row in INITIALIZING.
+            selected["knowledge_count"] = extraction.knowledge_count
+            selected["eval_score"] = eval_result.score
+            selected["health_score"] = health_result.score
+            selected["recommendations"] = [
+                {"priority": r.priority, "title": r.title,
+                 "detail": r.detail, "category": r.category}
+                for r in recs
+            ]
             await onboarding_repo.mark_step_and_set_state(
                 org_id, "initialization", "COMPLETED",
                 selected_repository=selected,

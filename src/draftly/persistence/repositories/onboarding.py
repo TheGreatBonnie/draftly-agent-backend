@@ -25,7 +25,7 @@ class OnboardingRepository:
         if row is None:
             return None
         state: dict[str, Any] = dict(row)
-        for key in ("completed_steps", "failure", "selected_repository"):
+        for key in ("completed_steps", "failure", "selected_repository", "stage_config"):
             value = state.get(key)
             if isinstance(value, str):
                 state[key] = json.loads(value)
@@ -39,6 +39,7 @@ class OnboardingRepository:
         completed_steps: list[str] | None = None,
         failure: dict | None = None,
         selected_repository: dict | None = None,
+        stage_config: list[dict] | None = None,
     ) -> dict[str, Any]:
         fields: dict[str, Any] = {}
         if state is not None:
@@ -49,6 +50,8 @@ class OnboardingRepository:
             fields["failure"] = json.dumps(failure)
         if selected_repository is not None:
             fields["selected_repository"] = json.dumps(selected_repository)
+        if stage_config is not None:
+            fields["stage_config"] = json.dumps(stage_config)
 
         if not fields:
             return await self.get(org_id) or {}

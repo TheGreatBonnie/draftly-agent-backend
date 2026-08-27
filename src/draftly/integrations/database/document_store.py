@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from typing import Any
 from uuid import uuid4
 
@@ -25,7 +26,8 @@ _DOCUMENT_COLUMNS = """
     broken_links,
     unsupported_claims,
     created_at,
-    updated_at
+    updated_at,
+    last_committed_at
 """
 
 
@@ -115,6 +117,7 @@ class DocumentStore:
         status: str | None = None,
         commit_sha: str | None = None,
         source_hash: str | None = None,
+        last_committed_at: datetime | None = None,
     ) -> dict[str, Any]:
         existing = await self.client.fetch_one(
             """
@@ -152,6 +155,10 @@ class DocumentStore:
                     fields.append(f"{column} = ${len(params) + 1}")
                     params.append(value)
 
+            if last_committed_at is not None:
+                fields.append(f"last_committed_at = ${len(params) + 1}::timestamptz")
+                params.append(last_committed_at)
+
             fields.append("updated_at = CURRENT_TIMESTAMP")
             params.append(existing["id"])
 
@@ -175,6 +182,7 @@ class DocumentStore:
                 ("status", status or "draft"),
                 ("commit_sha", commit_sha),
                 ("source_hash", source_hash),
+                ("last_committed_at", last_committed_at),
             ):
                 if value is not None:
                     columns.append(column)
@@ -208,6 +216,7 @@ class DocumentStore:
                     ("status", status),
                     ("commit_sha", commit_sha),
                     ("source_hash", source_hash),
+                    ("last_committed_at", last_committed_at),
                 ):
                     if value is not None:
                         n = len(values) + len(conflict_params)
@@ -460,4 +469,5 @@ class DocumentStore:
             "unsupported_claims": row["unsupported_claims"],
             "created_at": row["created_at"],
             "updated_at": row["updated_at"],
+            "last_committed_at": row["last_committed_at"],
         }

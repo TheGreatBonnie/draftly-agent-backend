@@ -1,5 +1,6 @@
 """Unit tests for onboarding initialization workflow."""
 
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -54,11 +55,35 @@ async def test_initialize_workflow_completes(installation_client):
 
     with patch("draftly.documentation.sync_service.SyncService") as service_cls:
         service_cls.return_value.sync = AsyncMock(return_value=sync_result)
-        state = await run_onboarding_initialize(
-            _context(),
-            org_id="test-org",
-            selected_repository={"full_name": "owner/repo"},
-        )
+        with patch(
+            "draftly.workflows.onboarding.stages.run_knowledge_construction",
+            new=AsyncMock(return_value=MagicMock(
+                knowledge_count=10, relationship_count=5,
+                candidate_count=3, failed_chunks=[],
+            )),
+        ):
+            with patch(
+                "draftly.workflows.onboarding.stages.run_initial_evaluation",
+                new=AsyncMock(return_value=MagicMock(
+                    score=0.72, dimensions={},
+                )),
+            ):
+                with patch(
+                    "draftly.workflows.onboarding.stages.run_health_report",
+                    return_value=MagicMock(score=0.68, dimensions={}),
+                ):
+                    with patch(
+                        "draftly.workflows.onboarding.stages.run_recommendations",
+                        new=AsyncMock(return_value=[
+                            MagicMock(priority="high", title="Add API ref",
+                                      detail="Missing", category="coverage"),
+                        ]),
+                    ):
+                        state = await run_onboarding_initialize(
+                            _context(),
+                            org_id="test-org",
+                            selected_repository={"full_name": "owner/repo"},
+                        )
 
     assert state.status == WorkflowStatus.DELIVERED
     assert state.result["document_count"] == 2
@@ -143,11 +168,30 @@ async def test_initialize_workflow_surfaces_partial_failures(installation_client
 
     with patch("draftly.documentation.sync_service.SyncService") as service_cls:
         service_cls.return_value.sync = AsyncMock(return_value=sync_result)
-        state = await run_onboarding_initialize(
-            _context(),
-            org_id="test-org",
-            selected_repository={"full_name": "owner/repo"},
-        )
+        with patch(
+            "draftly.workflows.onboarding.stages.run_knowledge_construction",
+            new=AsyncMock(return_value=MagicMock(
+                knowledge_count=5, relationship_count=2,
+                candidate_count=1, failed_chunks=[],
+            )),
+        ):
+            with patch(
+                "draftly.workflows.onboarding.stages.run_initial_evaluation",
+                new=AsyncMock(return_value=MagicMock(score=0.5, dimensions={})),
+            ):
+                with patch(
+                    "draftly.workflows.onboarding.stages.run_health_report",
+                    return_value=MagicMock(score=0.4, dimensions={}),
+                ):
+                    with patch(
+                        "draftly.workflows.onboarding.stages.run_recommendations",
+                        new=AsyncMock(return_value=[]),
+                    ):
+                        state = await run_onboarding_initialize(
+                            _context(),
+                            org_id="test-org",
+                            selected_repository={"full_name": "owner/repo"},
+                        )
 
     assert state.status == WorkflowStatus.DELIVERED
     assert state.result["failed_files_count"] == 1
@@ -196,20 +240,45 @@ async def test_publishes_stage_change_events(mock_publisher, fake_repositories):
         fake_sync_result.chunk_count = 20
         fake_sync_result.failed_files = []
         fake_sync_result.baseline = None
+        fake_sync_result.last_committed_dates = [datetime.now(UTC), datetime.now(UTC)]
 
         with patch(
             "draftly.documentation.sync_service.SyncService"
         ) as service_cls:
             service_cls.return_value.sync = AsyncMock(return_value=fake_sync_result)
-            await run_onboarding_initialize(
-                context,
-                org_id="org_test123",
-                selected_repository={
-                    "full_name": "test/repo",
-                    "doc_include": ["*.md"],
-                    "doc_exclude": [],
-                },
-            )
+            with patch(
+                "draftly.workflows.onboarding.stages.run_knowledge_construction",
+                new=AsyncMock(return_value=MagicMock(
+                    knowledge_count=10, relationship_count=5,
+                    candidate_count=3, failed_chunks=[],
+                )),
+            ):
+                with patch(
+                    "draftly.workflows.onboarding.stages.run_initial_evaluation",
+                    new=AsyncMock(return_value=MagicMock(
+                        score=0.7, dimensions={},
+                    )),
+                ):
+                    with patch(
+                        "draftly.workflows.onboarding.stages.run_health_report",
+                        return_value=MagicMock(score=0.6, dimensions={}),
+                    ):
+                        with patch(
+                            "draftly.workflows.onboarding.stages.run_recommendations",
+                            new=AsyncMock(return_value=[
+                                MagicMock(priority="high", title="Add docs",
+                                          detail="Missing", category="coverage"),
+                            ]),
+                        ):
+                            await run_onboarding_initialize(
+                                context,
+                                org_id="org_test123",
+                                selected_repository={
+                                    "full_name": "test/repo",
+                                    "doc_include": ["*.md"],
+                                    "doc_exclude": [],
+                                },
+                            )
 
     calls = mock_publisher.publish.call_args_list
     stage_events = [
@@ -276,15 +345,238 @@ async def test_does_not_publish_when_publisher_is_none():
         fake_sync_result.chunk_count = 3
         fake_sync_result.failed_files = []
         fake_sync_result.baseline = None
+        fake_sync_result.last_committed_dates = []
 
         with patch(
             "draftly.documentation.sync_service.SyncService"
         ) as service_cls:
             service_cls.return_value.sync = AsyncMock(return_value=fake_sync_result)
-            state = await run_onboarding_initialize(
-                context,
-                org_id="org_test123",
-                selected_repository={"full_name": "test/repo"},
-            )
+            with patch(
+                "draftly.workflows.onboarding.stages.run_knowledge_construction",
+                new=AsyncMock(return_value=MagicMock(
+                    knowledge_count=5, relationship_count=2,
+                    candidate_count=1, failed_chunks=[],
+                )),
+            ):
+                with patch(
+                    "draftly.workflows.onboarding.stages.run_initial_evaluation",
+                    new=AsyncMock(return_value=MagicMock(score=0.5, dimensions={})),
+                ):
+                    with patch(
+                        "draftly.workflows.onboarding.stages.run_health_report",
+                        return_value=MagicMock(score=0.4, dimensions={}),
+                    ):
+                        with patch(
+                            "draftly.workflows.onboarding.stages.run_recommendations",
+                            new=AsyncMock(return_value=[]),
+                        ):
+                            state = await run_onboarding_initialize(
+                                context,
+                                org_id="org_test123",
+                                selected_repository={"full_name": "test/repo"},
+                            )
 
     assert state.status == WorkflowStatus.DELIVERED
+
+
+@pytest.mark.asyncio
+async def test_initialize_stores_stage_results(installation_client):
+    """Stage results should be persisted in selected_repository."""
+    from draftly.documentation.baseline import BaselineSnapshot
+    from draftly.documentation.sync_service import SyncResult
+
+    sync_result = SyncResult(
+        commit_sha="abc123",
+        repository="owner/repo",
+        document_count=5,
+        chunk_count=20,
+        last_committed_dates=[datetime.now(UTC), datetime.now(UTC)],
+        baseline=BaselineSnapshot(
+            commit_sha="abc123", repository="owner/repo",
+            document_count=5, section_count=15, chunk_count=20,
+        ),
+    )
+
+    ctx = _context()
+    with patch("draftly.documentation.sync_service.SyncService") as service_cls:
+        service_cls.return_value.sync = AsyncMock(return_value=sync_result)
+        with patch(
+            "draftly.workflows.onboarding.stages.run_knowledge_construction",
+            new=AsyncMock(return_value=MagicMock(
+                knowledge_count=10, relationship_count=5,
+                candidate_count=3, failed_chunks=[],
+            )),
+        ):
+            with patch(
+                "draftly.workflows.onboarding.stages.run_initial_evaluation",
+                new=AsyncMock(return_value=MagicMock(
+                    score=0.72, dimensions={
+                        "coverage": 0.8, "completeness": 0.6,
+                        "structure": 0.7, "length": 0.7,
+                    },
+                )),
+            ):
+                with patch(
+                    "draftly.workflows.onboarding.stages.run_health_report",
+                    return_value=MagicMock(score=0.68, dimensions={
+                        "coverage": 0.8, "structure": 0.7,
+                        "freshness": 1.0, "completeness": 0.6,
+                    }),
+                ):
+                    with patch(
+                        "draftly.workflows.onboarding.stages.run_recommendations",
+                        new=AsyncMock(return_value=[
+                            MagicMock(priority="high", title="Add API ref",
+                                      detail="Missing", category="coverage"),
+                        ]),
+                    ):
+                        state = await run_onboarding_initialize(
+                            ctx,
+                            org_id="test-org",
+                            selected_repository={"full_name": "owner/repo"},
+                        )
+
+    assert state.status == WorkflowStatus.DELIVERED
+
+    # Verify mark_step_and_set_state was called with stage results
+    ctx.repositories.onboarding.mark_step_and_set_state.assert_awaited_once()
+    call_kwargs = ctx.repositories.onboarding.mark_step_and_set_state.call_args
+    stored_selected = (
+        call_kwargs.kwargs.get("selected_repository")
+        or call_kwargs[1].get("selected_repository")
+    )
+    assert stored_selected["knowledge_count"] == 10
+    assert stored_selected["eval_score"] == 0.72
+    assert stored_selected["health_score"] == 0.68
+    assert len(stored_selected["recommendations"]) == 1
+    assert stored_selected["recommendations"][0]["priority"] == "high"
+    assert stored_selected["document_count"] == 5
+    assert stored_selected["chunk_count"] == 20
+
+
+@pytest.mark.asyncio
+async def test_publishes_stage_progress_for_all_stages(mock_publisher, fake_repositories):
+    from draftly.workflows.context import WorkflowContext
+
+    context = WorkflowContext(
+        repositories=fake_repositories,
+        publisher=mock_publisher,
+    )
+    with patch(
+        "draftly.integrations.github.app_auth.build_installation_client",
+        new=AsyncMock(return_value=MagicMock()),
+    ):
+        fake_sync_result = MagicMock()
+        fake_sync_result.document_count = 5
+        fake_sync_result.chunk_count = 20
+        fake_sync_result.failed_files = []
+        fake_sync_result.baseline = None
+        fake_sync_result.last_committed_dates = [datetime.now(UTC)]
+
+        with patch(
+            "draftly.documentation.sync_service.SyncService"
+        ) as service_cls:
+            service_cls.return_value.sync = AsyncMock(return_value=fake_sync_result)
+            with patch(
+                "draftly.workflows.onboarding.stages.run_knowledge_construction",
+                new=AsyncMock(return_value=MagicMock(
+                    knowledge_count=10, relationship_count=5,
+                    candidate_count=3, failed_chunks=[],
+                )),
+            ):
+                with patch(
+                    "draftly.workflows.onboarding.stages.run_initial_evaluation",
+                    new=AsyncMock(return_value=MagicMock(score=0.7, dimensions={})),
+                ):
+                    with patch(
+                        "draftly.workflows.onboarding.stages.run_health_report",
+                        return_value=MagicMock(score=0.6, dimensions={}),
+                    ):
+                        with patch(
+                            "draftly.workflows.onboarding.stages.run_recommendations",
+                            new=AsyncMock(return_value=[]),
+                        ):
+                            await run_onboarding_initialize(
+                                context,
+                                org_id="org_test123",
+                                selected_repository={"full_name": "test/repo"},
+                            )
+
+    calls = mock_publisher.publish.call_args_list
+    progress_events = [
+        c.args[0]
+        for c in calls
+        if hasattr(c, "args")
+        and hasattr(c.args[0], "type")
+        and c.args[0].type == "stage_progress"
+    ]
+    stages_with_progress = {e.payload["stage"] for e in progress_events}
+    expected_stages = {
+        "repository_ingestion", "knowledge_construction",
+        "initial_evaluation", "health_report", "recommendations",
+    }
+    assert expected_stages.issubset(stages_with_progress), (
+        f"Missing stage_progress for stages: {expected_stages - stages_with_progress}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_publishes_stage_progress_even_without_sync_callback(mock_publisher, fake_repositories):
+    from draftly.workflows.context import WorkflowContext
+
+    context = WorkflowContext(
+        repositories=fake_repositories,
+        publisher=mock_publisher,
+    )
+    with patch(
+        "draftly.integrations.github.app_auth.build_installation_client",
+        new=AsyncMock(return_value=MagicMock()),
+    ):
+        fake_sync_result = MagicMock()
+        fake_sync_result.document_count = 3
+        fake_sync_result.chunk_count = 10
+        fake_sync_result.failed_files = []
+        fake_sync_result.baseline = None
+        fake_sync_result.last_committed_dates = []
+
+        with patch(
+            "draftly.documentation.sync_service.SyncService"
+        ) as service_cls:
+            service_cls.return_value.sync = AsyncMock(return_value=fake_sync_result)
+            with patch(
+                "draftly.workflows.onboarding.stages.run_knowledge_construction",
+                new=AsyncMock(return_value=MagicMock(
+                    knowledge_count=5, relationship_count=2,
+                    candidate_count=1, failed_chunks=[],
+                )),
+            ):
+                with patch(
+                    "draftly.workflows.onboarding.stages.run_initial_evaluation",
+                    new=AsyncMock(return_value=MagicMock(score=0.5, dimensions={})),
+                ):
+                    with patch(
+                        "draftly.workflows.onboarding.stages.run_health_report",
+                        return_value=MagicMock(score=0.4, dimensions={}),
+                    ):
+                        with patch(
+                            "draftly.workflows.onboarding.stages.run_recommendations",
+                            new=AsyncMock(return_value=[]),
+                        ):
+                            await run_onboarding_initialize(
+                                context,
+                                org_id="org_test123",
+                                selected_repository={"full_name": "test/repo"},
+                            )
+
+    calls = mock_publisher.publish.call_args_list
+    repo_progress = [
+        c.args[0]
+        for c in calls
+        if hasattr(c, "args")
+        and hasattr(c.args[0], "type")
+        and c.args[0].type == "stage_progress"
+        and c.args[0].payload.get("stage") == "repository_ingestion"
+    ]
+    assert len(repo_progress) >= 1, (
+        "stage_progress for repository_ingestion must be emitted even without sync callback"
+    )

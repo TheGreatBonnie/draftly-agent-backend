@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+from datetime import UTC, datetime
 from typing import Any, cast
 
 import httpx
@@ -431,6 +432,30 @@ class GitHubClient:
         if encoding == "base64":
             return base64.b64decode(content).decode("utf-8", errors="replace")
         return content
+
+    async def get_last_commit_date(
+        self,
+        owner: str,
+        repo: str,
+        path: str,
+        ref: str,
+        token: str,
+    ) -> datetime | None:
+        """Return the commit date of the most recent commit touching `path`, or None."""
+        try:
+            data = await self._request(
+                "GET",
+                f"/repos/{owner}/{repo}/commits",
+                params={"path": path, "sha": ref, "per_page": 1},
+                token=token,
+            )
+            if not data:
+                return None
+            date_str = data[0]["commit"]["committer"]["date"]
+            return datetime.fromisoformat(date_str.replace("Z", "+00:00"))
+        except Exception:
+            logger.warning("get_last_commit_date_failed owner=%s repo=%s path=%s", owner, repo, path)
+            return None
 
     async def get_repository(
         self,

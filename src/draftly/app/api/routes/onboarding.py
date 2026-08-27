@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
 from draftly.app.api.auth import get_verified_token
+from draftly.workflows.onboarding.initialize import STAGES, STAGE_LABELS
 
 router = APIRouter(
     prefix="/onboarding",
@@ -117,10 +118,15 @@ async def create_workspace(
     repos = _repos(request)
     current = await repos.onboarding.get(org_id)
     _require_transition(current, "WORKSPACE_CREATED", "create workspace")
+    stage_config = [
+        {"id": s, "label": STAGE_LABELS.get(s, s), "order": i}
+        for i, s in enumerate(STAGES)
+    ]
     await repos.onboarding.upsert(
         org_id,
         state="WORKSPACE_CREATED",
         selected_repository={"workspace_name": body.name, "description": body.description},
+        stage_config=stage_config,
     )
     await repos.onboarding.mark_step(org_id, "workspace")
     return {"state": "WORKSPACE_CREATED"}
@@ -447,6 +453,7 @@ async def get_initialize_status(
         "state": current.get("state"),
         "stage": _selected(current).get("init_stage"),
         "failure": failure,
+        "stage_config": current.get("stage_config"),
     }
 
 

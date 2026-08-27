@@ -6,6 +6,7 @@ import hashlib
 import json
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any
 
 import structlog
@@ -22,6 +23,8 @@ logger = structlog.get_logger(__name__)
 
 ProgressCallback = Callable[[int, int], None]  # (document_count, chunk_count)
 
+COMMIT_DATE_CAP = 200  # max files to fetch per-file commit dates for
+
 
 @dataclass
 class SyncResult:
@@ -35,6 +38,7 @@ class SyncResult:
     skipped_count: int = 0
     failed_files: list[str] = field(default_factory=list)
     baseline: BaselineSnapshot | None = None
+    last_committed_dates: list[datetime | None] = field(default_factory=list)
 
 
 class SyncService:
@@ -107,6 +111,21 @@ class SyncService:
                 if not content:
                     continue
 
+                # --- NEW: fetch per-file commit date (capped) ---
+                file_count = result.document_count + result.skipped_count + len(result.failed_files)
+                commit_date: datetime | None = None
+                if file_count < COMMIT_DATE_CAP:
+                    commit_date = await self.github.get_last_commit_date(
+                        owner, repo, path, default_branch, token,
+                    )
+                elif file_count == COMMIT_DATE_CAP:
+                    logger.warning(
+                        "freshness_cap_reached count=%d cap=%d",
+                        file_count, COMMIT_DATE_CAP,
+                    )
+                result.last_committed_dates.append(commit_date)
+                # --- END NEW ---
+
                 # Content-hash skip against persisted source_hash. A row
                 # without stored chunks is an orphan (e.g. a previous run
                 # crashed mid-file): reprocess it instead of skipping.
@@ -137,6 +156,7 @@ class SyncService:
                     status="indexed",
                     commit_sha=commit_sha,
                     source_hash=content_hash,
+                    last_committed_at=commit_date,
                     metadata={
                         "source_url": f"https://github.com/{repository_full_name}/blob/{default_branch}/{path}",
                         "branch": default_branch,

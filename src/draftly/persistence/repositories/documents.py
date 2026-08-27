@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 
 from draftly.integrations.database.document_store import DocumentStore
@@ -66,6 +67,7 @@ class DocumentRepository:
         status: str | None = None,
         commit_sha: str | None = None,
         source_hash: str | None = None,
+        last_committed_at: datetime | None = None,
     ) -> dict[str, Any]:
         return await self.store.upsert_document(
             org_id=org_id,
@@ -78,6 +80,7 @@ class DocumentRepository:
             status=status,
             commit_sha=commit_sha,
             source_hash=source_hash,
+            last_committed_at=last_committed_at,
         )
 
     async def get_by_org_and_path(
