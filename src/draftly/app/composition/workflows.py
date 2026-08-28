@@ -141,9 +141,6 @@ def build_workflows(
     publisher = None
     event_bus = None
     if getattr(config, "events_streaming_enabled", False):
-        from draftly.persistence.repositories.workflow_events import (
-            WorkflowEventRepositoryImpl,
-        )
 
         event_bus_mode = getattr(config, "event_bus_backend", "dual")
 
@@ -159,11 +156,7 @@ def build_workflows(
                 url=getattr(config, "redis_url", None) if redis_client is None else None,
             )
 
-        try:
-            fallback_repo = WorkflowEventRepositoryImpl()
-        except Exception:
-            logger.warning("workflow_events_store_unavailable", exc_info=True)
-            fallback_repo = None
+        fallback_repo = getattr(repositories, "workflow_events", None)
         publisher = _TeePublisher(event_bus, fallback_repo)
         context.publisher = publisher  # per-surface workflows stream as well
 

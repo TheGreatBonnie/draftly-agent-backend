@@ -277,6 +277,36 @@ async def _llm_generate(
     return result.structured_output
 
 
+def _agent_pool(
+    model: Any,
+    output_model: type[BaseModel] | None,
+    size: int,
+) -> asyncio.Queue | None:
+    """Build ``size`` Strands Agents so concurrent calls never share one.
+
+    A Strands ``Agent`` supports only one in-flight ``invoke_async``; reusing a
+    single agent across concurrent ``asyncio.gather`` calls raises
+    ``ConcurrencyException`` (observed in production as
+    ``knowledge_extraction_chunk_failed`` / ``evaluation_llm_chunk_failed`` with
+    *"Agent is already processing a request. Concurrent invocations are not
+    supported."*). Giving each concurrent slot its own agent retains the
+    Task-7 provider-setup reuse (bounded construction) while serializing per
+    agent. Returns ``None`` when no agent can be built so callers fall back to
+    per-call construction inside ``_llm_generate`` (``agent=None``). The pool
+    is sized to ``LLM_MAX_CONCURRENCY`` so a held ``Semaphore`` permit can
+    always acquire an agent — never a deadlock.
+    """
+    pool: asyncio.Queue = asyncio.Queue()
+    for _ in range(max(1, size)):
+        try:
+            pool.put_nowait(Agent(model=model, structured_output_model=output_model))
+        except Exception:
+            # Unresolvable model degrades to per-call construction (previous
+            # behavior), which _llm_generate handles with agent=None.
+            break
+    return pool if not pool.empty() else None
+
+
 EXPECTED_TOPICS = {
     "readme", "getting started", "installation", "api",
     "usage", "examples", "changelog", "contributing",
@@ -340,13 +370,16 @@ async def run_knowledge_construction(
         context, "knowledge_extractor",
     )
     recorder = _OutcomeRecorder(context, routing_decision)
-    # Task 7: one Agent per stage, reused for every chunk — constructing an
-    # Agent per call re-did provider setup for all 500 calls. Guarded so an
-    # unresolvable model degrades to per-call construction (previous behavior).
+    # Task 7 allocated ONE agent to reuse across chunks — but Strands permits a
+    # single in-flight invoke per Agent, so a *shared* agent breaks concurrency
+    # (ConcurrencyException → 0 facts extracted, all chunks failed). Fix: a pool
+    # of LLM_MAX_CONCURRENCY agents (one per concurrent slot), borrowed per chunk
+    # and returned afterwards. Unbuildable models degrade to per-call
+    # construction (pool=None) via _llm_generate's agent=None path.
     try:
-        agent = Agent(model=stage_model, structured_output_model=ExtractionOutput)
+        agent_pool = _agent_pool(stage_model, ExtractionOutput, LLM_MAX_CONCURRENCY)
     except Exception:
-        agent = None
+        agent_pool = None
     sem = asyncio.Semaphore(LLM_MAX_CONCURRENCY)
 
     async def _extract(chunk: dict) -> tuple[ExtractionOutput | None, str]:
@@ -358,15 +391,22 @@ async def run_knowledge_construction(
         prompt = EXTRACTION_PROMPT.format(content=content[:2000])
         try:
             async with sem:
-                extracted = await asyncio.wait_for(
-                    _llm_generate(
-                        stage_model, prompt, agent=agent,
-                        output_model=ExtractionOutput,
-                        telemetry=recorder.record,
-                    ),
-                    timeout=CHUNK_TIMEOUT_SECONDS,
-                )
-            return extracted, cid
+                agent = None
+                if agent_pool is not None:
+                    agent = await agent_pool.get()
+                try:
+                    extracted = await asyncio.wait_for(
+                        _llm_generate(
+                            stage_model, prompt, agent=agent,
+                            output_model=ExtractionOutput,
+                            telemetry=recorder.record,
+                        ),
+                        timeout=CHUNK_TIMEOUT_SECONDS,
+                    )
+                    return extracted, cid
+                finally:
+                    if agent is not None:
+                        agent_pool.put_nowait(agent)
         except Exception as exc:
             # TimeoutError subclasses Exception on 3.11+ — hung providers are
             # recorded as failed chunks instead of stalling the workflow.
@@ -545,12 +585,13 @@ async def run_initial_evaluation(
     llm_count = 0
 
     if stage_model is not None:
-        # Task 7: bounded-concurrency, timeout-guarded LLM evaluation with a
-        # single reused Agent (same pattern as the extraction stage).
+        # Task 7: bounded-concurrency, timeout-guarded LLM evaluation. Same fix
+        # as extraction: a shared Strands Agent can't run concurrently, so use a
+        # pool of LLM_MAX_CONCURRENCY agents (one per concurrent slot).
         try:
-            agent = Agent(model=stage_model, structured_output_model=EvaluationScores)
+            agent_pool = _agent_pool(stage_model, EvaluationScores, LLM_MAX_CONCURRENCY)
         except Exception:
-            agent = None
+            agent_pool = None
         sem = asyncio.Semaphore(LLM_MAX_CONCURRENCY)
 
         async def _evaluate(doc: dict) -> EvaluationScores | None:
@@ -563,15 +604,22 @@ async def run_initial_evaluation(
             )
             try:
                 async with sem:
-                    scores = await asyncio.wait_for(
-                        _llm_generate(
-                            stage_model, prompt, agent=agent,
-                            output_model=EvaluationScores,
-                            telemetry=recorder.record,
-                        ),
-                        timeout=CHUNK_TIMEOUT_SECONDS,
-                    )
-                return scores
+                    agent = None
+                    if agent_pool is not None:
+                        agent = await agent_pool.get()
+                    try:
+                        scores = await asyncio.wait_for(
+                            _llm_generate(
+                                stage_model, prompt, agent=agent,
+                                output_model=EvaluationScores,
+                                telemetry=recorder.record,
+                            ),
+                            timeout=CHUNK_TIMEOUT_SECONDS,
+                        )
+                        return scores
+                    finally:
+                        if agent is not None:
+                            agent_pool.put_nowait(agent)
             except Exception as exc:
                 logger.warning("evaluation_llm_chunk_failed doc=%s err=%s", title, exc)
                 return None

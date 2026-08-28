@@ -43,6 +43,7 @@ class RedisEventBus:
         return self._active_subs.get(run_id, 0)
 
     async def publish(self, envelope: StreamEnvelope) -> bool:
+        logger.debug("redis_bus_publish", run_id=envelope.run_id, type=envelope.type, seq=envelope.seq)
         try:
             await self._client.publish(channel_for(envelope.run_id), envelope.to_json())
             return True
@@ -56,9 +57,11 @@ class RedisEventBus:
             return False
 
     async def subscribe(self, run_id: str) -> AsyncIterator[StreamEnvelope]:
+        logger.debug("redis_bus_subscribe_start", run_id=run_id, channel=channel_for(run_id))
         pubsub = self._client.pubsub()
         await pubsub.subscribe(channel_for(run_id))
         self._active_subs[run_id] += 1
+        logger.debug("redis_bus_subscribed", run_id=run_id, active_subs=self._active_subs[run_id])
         try:
             async for message in pubsub.listen():
                 if message is None or message.get("type") != "message":
@@ -66,12 +69,15 @@ class RedisEventBus:
                 try:
                     data = message.get("data")
                     raw = data.decode() if isinstance(data, bytes | bytearray) else str(data)
-                    yield StreamEnvelope.from_json(raw)
+                    envelope = StreamEnvelope.from_json(raw)
+                    logger.debug("redis_bus_message", run_id=run_id, type=envelope.type, seq=envelope.seq)
+                    yield envelope
                 except Exception:
                     logger.warning("event_bus_bad_frame run_id=%s", run_id, exc_info=True)
         finally:
             self._active_subs[run_id] = max(0, self._active_subs[run_id] - 1)
             await self._close_pubsub(pubsub)
+            logger.debug("redis_bus_unsubscribe", run_id=run_id, active_subs=self._active_subs[run_id])
 
     async def _close_pubsub(self, pubsub: Any) -> None:
         try:

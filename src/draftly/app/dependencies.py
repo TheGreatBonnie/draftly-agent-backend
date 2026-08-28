@@ -39,6 +39,7 @@ from draftly.persistence.repositories.reviewers import ReviewersRepository
 from draftly.persistence.repositories.reviews import ReviewsRepository
 from draftly.persistence.repositories.routing import PerformanceRepository, RoutingRepository
 from draftly.persistence.repositories.support import SupportRepository
+from draftly.persistence.repositories.workflow_events import WorkflowEventRepositoryImpl
 from draftly.persistence.stores.routing import DatabasePerformanceStore, DatabaseRoutingStore
 
 logger = structlog.get_logger(__name__)
@@ -238,6 +239,7 @@ class RepositoryDependencies:
     performance: PerformanceRepository
     onboarding: OnboardingRepository
     repository_config: RepositoryConfigRepository
+    workflow_events: WorkflowEventRepositoryImpl
 
 
 def build_repositories(
@@ -308,6 +310,8 @@ def build_repositories(
 
     repository_config = RepositoryConfigRepository(client=database)
 
+    workflow_events = WorkflowEventRepositoryImpl()
+
     return RepositoryDependencies(
         delivery=delivery,
         events=events,
@@ -323,6 +327,7 @@ def build_repositories(
         performance=performance,
         onboarding=onboarding,
         repository_config=repository_config,
+        workflow_events=workflow_events,
     )
 
 
