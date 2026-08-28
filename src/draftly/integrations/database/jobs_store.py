@@ -15,6 +15,7 @@ class DatabaseJobsStore:
         self,
         *,
         job_id: Any = None,
+        run_id: str | None = None,
         org_id: str,
         name: str,
         job_type: str,
@@ -30,6 +31,7 @@ class DatabaseJobsStore:
             """
             INSERT INTO jobs (
                 id,
+                run_id,
                 org_id,
                 name,
                 job_type,
@@ -48,6 +50,7 @@ class DatabaseJobsStore:
             )
             RETURNING
                 id,
+                run_id,
                 org_id,
                 name,
                 job_type,
@@ -56,6 +59,7 @@ class DatabaseJobsStore:
                 configuration
             """,
             job_id,
+            run_id,
             org_id,
             name,
             job_type,
@@ -76,6 +80,7 @@ class DatabaseJobsStore:
             """
             SELECT
                 id,
+                run_id,
                 org_id,
                 name,
                 job_type,
@@ -85,7 +90,7 @@ class DatabaseJobsStore:
                 last_run_at,
                 next_run_at
             FROM jobs
-            WHERE id = $1
+            WHERE run_id = $1
             """,
             job_id,
         )
@@ -105,9 +110,10 @@ class DatabaseJobsStore:
             SET
                 status = $1,
                 last_run_at = now()
-            WHERE id = $2
+            WHERE run_id = $2
             RETURNING
                 id,
+                run_id,
                 org_id,
                 name,
                 job_type,
@@ -132,6 +138,7 @@ class DatabaseJobsStore:
             """
             SELECT
                 id,
+                run_id,
                 org_id,
                 name,
                 job_type,
@@ -154,12 +161,13 @@ class DatabaseJobsStore:
 
         return {
             "id": str(row[0]),
-            "org_id": str(row[1]),
-            "name": row[2],
-            "job_type": row[3],
-            "schedule": row[4],
-            "status": row[5],
-            "configuration": row[6],
-            "last_run_at": row[7],
-            "next_run_at": row[8],
+            "run_id": str(row[1]),
+            "org_id": str(row[2]),
+            "name": row[3],
+            "job_type": row[4],
+            "schedule": row[5],
+            "status": row[6],
+            "configuration": row[7],
+            "last_run_at": row[8],
+            "next_run_at": row[9],
         }

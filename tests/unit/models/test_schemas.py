@@ -23,6 +23,8 @@ def test_role_map_covers_all_agent_roles():
         "github_delivery", "memory_curator",
         # Every-agent-a-role wiring (graph builders resolve these too)
         "classifier", "context",
+        # Onboarding init stages (Task 4)
+        "knowledge_extractor", "initial_evaluator", "recommender",
     }
     assert set(ROLE_TO_TASK_TYPE) == expected_roles
     # Sensible mappings per reference §34 / existing role policies
@@ -33,6 +35,9 @@ def test_role_map_covers_all_agent_roles():
     assert ROLE_TO_TASK_TYPE["memory_curator"] is TaskType.FAST
     assert ROLE_TO_TASK_TYPE["classifier"] is TaskType.FAST
     assert ROLE_TO_TASK_TYPE["context"] is TaskType.RESEARCH
+    assert ROLE_TO_TASK_TYPE["knowledge_extractor"] is TaskType.DOCUMENTATION_GENERATION
+    assert ROLE_TO_TASK_TYPE["initial_evaluator"] is TaskType.EVALUATION
+    assert ROLE_TO_TASK_TYPE["recommender"] is TaskType.DOCUMENTATION_REVIEW
 
 
 def test_routing_request_is_frozen():

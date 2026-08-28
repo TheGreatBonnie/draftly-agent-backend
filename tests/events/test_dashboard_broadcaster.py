@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 
 import pytest
 from fakeredis.aioredis import FakeRedis

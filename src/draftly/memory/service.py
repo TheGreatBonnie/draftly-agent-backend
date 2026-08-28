@@ -132,17 +132,20 @@ class MemoryService:
         namespace: str,
         query: str,
         limit: int = 10,
+        org_id: str | None = None,
     ) -> list[dict[str, Any]]:
         return await self.retrieval.retrieve(
             namespace=namespace,
             query=query,
             limit=limit,
+            org_id=org_id,
         )
 
     async def recall_knowledge(
         self,
         query: str,
         limit: int = 5,
+        org_id: str | None = None,
     ) -> list[dict[str, Any]]:
         """Grounding context: curated knowledge + validated solutions."""
         combined: list[dict[str, Any]] = []
@@ -151,6 +154,7 @@ class MemoryService:
                 namespace=namespace,
                 query=query,
                 limit=limit,
+                org_id=org_id,
             )
             for record in found:
                 record["namespace"] = namespace
@@ -168,6 +172,7 @@ class MemoryService:
         query: str,
         merge_target_id: str | None = None,
         min_similarity: float = 0.95,
+        org_id: str | None = None,
     ) -> dict[str, Any] | None:
         """Merge near-duplicate memories into one canonical record.
 
@@ -180,6 +185,7 @@ class MemoryService:
             query=query,
             limit=5,
             min_similarity=min_similarity,
+            org_id=org_id,
         )
         target_id = merge_target_id or (duplicates[0]["id"] if duplicates else None)
         if not target_id:

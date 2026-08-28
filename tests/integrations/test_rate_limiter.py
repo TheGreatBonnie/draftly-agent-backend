@@ -1,5 +1,5 @@
+
 import pytest
-import time
 from fakeredis import aioredis
 
 

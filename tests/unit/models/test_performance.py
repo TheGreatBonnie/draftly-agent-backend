@@ -1,6 +1,8 @@
 # tests/unit/models/test_performance.py
 """Tests for task-scoped EMA stats and model health registry."""
 
+import pytest
+
 from draftly.models.performance import (
     EMAStatsStore,
     ModelHealthRegistry,
@@ -85,3 +87,43 @@ def test_model_health_cooldown():
 def test_get_model_p95_latency_requires_task_scope():
     store = EMAStatsStore()
     assert get_model_p95_latency("support", "unknown", store) is None
+
+
+class _FakePerformanceStore:
+    """In-memory store capturing upserts for the repo<->store bridge."""
+
+    def __init__(self) -> None:
+        self.rows: list[dict] = []
+
+    async def upsert_performance(self, row: dict) -> None:
+        self.rows.append(row)
+
+    async def get_all(self) -> list[dict]:
+        return list(self.rows)
+
+
+@pytest.mark.asyncio
+async def test_record_outcome_flush_false_defers_upsert():
+    from draftly.persistence.repositories.routing import PerformanceRepository
+
+    store = _FakePerformanceStore()
+    repo = PerformanceRepository(store=store)
+    repo.bind_stats_store(EMAStatsStore())
+
+    # Default flush=True preserves the legacy per-call per-record upsert.
+    await repo.record_outcome(
+        task_type="fast", model_name="m", success=True, latency_ms=12.0,
+    )
+    assert len(store.rows) == 1
+
+    # flush=False → live EMA cache only; no durable upsert yet.
+    await repo.record_outcome(
+        task_type="fast", model_name="m", success=True, latency_ms=20.0,
+        flush=False,
+    )
+    assert len(store.rows) == 1
+
+    await repo.flush_entry("fast", "m")
+    assert len(store.rows) == 2
+    assert store.rows[1]["sample_count"] == 2
+    assert store.rows[1]["success_rate"] == 1.0

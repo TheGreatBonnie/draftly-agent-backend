@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
-
 
 def test_create_application_creates_redis_client():
     from draftly.app.config import Settings
@@ -16,14 +14,14 @@ def test_create_application_creates_redis_client():
         redis_url="redis://localhost:6379/0",
     )
     with (
-        patch("draftly.integrations.redis.RedisClient") as MockClient,
+        patch("draftly.integrations.redis.RedisClient") as mock_client_cls,
         patch("draftly.app.lifecycle.build_dependencies") as mock_build_deps,
     ):
-        MockClient.return_value = MagicMock()
+        mock_client_cls.return_value = MagicMock()
         mock_build_deps.return_value = MagicMock()
         app = create_application(settings=settings)
         assert app.redis_client is not None
-        MockClient.assert_called_once_with(url="redis://localhost:6379/0")
+        mock_client_cls.assert_called_once_with(url="redis://localhost:6379/0")
 
 
 def test_draftly_application_has_redis_client_field():
@@ -94,11 +92,11 @@ def test_dependency_injection_get_ticket_store():
     mock_client.native = MagicMock()
     state.draftly.redis_client = mock_client
 
-    with patch("draftly.integrations.ticket_store.RedisTicketStore") as MockStore:
-        MockStore.return_value = "fake-store"
+    with patch("draftly.integrations.ticket_store.RedisTicketStore") as mock_store_cls:
+        mock_store_cls.return_value = "fake-store"
         result = get_ticket_store(state)
         assert result == "fake-store"
-        MockStore.assert_called_once_with(mock_client.native)
+        mock_store_cls.assert_called_once_with(mock_client.native)
 
 
 def test_dependency_injection_get_ticket_store_none_when_no_redis():
@@ -117,11 +115,11 @@ def test_dependency_injection_get_ema_stats_store():
     mock_client.native = MagicMock()
     state.draftly.redis_client = mock_client
 
-    with patch("draftly.models.redis_performance.RedisEMAStatsStore") as MockStore:
-        MockStore.return_value = "fake-ema-store"
+    with patch("draftly.models.redis_performance.RedisEMAStatsStore") as mock_store_cls:
+        mock_store_cls.return_value = "fake-ema-store"
         result = get_ema_stats_store(state)
         assert result == "fake-ema-store"
-        MockStore.assert_called_once_with(mock_client.native)
+        mock_store_cls.assert_called_once_with(mock_client.native)
 
 
 def test_dependency_injection_get_ema_stats_store_none_when_no_redis():
@@ -140,11 +138,11 @@ def test_dependency_injection_get_provider_health():
     mock_client.native = MagicMock()
     state.draftly.redis_client = mock_client
 
-    with patch("draftly.models.redis_health.RedisProviderHealth") as MockHealth:
-        MockHealth.return_value = "fake-health"
+    with patch("draftly.models.redis_health.RedisProviderHealth") as mock_health_cls:
+        mock_health_cls.return_value = "fake-health"
         result = get_provider_health(state)
         assert result == "fake-health"
-        MockHealth.assert_called_once_with(mock_client.native)
+        mock_health_cls.assert_called_once_with(mock_client.native)
 
 
 def test_dependency_injection_get_provider_health_none_when_no_redis():
@@ -178,14 +176,14 @@ def test_build_workflows_event_bus_uses_shared_redis_client():
 
     with (
         patch.dict("os.environ", {"DATABASE_URL": "sqlite:///test.db"}),
-        patch("draftly.events.redis_bus.RedisEventBus") as MockBus,
+        patch("draftly.events.redis_bus.RedisEventBus") as mock_bus_cls,
     ):
-        MockBus.return_value = MagicMock()
+        mock_bus_cls.return_value = MagicMock()
         build_workflows(
             config=mock_config,
             redis_client=mock_redis,
         )
-        MockBus.assert_called_once_with(
+        mock_bus_cls.assert_called_once_with(
             redis_client=mock_redis.native,
             url=None,
         )

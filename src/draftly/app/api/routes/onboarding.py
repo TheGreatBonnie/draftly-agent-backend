@@ -9,7 +9,9 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
 from draftly.app.api.auth import get_verified_token
-from draftly.workflows.onboarding.initialize import STAGES, STAGE_LABELS
+from draftly.app.composition.rq_jobs import enqueue_job
+from draftly.app.services.init_lock import release_init_lock, try_acquire_init_lock
+from draftly.workflows.onboarding.initialize import STAGE_LABELS, STAGES
 
 router = APIRouter(
     prefix="/onboarding",
@@ -351,6 +353,21 @@ async def configure_preferences(
     return {"state": "PREFERENCES_CONFIGURED"}
 
 
+def _redis(request: Request):
+    """Redis client or None. Degrades gracefully."""
+    redis_client = getattr(request.app.state.draftly, "redis_client", None)
+    return redis_client.native if redis_client is not None else None
+
+
+async def _try_acquire_init_lock(request: Request, org_id: str, run_id: str) -> bool:
+    """True if this caller owns the lock (idempotent per run_id)."""
+    return await try_acquire_init_lock(_redis(request), org_id, run_id)
+
+
+async def _release_init_lock(request: Request, org_id: str, run_id: str) -> None:
+    """Guarded release shared with the RQ worker via app/services/init_lock."""
+    await release_init_lock(_redis(request), org_id, run_id)
+
 def _init_worker_guard(request: Request):
     """Worker + registered-task check; must run BEFORE any state mutation."""
     worker = _worker(request)
@@ -368,6 +385,11 @@ async def _execute_initialization(
     the workflow starts emitting events. Running the task in the background
     ensures the SSE connection is ready to receive stage_change events in
     real time.
+
+    When RQ is enabled (rq_queues + task_handlers on app.state.draftly and
+    settings.rq_enabled), the task is enqueued onto the draftly:default
+    queue and the in-process worker is skipped. The RQ worker process is
+    authoritative for execution and lock release.
     """
     import asyncio
     from uuid import uuid4
@@ -375,10 +397,71 @@ async def _execute_initialization(
     from draftly.app.api.routes.workflows import _tickets
 
     run_id = f"onboarding-init-{org_id}-{uuid4().hex[:8]}"
+
+    if not await _try_acquire_init_lock(request, org_id, run_id):
+        current = await repos.onboarding.get(org_id)
+        return {
+            "state": "INITIALIZING",
+            "run_id": (current or {}).get("selected_repository", {}).get("init_run_id"),
+            "resumed": True,
+        }
+
     ticket = await _tickets(request).issue(run_id, org_id=org_id)
 
-    await repos.onboarding.upsert(org_id, state="INITIALIZING", failure=None)
+    await repos.onboarding.upsert(
+        org_id,
+        state="INITIALIZING",
+        failure=None,
+        selected_repository={
+            **(selected_repository or {}),
+            "init_run_id": run_id,
+        },
+    )
 
+    # Task 9: dispatch to RQ when enabled, otherwise fall back to the
+    # in-process worker (single-process / unit-test mode). The RQ branch
+    # inserts a jobs row so /stream-ticket can resolve run_id → job_id.
+    app_state = request.app.state.draftly
+    rq_queues = getattr(app_state, "rq_queues", None)
+    task_handlers = getattr(app_state, "task_handlers", None)
+    settings = getattr(app_state, "settings", None)
+    rq_enabled = (
+        bool(getattr(settings, "rq_enabled", False))
+        if settings is not None
+        else False
+    )
+
+    if rq_enabled and rq_queues is not None and task_handlers is not None:
+        job = enqueue_job(
+            queues=rq_queues,
+            task_handlers=task_handlers,
+            task_name="onboarding.initialize",
+            org_id=org_id,
+            selected_repository=selected_repository,
+            run_id=run_id,
+        )
+        # Persist a jobs row keyed by run_id so the stream-ticket handler
+        # can authorize the SSE connection (workflows.py:59-65). The
+        # ticket above is still valid for the same (run_id, org_id) pair.
+        try:
+            from draftly.integrations.database.jobs_store import DatabaseJobsStore
+            store = DatabaseJobsStore()
+            await store.insert(
+                run_id=run_id,
+                org_id=org_id,
+                name="onboarding.initialize",
+                job_type="onboarding",
+                schedule="manual",
+                configuration={"rq_job_id": getattr(job, "id", None)},
+            )
+        except Exception:
+            import structlog
+            structlog.get_logger(__name__).warning(
+                "onboarding_jobs_insert_failed org=%s", org_id
+            )
+        return {"state": "INITIALIZING", "run_id": run_id, "ticket": ticket}
+
+    # In-process fallback (single-process / unit tests / RQ not yet enabled).
     async def _run_background() -> None:
         from draftly.workflows.state import WorkflowState, WorkflowStatus
 
@@ -407,6 +490,8 @@ async def _execute_initialization(
                 state="FAILED",
                 failure={"step": "initialization", "detail": str(exc)[:300]},
             )
+        finally:
+            await _release_init_lock(request, org_id, run_id)
 
     asyncio.create_task(_run_background())
 
@@ -452,6 +537,7 @@ async def get_initialize_status(
     return {
         "state": current.get("state"),
         "stage": _selected(current).get("init_stage"),
+        "run_id": _selected(current).get("init_run_id"),
         "failure": failure,
         "stage_config": current.get("stage_config"),
     }

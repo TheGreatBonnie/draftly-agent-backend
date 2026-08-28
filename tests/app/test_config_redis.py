@@ -14,6 +14,7 @@ def test_redis_settings_defaults():
     assert s.event_bus_backend == "dual"
     assert s.rate_limiting_enabled is True
     assert s.api_cache_enabled is True
+    assert s.rq_enabled is False
 
 
 def test_redis_settings_can_be_overridden():
@@ -28,6 +29,7 @@ def test_redis_settings_can_be_overridden():
         event_bus_backend="pubsub",
         rate_limiting_enabled=False,
         api_cache_enabled=False,
+        rq_enabled=True,
     )
     assert s.semantic_cache_enabled is False
     assert s.semantic_cache_similarity_threshold == 0.80
@@ -35,3 +37,4 @@ def test_redis_settings_can_be_overridden():
     assert s.event_bus_backend == "pubsub"
     assert s.rate_limiting_enabled is False
     assert s.api_cache_enabled is False
+    assert s.rq_enabled is True

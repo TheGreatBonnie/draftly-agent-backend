@@ -19,7 +19,12 @@ def _documents(rows):
 async def test_audit_checks_broken_links():
     context = MagicMock()
     context.repositories.documents = _documents([
-        {"id": "doc-1", "path": "guide.md", "content": "# Guide\n\nSee [link](missing-target.md)", "updated_at": None},
+        {
+            "id": "doc-1",
+            "path": "guide.md",
+            "content": "# Guide\n\nSee [link](missing-target.md)",
+            "updated_at": None,
+        },
         {"id": "doc-2", "path": "other.md", "content": "# Other", "updated_at": None},
     ])
 
@@ -36,7 +41,12 @@ async def test_audit_checks_broken_links():
 async def test_audit_detects_orphaned_documents():
     context = MagicMock()
     context.repositories.documents = _documents([
-        {"id": "doc-1", "path": "index.md", "content": "# Index\n\n[Guide](guide.md)", "updated_at": None},
+        {
+            "id": "doc-1",
+            "path": "index.md",
+            "content": "# Index\n\n[Guide](guide.md)",
+            "updated_at": None,
+        },
         {"id": "doc-2", "path": "guide.md", "content": "# Guide", "updated_at": None},
         {"id": "doc-3", "path": "orphan.md", "content": "# Orphan", "updated_at": None},
     ])
@@ -75,4 +85,8 @@ async def test_audit_flags_duplicate_headings_within_a_document():
 
     state = await run_documentation_audit(context, org_id="test-org")
 
-    assert {"document": "dup.md", "heading": "## Setup", "count": 2} in state.result["duplicate_headings"]
+    assert {
+        "document": "dup.md",
+        "heading": "## Setup",
+        "count": 2,
+    } in state.result["duplicate_headings"]

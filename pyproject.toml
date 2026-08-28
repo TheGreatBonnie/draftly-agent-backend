@@ -10,6 +10,7 @@ dependencies = [
     # Web framework
     "fastapi>=0.115.0",
     "uvicorn>=0.30.0",
+    "sse-starlette>=2.0.0",
     # HTTP clients
     "httpx>=0.27.0",
     "trafilatura>=1.12",
@@ -49,6 +50,7 @@ dev = [
     "ruff>=0.6.0",
     "mypy>=1.11.0",
     "fakeredis>=2.23.0",
+    "sse-starlette>=2.0.0",
 ]
 
 [build-system]
@@ -95,4 +97,5 @@ dev = [
     "mypy>=1.11.0",
     "ty>=0.0.73",
     "fakeredis>=2.23.0",
+    "sse-starlette>=2.0.0",
 ]

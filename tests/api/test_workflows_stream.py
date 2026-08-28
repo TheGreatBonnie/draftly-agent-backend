@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
-import threading
-import time
+from collections.abc import AsyncIterator
+from dataclasses import dataclass
 from typing import Any
+from urllib.parse import urlencode
 
 import pytest
 from fakeredis.aioredis import FakeRedis
@@ -60,6 +62,85 @@ async def issue(app: FastAPI, run_id: str = "evt-1") -> str:
     return await app.state.redis_tickets.issue(run_id, org_id="org-1")
 
 
+def http_scope(
+    route: str, *, query: dict[str, str] | None = None, headers: dict[str, str] | None = None
+) -> dict[str, Any]:
+    raw_headers = [
+        (k.lower().encode(), v.encode()) for k, v in (headers or {}).items()
+    ]
+    return {
+        "type": "http",
+        "asgi": {"version": "3.0"},
+        "http_version": "1.1",
+        "method": "GET",
+        "scheme": "http",
+        "path": route,
+        "raw_path": route.encode(),
+        "query_string": urlencode(query or {}).encode(),
+        "root_path": "",
+        "headers": raw_headers,
+        "client": ("testclient", 50000),
+        "server": ("testserver", 80),
+        "state": {},
+    }
+
+
+@dataclass
+class ASGISession:
+    """Drives an SSE response in-process on the caller's event loop.
+
+    Unlike TestClient, this delivers body chunks incrementally as the server
+    produces them (TestClient buffers the full body until the response
+    completes, which deadlocks always-open SSE streams).
+    """
+
+    app: FastAPI
+    scope: dict[str, Any]
+    status_code: int | None = None
+    headers: list[tuple[bytes, bytes]] = None  # type: ignore[assignment]
+
+    def __post_init__(self) -> None:
+        from asyncio import Queue
+
+        self.sent = Queue()
+        self.received = Queue()
+
+    async def send(self, message: dict[str, Any]) -> None:
+        if message["type"] == "http.response.start":
+            self.status_code = message["status"]
+            self.headers = message["headers"]
+        await self.sent.put(message)
+
+    async def receive(self) -> dict[str, Any]:
+        return await self.received.get()
+
+    async def run(self) -> None:
+        await self.app(self.scope, self.receive, self.send)
+
+    def body_chunks(self) -> AsyncIterator[bytes]:
+        async def _gen():
+            while True:
+                message = await self.sent.get()
+                if message.get("type") != "http.response.body":
+                    continue
+                yield message.get("body", b"")
+                if not message.get("more_body", False):
+                    return
+
+        return _gen()
+
+    def frames(self) -> AsyncIterator[str]:
+        async def _gen():
+            leftover = b""
+            async for chunk in self.body_chunks():
+                leftover += chunk
+                while b"\r\n\r\n" in leftover:
+                    head, _, leftover = leftover.partition(b"\r\n\r\n")
+                    yield head.decode()
+
+        return _gen()
+
+
 class TestTickets:
     @pytest.mark.asyncio
     async def test_tickets_are_single_use(self) -> None:
@@ -100,16 +181,19 @@ class TestTicketRoute:
 
 
 class TestEventStream:
-    def test_rejects_invalid_ticket(self) -> None:
+    async def test_rejects_invalid_ticket(self) -> None:
         app = make_app(bus=RedisEventBus(redis_client=FakeRedis()))
-        client = TestClient(app)
-        resp = client.get("/workflows/evt-1/events", params={"ticket": "bogus"})
-        assert resp.status_code == 403
+        session = ASGISession(
+            app,
+            http_scope("/workflows/evt-1/events", query={"ticket": "bogus"}),
+        )
+        await asyncio.wait_for(session.run(), timeout=5)
+        assert session.status_code == 403
 
     async def test_stream_frames_and_terminal(self) -> None:
         bus = RedisEventBus(redis_client=FakeRedis())
         app = make_app(bus=bus)
-        client = TestClient(app)
+        ticket = await issue(app)
 
         start = StreamEnvelope(type="node_start", run_id="evt-1", surface="documentation", seq=1)
         done = StreamEnvelope(
@@ -117,50 +201,56 @@ class TestEventStream:
         )
         done.payload = {"status": "COMPLETED", "interrupts": []}
 
-        def publish() -> None:
-            time.sleep(0.3)
-            import asyncio
+        async def publish() -> None:
+            await asyncio.sleep(0.3)
+            await bus.publish(start)
+            await bus.publish(done)
 
-            loop = asyncio.new_event_loop()
-            try:
-                loop.run_until_complete(bus.publish(start))
-                loop.run_until_complete(bus.publish(done))
-            finally:
-                loop.close()
+        pub_task = asyncio.create_task(publish())
+        session = ASGISession(
+            app, http_scope("/workflows/evt-1/events", query={"ticket": ticket})
+        )
+        run_task = asyncio.create_task(session.run())
 
-        thread = threading.Thread(target=publish, daemon=True)
-        thread.start()
+        frames = [f async for f in session.frames()]
+        await asyncio.wait_for(run_task, timeout=5)
+        await pub_task
 
-        ticket = await issue(app)
-        with client.stream(
-            "GET", "/workflows/evt-1/events", params={"ticket": ticket}
-        ) as resp:
-            assert resp.status_code == 200
-            body = b"".join(resp.iter_bytes()).decode()
-
-        thread.join(timeout=5)
-        assert "event: node_start" in body
-        assert '"workflow_result"' in body.replace("'", '"')
+        assert session.status_code == 200
+        assert "event: node_start" in frames[0]
+        assert '"workflow_result"' in frames[-1].replace("'", '"')
         # ticket consumed exactly once
         assert await app.state.redis_tickets.consume(ticket) is None
 
     async def test_heartbeat_when_idle(self) -> None:
+        """Idle stream still emits keepalive ``: ping`` frames in real time."""
         bus = RedisEventBus(redis_client=FakeRedis())
         app = make_app(bus=bus)
         app.state.draftly.heartbeat = 0.05
-        client = TestClient(app)
         ticket = await issue(app)
-        with client.stream(
-            "GET",
-            "/workflows/evt-1/events",
-            params={"ticket": ticket, "heartbeat": "0.05"},
-        ) as resp:
-            assert resp.status_code == 200
-            first_chunk = next(resp.iter_raw())
-        assert first_chunk.startswith(b": ping")
+
+        session = ASGISession(
+            app,
+            http_scope(
+                "/workflows/evt-1/events",
+                query={"ticket": ticket, "heartbeat": "0.05"},
+            ),
+        )
+        run_task = asyncio.create_task(session.run())
+        frames = session.frames()
+
+        # No events are ever published; keepalive pings must still arrive.
+        first = await asyncio.wait_for(anext(frames), timeout=5)
+        second = await asyncio.wait_for(anext(frames), timeout=5)
+        assert first.startswith(": ping")
+        assert second.startswith(": ping")
+
+        done = StreamEnvelope(type="workflow_result", run_id="evt-1", surface="", seq=9)
+        done.payload = {"status": "COMPLETED", "interrupts": []}
+        await bus.publish(done)
+        await asyncio.wait_for(run_task, timeout=5)
 
     async def test_replays_after_last_event_id(self) -> None:
-
         bus = RedisEventBus(redis_client=FakeRedis())
 
         class FakeEventsRepo:
@@ -181,27 +271,102 @@ class TestEventStream:
         # attach events repo alongside jobs on repositories namespace
         repos = app.state.draftly.dependencies.repositories
         repos.workflow_events = FakeEventsRepo()
-        client = TestClient(app)
         ticket = await issue(app)
 
-        with client.stream(
-            "GET",
-            "/workflows/evt-1/events",
-            params={"ticket": ticket},
-            headers={"last-event-id": "1"},
-        ) as resp:
-            assert resp.status_code == 200
-            first_frame = next(resp.iter_raw()).decode()
+        session = ASGISession(
+            app,
+            http_scope(
+                "/workflows/evt-1/events",
+                query={"ticket": ticket},
+                headers={"last-event-id": "1"},
+            ),
+        )
+        run_task = asyncio.create_task(session.run())
+        frames = session.frames()
 
-        assert first_frame.startswith("id: 2")
-        assert "event: node_stop" in first_frame
+        # The replayed backlog is served first, before any live event.
+        first = await asyncio.wait_for(anext(frames), timeout=5)
+        assert first.startswith("id: 2")
+        assert "event: node_stop" in first
+
+        done = StreamEnvelope(type="workflow_result", run_id="evt-1", surface="", seq=3)
+        done.payload = {"status": "COMPLETED", "interrupts": []}
+        await bus.publish(done)
+        await asyncio.wait_for(run_task, timeout=5)
 
     async def test_bus_unavailable_503(self) -> None:
         app = make_app(bus=None)
-        client = TestClient(app)
+        session = ASGISession(
+            app,
+            http_scope("/workflows/evt-1/events", query={"ticket": await issue(app)}),
+        )
+        run_task = asyncio.create_task(session.run())
+        await asyncio.wait_for(run_task, timeout=5)
+        assert session.status_code == 503
+
+    async def test_dedupes_events_on_replay(self) -> None:
+        """Ensure identical seqs from replay + live are deduplicated."""
+        bus = RedisEventBus(redis_client=FakeRedis())
+
+        class FakeEventsRepo:
+            async def list_after(self, run_id: str, *, seq: int, limit: int = 500):
+                return [
+                    {
+                        "run_id": run_id,
+                        "seq": 1,
+                        "type": "node_start",
+                        "ts": "2026-08-23T00:00:00Z",
+                        "payload": {},
+                    },
+                    {
+                        "run_id": run_id,
+                        "seq": 2,
+                        "type": "node_stop",
+                        "ts": "2026-08-23T00:00:01Z",
+                        "payload": {},
+                    },
+                    {
+                        "run_id": run_id,
+                        "seq": 3,
+                        "type": "text_delta",
+                        "ts": "2026-08-23T00:00:02Z",
+                        "payload": {},
+                    },
+                ]
+
+        app = make_app(bus=bus)
+        app.state.draftly.dependencies.repositories.workflow_events = FakeEventsRepo()
         ticket = await issue(app)
-        resp = client.get("/workflows/evt-1/events", params={"ticket": ticket})
-        assert resp.status_code == 503
+
+        start1 = StreamEnvelope(type="node_start", run_id="evt-1", surface="", seq=1)
+        stop2 = StreamEnvelope(type="node_stop", run_id="evt-1", surface="", seq=2)
+        text3 = StreamEnvelope(type="text_delta", run_id="evt-1", surface="", seq=3)
+        text4 = StreamEnvelope(type="text_delta", run_id="evt-1", surface="", seq=4)
+        done = StreamEnvelope(type="workflow_result", run_id="evt-1", surface="", seq=5)
+
+        async def publish() -> None:
+            await asyncio.sleep(0.3)
+            await bus.publish(start1)
+            await bus.publish(stop2)
+            await bus.publish(text3)
+            await bus.publish(text4)
+            await bus.publish(done)
+
+        pub_task = asyncio.create_task(publish())
+        session = ASGISession(
+            app,
+            http_scope("/workflows/evt-1/events", query={"ticket": ticket}),
+        )
+        run_task = asyncio.create_task(session.run())
+
+        frames = [f async for f in session.frames()]
+        await asyncio.wait_for(run_task, timeout=5)
+        await pub_task
+
+        assert session.status_code == 200
+        for i in range(1, 6):
+            # each replay+live seq appears exactly once after dedupe
+            assert sum(f"id: {i}" in f for f in frames) == 1
 
 
 @pytest.fixture(autouse=True)

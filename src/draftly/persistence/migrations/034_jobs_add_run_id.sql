@@ -1,0 +1,3 @@
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS run_id TEXT UNIQUE;
+
+CREATE INDEX IF NOT EXISTS idx_jobs_run_id ON jobs (run_id);

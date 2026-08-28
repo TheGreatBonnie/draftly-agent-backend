@@ -95,6 +95,7 @@ class DraftlyApplication:
 
             # Build agents and workflows after checkpointer is ready
             await self._build_agents_and_workflows()
+            assert self.workflows is not None
 
             # Build task runner and RQ queues for the API server
             task_runner = build_task_runner(
@@ -264,17 +265,18 @@ class DraftlyApplication:
             return None
 
     def _resolve_runtime_model(self) -> Any:
-        """Resolve one concrete strands Model for graph agents.
+        """Build the per-role adaptive resolver for graph agents.
 
-        Returns None in offline mode (no provider keys): graphs then run
-        only with injected/deterministic models (tests, CI).
+        Wraps the configured ModelRouter in a RoleAwareModelResolver so every
+        workflow consumer resolves its role's routed model. Offline mode is
+        no longer a distinct None path: ``for_role`` degrades to None /
+        ``(None, None)`` when no candidate exists. resolve_concrete_model
+        stays for Strands Evals LLM judges, which accept only concrete models.
         """
         try:
-            from draftly.integrations.strands.models import (
-                resolve_concrete_model,
-            )
+            from draftly.integrations.strands.models import RoleAwareModelResolver
 
-            return resolve_concrete_model(self.dependencies.models.router)
+            return RoleAwareModelResolver(self.dependencies.models.router)
         except Exception as exc:
             logger.warning("runtime_model_unavailable: %s", exc)
             return None

@@ -75,6 +75,19 @@ async def sync_documentation(
 
     job_id = str(uuid4())
 
+    await jobs.insert(
+        run_id=job_id,
+        org_id=org_id,
+        name="documentation.sync_repository",
+        job_type="documentation",
+        schedule="manual",
+        configuration={
+            "repository": body.repository_full_name,
+            "include": body.include,
+            "exclude": body.exclude,
+        },
+    )
+
     async def _run_and_mark() -> None:
         try:
             result = await worker.run_task(

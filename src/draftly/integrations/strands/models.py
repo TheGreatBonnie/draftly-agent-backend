@@ -10,7 +10,11 @@ from __future__ import annotations
 
 from typing import Any
 
+import structlog
+
 from draftly.models.factory import build_model_router
+
+logger = structlog.get_logger(__name__)
 
 
 def build_model() -> Any:
@@ -56,8 +60,27 @@ class RoleAwareModelResolver:
         prompt_text: str | None = None,
         context_tokens: int | None = None,
     ) -> Any:
+        model, _decision = self.for_role_with_decision(
+            role, prompt_text=prompt_text, context_tokens=context_tokens
+        )
+        return model
+
+    def for_role_with_decision(
+        self,
+        role: str,
+        *,
+        prompt_text: str | None = None,
+        context_tokens: int | None = None,
+    ) -> tuple[Any, Any | None]:
+        """Per-role concrete model plus its RoutingDecision.
+
+        Returns ``(None, None)`` when the router has no usable candidate
+        (offline/unconfigured) instead of raising, so consumers degrade to
+        deterministic modes — parity with the legacy "no runtime model" case.
+        """
         from dataclasses import replace
 
+        from draftly.models.router import NoCandidateError
         from draftly.models.schemas import ROLE_TO_TASK_TYPE, RoutingRequest
 
         try:
@@ -69,7 +92,11 @@ class RoleAwareModelResolver:
 
         tokens = context_tokens or _estimate_tokens(prompt_text)
         request = RoutingRequest(task_type=task_type, context_tokens=tokens)
-        decision = self._router.route(request)
+        try:
+            decision = self._router.route(request)
+        except NoCandidateError:
+            logger.warning("role_routing_offline role=%s", role)
+            return None, None
 
         config = self._router.registry.get_model(decision.selected_model)
 
@@ -82,7 +109,7 @@ class RoleAwareModelResolver:
             config = replace(config, max_tokens=ROLE_OUTPUT_TOKENS[role])
 
         provider = self._router.registry.get_provider(decision.provider)
-        return provider.create_model(config)
+        return provider.create_model(config), decision
 
 
 def _estimate_tokens(prompt_text: str | None) -> int:

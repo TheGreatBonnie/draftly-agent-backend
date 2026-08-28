@@ -4,9 +4,45 @@ import json
 
 import pytest
 
+from draftly.integrations.strands.models import RoleAwareModelResolver
 from draftly.memory.candidates.models import MemoryCandidate
 from draftly.memory.candidates.service import CandidateService
 from tests.fakes.memory_stores import FakeCandidatesStore
+
+
+class _OfflineRoleResolver(RoleAwareModelResolver):
+    """Real resolver subclass that always degrades to offline (None)."""
+
+    def __init__(self):
+        super().__init__(object())
+
+    def for_role(self, role, **kwargs):
+        return None
+
+
+@pytest.mark.asyncio
+async def test_offline_routed_curator_releases_batch(monkeypatch):
+    import draftly.workflows.memory.curation_workflow as cw
+
+    store = FakeCandidatesStore()
+    svc = CandidateService(store=store)
+    await svc.enqueue(MemoryCandidate(org_id="org1", candidate_type="fact", payload={}))
+
+    def assert_not_built(**kwargs):
+        raise AssertionError("curator must not be built when offline")
+
+    monkeypatch.setattr(cw, "build_memory_curator", assert_not_built)
+
+    class FakeContext:
+        candidates = svc
+        model = _OfflineRoleResolver()
+
+    summary = await cw.run_memory_curation(FakeContext())
+
+    assert summary["claimed"] == 0
+    pending = await svc.store.list_by_status("pending")
+    assert len(pending) == 1
+
 
 DECISIONS = {
     "decisions": [

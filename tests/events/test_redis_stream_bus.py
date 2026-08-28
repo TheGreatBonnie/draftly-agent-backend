@@ -1,5 +1,6 @@
 import pytest
 from fakeredis import aioredis
+
 from draftly.events.stream_envelope import StreamEnvelope
 
 

@@ -43,7 +43,9 @@ class TestExtractTokenUsage:
         assert counters["draftly_tokens_input_total"] == 100
         assert counters["draftly_tokens_output_total"] == 20
 
-    def test_swallows_non_agent_nodes(self, registry: Metrics, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_swallows_non_agent_nodes(
+        self, registry: Metrics, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         import draftly.workflows.runner as runner_mod
 
         monkeypatch.setattr(runner_mod, "_metrics", registry)
@@ -55,7 +57,9 @@ class TestExtractTokenUsage:
             k.startswith("draftly_tokens") for k in registry.snapshot()["counters"]
         )
 
-    def test_accumulates_across_nodes(self, registry: Metrics, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_accumulates_across_nodes(
+        self, registry: Metrics, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         import draftly.workflows.runner as runner_mod
 
         monkeypatch.setattr(runner_mod, "_metrics", registry)
@@ -69,7 +73,12 @@ class TestExtractTokenUsage:
 
 
 class TestStreamingMetrics:
-    def _runner(self, events: list[dict[str, Any]], registry: Metrics, monkeypatch: pytest.MonkeyPatch):
+    def _runner(
+        self,
+        events: list[dict[str, Any]],
+        registry: Metrics,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
         import draftly.workflows.runner as runner_mod
 
         monkeypatch.setattr(runner_mod, "_metrics", registry)
@@ -173,7 +182,13 @@ class TestAuditFlushCounters:
                 pass
 
         steps = [
-            {"seq": 1, "kind": "node", "name": "classify", "status": "completed", "duration_ms": 12},
+            {
+                "seq": 1,
+                "kind": "node",
+                "name": "classify",
+                "status": "completed",
+                "duration_ms": 12,
+            },
             {"seq": 2, "kind": "tool", "name": "search_docs", "status": "failed"},
         ]
         await audit_mod._flush_run(Repo(), "evt-x", {"source": "github"}, steps)

@@ -71,7 +71,9 @@ async def delete_github_installation(
 
 
 @router.get("/installations")
-async def github_installations(request: Request, token: dict = Depends(get_verified_token)) -> list[dict]:
+async def github_installations(
+    request: Request, token: dict = Depends(get_verified_token)
+) -> list[dict]:
     repos = request.app.state.draftly.dependencies.repositories
     return await repos.github_installations.list_by_org(token.get("org_id") or "")
 

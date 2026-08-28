@@ -6,6 +6,7 @@ persistence layer's dict records.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Any
 
 from draftly.memory.embeddings import EmbeddingService
@@ -59,12 +60,18 @@ class DomainMemoryRepository:
         namespace: str,
         query: str,
         limit: int = 10,
+        org_id: str | None = None,
+        embedding: Sequence[float] | None = None,
     ) -> list[dict[str, Any]]:
-        embedding = await self.embeddings.embed(query)
+        """Semantic search. ``embedding`` lets callers reuse one query vector
+        instead of re-embedding; when omitted the query is embedded here."""
+        if embedding is None:
+            embedding = await self.embeddings.embed(query)
         return await self.repository.semantic_search(
             namespace=namespace,
             embedding=embedding,
             limit=limit,
+            org_id=org_id,
         )
 
     async def update(self, memory_id: str, **fields: Any) -> dict[str, Any] | None:
@@ -110,36 +117,30 @@ class DomainMemoryRepository:
         org_id: str | None = None,
     ) -> int:
         """Delete items in a namespace whose metadata[key] == value, scoped to org."""
-        items = await self.repository.list_namespace(namespace=namespace)
-        deleted = 0
-        for item in items:
-            if org_id and item.get("org_id") != org_id:
-                continue
-            if (item.get("metadata") or {}).get(key) == value:
-                if await self.repository.delete(item["id"]):
-                    deleted += 1
-        return deleted
+        return await self.repository.delete_by_metadata(
+            namespace=namespace, key=key, value=value, org_id=org_id
+        )
 
     async def store_batch(self, items: list[Any]) -> list[dict[str, Any]]:
         """Persist many MemoryItems with a single embed_batch call."""
         if not items:
             return []
         embeddings = await self.embeddings.embed_batch([item.content for item in items])
-        results: list[dict[str, Any]] = []
+        records = []
         for item, embedding in zip(items, embeddings):
-            results.append(
-                await self.repository.create(
-                    namespace=item.namespace,
-                    content=item.content,
-                    memory_type=item.memory_type,
-                    importance=float(item.importance),
-                    confidence=float(item.confidence),
-                    metadata=dict(item.metadata),
-                    embedding=embedding,
-                    org_id=item.org_id,
-                )
+            records.append(
+                {
+                    "namespace": item.namespace,
+                    "content": item.content,
+                    "memory_type": item.memory_type,
+                    "importance": float(item.importance),
+                    "confidence": float(item.confidence),
+                    "metadata": dict(item.metadata),
+                    "embedding": embedding,
+                    "org_id": item.org_id,
+                }
             )
-        return results
+        return await self.repository.create_batch(items=records)
 
     async def list_namespace(self, namespace: str) -> list[dict[str, Any]]:
         return await self.repository.list_namespace(namespace=namespace)

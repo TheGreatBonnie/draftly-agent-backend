@@ -40,25 +40,46 @@ class VectorSearch:
         namespace: str,
         embedding: Sequence[float],
         limit: int = 10,
+        org_id: str | None = None,
     ) -> list[dict[str, Any]]:
         vector = self._format_vector(embedding)
 
-        rows = await self.client.fetch_all(
-            f"""
-            SELECT
-                {_MEMORY_COLUMNS},
-                1 - (me.embedding <=> $1::VECTOR) AS similarity
-            FROM memory_embeddings me
-            JOIN memory_items mi ON mi.id = me.memory_item_id
-            WHERE mi.namespace = $2
-              AND mi.status = 'active'
-            ORDER BY me.embedding <=> $1::VECTOR
-            LIMIT $3
-            """,
-            vector,
-            namespace,
-            limit,
-        )
+        if org_id is not None:
+            rows = await self.client.fetch_all(
+                f"""
+                SELECT
+                    {_MEMORY_COLUMNS},
+                    1 - (me.embedding <=> $1::VECTOR) AS similarity
+                FROM memory_embeddings me
+                JOIN memory_items mi ON mi.id = me.memory_item_id
+                WHERE mi.namespace = $2
+                  AND mi.org_id = $3
+                  AND mi.status = 'active'
+                ORDER BY me.embedding <=> $1::VECTOR
+                LIMIT $4
+                """,
+                vector,
+                namespace,
+                org_id,
+                limit,
+            )
+        else:
+            rows = await self.client.fetch_all(
+                f"""
+                SELECT
+                    {_MEMORY_COLUMNS},
+                    1 - (me.embedding <=> $1::VECTOR) AS similarity
+                FROM memory_embeddings me
+                JOIN memory_items mi ON mi.id = me.memory_item_id
+                WHERE mi.namespace = $2
+                  AND mi.status = 'active'
+                ORDER BY me.embedding <=> $1::VECTOR
+                LIMIT $3
+                """,
+                vector,
+                namespace,
+                limit,
+            )
 
         return [self._row_to_memory(row) for row in rows]
 

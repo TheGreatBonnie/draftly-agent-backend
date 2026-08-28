@@ -12,6 +12,7 @@ COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-dev --no-install-project
 
 COPY src ./src
+COPY workers ./workers
 COPY README.md ./
 RUN uv sync --frozen --no-dev
 
@@ -30,6 +31,7 @@ WORKDIR /app
 
 COPY --from=builder /app/.venv ./.venv
 COPY --from=builder /app/src ./src
+COPY --from=builder /app/workers ./workers
 
 ENTRYPOINT ["python", "-m"]
-CMD ["workers.event_worker"]
+CMD ["workers.rq_worker"]

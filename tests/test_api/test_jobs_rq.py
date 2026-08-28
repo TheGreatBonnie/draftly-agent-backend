@@ -18,7 +18,7 @@ class TestRunJobEnqueue:
         mock_enqueue.return_value = mock_job
         mock_store_cls.return_value.insert = AsyncMock()
 
-        from draftly.app.api.routes.jobs import run_job, JobRequest
+        from draftly.app.api.routes.jobs import JobRequest, run_job
 
         request = MagicMock()
         request.app.state.draftly = MagicMock()
@@ -41,7 +41,7 @@ class TestRunJobEnqueue:
         mock_enqueue.return_value = mock_job
         mock_store_cls.return_value.insert = AsyncMock()
 
-        from draftly.app.api.routes.jobs import run_job, JobRequest
+        from draftly.app.api.routes.jobs import JobRequest, run_job
 
         request = MagicMock()
         request.app.state.draftly = MagicMock()
@@ -61,7 +61,7 @@ class TestRunJobEnqueue:
 
     @pytest.mark.asyncio
     async def test_run_job_missing_rq_returns_503(self):
-        from draftly.app.api.routes.jobs import run_job, JobRequest
+        from draftly.app.api.routes.jobs import JobRequest, run_job
 
         request = MagicMock()
         request.app.state.draftly = MagicMock()
@@ -76,7 +76,7 @@ class TestRunJobEnqueue:
 
     @pytest.mark.asyncio
     async def test_run_job_unknown_task_returns_404(self):
-        from draftly.app.api.routes.jobs import run_job, JobRequest
+        from draftly.app.api.routes.jobs import JobRequest, run_job
 
         request = MagicMock()
         request.app.state.draftly = MagicMock()

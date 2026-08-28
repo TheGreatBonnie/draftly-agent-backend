@@ -14,6 +14,7 @@ from draftly.memory import (
     MemoryRetrieval,
     MemoryService,
 )
+from draftly.memory.embeddings import _hash_embed
 from draftly.memory.models import Knowledge, Question
 from draftly.persistence.repositories.memory import MemoryRepository
 
@@ -60,9 +61,12 @@ class FakeMemoryRepository:
     async def get(self, *, memory_id):
         return self.items.get(memory_id)
 
-    async def semantic_search(self, *, namespace, embedding, limit=10):
+    async def semantic_search(self, *, namespace, embedding, limit=10, org_id=None):
         found = [
-            {**r, "similarity": 0.5} for r in self.items.values() if r["namespace"] == namespace
+            {**r, "similarity": 0.5}
+            for r in self.items.values()
+            if r["namespace"] == namespace
+            and (org_id is None or r.get("org_id") == org_id)
         ]
         return found[:limit]
 
@@ -96,6 +100,18 @@ class FakeMemoryRepository:
 
     async def list_namespace(self, *, namespace):
         return [r for r in self.items.values() if r["namespace"] == namespace]
+
+
+class CountingEmbeddings(EmbeddingService):
+    """EmbeddingService spy counting embed() calls (hash fallback)."""
+
+    def __init__(self) -> None:
+        super().__init__(router=False)
+        self.calls = 0
+
+    async def embed(self, text: str) -> list[float]:
+        self.calls += 1
+        return _hash_embed(text)
 
 
 def make_service() -> tuple[MemoryService, FakeMemoryRepository]:
@@ -167,8 +183,6 @@ class TestMemoryService:
         assert len(await repo.list_namespace(namespace="knowledge")) == 1
 
     def test_hash_embedder_is_deterministic_and_normalized(self) -> None:
-        from draftly.memory.embeddings import _hash_embed
-
         a = _hash_embed("connection pooling")
         b = _hash_embed("connection pooling")
         assert a == b
@@ -189,3 +203,38 @@ class TestMemoryRetrieval:
         )
         assert set(results) == {"knowledge", "questions"}
         assert all(len(v) == 1 for v in results.values())
+
+    def _service_with_spy(self):
+        embeddings = CountingEmbeddings()
+        repo = FakeMemoryRepository()
+        service = MemoryService(
+            repository=DomainMemoryRepository(cast(MemoryRepository, repo), embeddings),
+        )
+        return service, embeddings
+
+    async def test_retrieve_embeds_query_once(self) -> None:
+        service, embeddings = self._service_with_spy()
+        for content in ("connection pooling basics", "pool sizing rules", "pool reuse"):
+            await service.remember(Knowledge(namespace="knowledge", content=content))
+        embeddings.calls = 0
+        retrieval = MemoryRetrieval(service.repository)
+        results = await retrieval.retrieve(namespace="knowledge", query="pooling", limit=5)
+        assert len(results) == 3
+        assert embeddings.calls == 1
+        assert all("similarity" in r for r in results)
+
+    async def test_search_skips_embedding_when_precomputed(self) -> None:
+        service, embeddings = self._service_with_spy()
+        await service.remember(Knowledge(namespace="knowledge", content="pooling"))
+        embeddings.calls = 0
+        await service.repository.search(
+            namespace="knowledge", query="pooling", embedding=[1.0, 0.0]
+        )
+        assert embeddings.calls == 0
+
+    async def test_search_embeds_when_no_embedding_given(self) -> None:
+        service, embeddings = self._service_with_spy()
+        await service.remember(Knowledge(namespace="knowledge", content="pooling"))
+        embeddings.calls = 0
+        await service.repository.search(namespace="knowledge", query="pooling")
+        assert embeddings.calls == 1

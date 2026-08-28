@@ -9,13 +9,12 @@ open GET /workflows/{run_id}/events?ticket=... Frames use the envelope's
 from __future__ import annotations
 
 import asyncio
-import json
 from collections.abc import AsyncIterator
 from typing import Any
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import StreamingResponse
+from sse_starlette import EventSourceResponse, JSONServerSentEvent
 
 from draftly.app.api.auth import get_verified_token
 from draftly.events.stream_envelope import StreamEnvelope
@@ -68,19 +67,14 @@ async def issue_ticket(
     return {"ticket": await _tickets(request).issue(run_id, org_id=org_id)}
 
 
-def _format_envelope(envelope: StreamEnvelope) -> str:
-    body = json.dumps(envelope.to_dict(), default=str)
-    return f"id: {envelope.seq}\nevent: {envelope.type}\ndata: {body}\n\n"
-
-
 async def _event_source(
     bus: Any,
     run_id: str,
-    heartbeat_seconds: float,
     *,
     replayed: list[dict[str, Any]] | None = None,
     min_live_seq: int = 0,
-) -> AsyncIterator[str]:
+) -> AsyncIterator[dict]:
+    """Yield event dicts for sse-starlette wrapping."""
     replayed_done = False
     for row in replayed or []:
         envelope = StreamEnvelope(
@@ -92,49 +86,42 @@ async def _event_source(
             node_id=row.get("node_id"),
             payload=dict(row.get("payload") or {}),
         )
-        yield _format_envelope(envelope)
+        yield envelope.to_dict()
         if envelope.type == "workflow_result":
             replayed_done = True
 
-    # If the workflow already completed before this connection opened,
-    # all events were replayed from the store — no live subscription needed.
     if replayed_done:
         return
 
-    # Use a queue to decouple the async-generator subscription from the
-    # heartbeat timeout.  asyncio.wait_for() on gen.__anext__() is an
-    # anti-pattern: cancelling __anext__ can cause StopAsyncIteration to
-    # escape the async-generator frame (CPython converts it to RuntimeError).
     queue: asyncio.Queue[StreamEnvelope | None] = asyncio.Queue()
-    _SENTINEL = None
+    sentinel = None
 
     async def _pump() -> None:
         try:
             async for envelope in bus.subscribe(run_id):
                 await queue.put(envelope)
-        except Exception:
+        except asyncio.CancelledError:
             pass
+        except Exception:
+            logger.exception("sse_pump_error", run_id=run_id)
         finally:
-            await queue.put(_SENTINEL)
+            await queue.put(sentinel)
 
     pump_task = asyncio.create_task(_pump())
     try:
         while True:
             try:
-                envelope = await asyncio.wait_for(
-                    queue.get(), timeout=heartbeat_seconds
-                )
+                envelope = await asyncio.wait_for(queue.get(), timeout=15.0)
             except TimeoutError:
-                yield ": ping\n\n"
                 continue
 
-            if envelope is _SENTINEL:
+            if envelope is sentinel:
                 return
 
             if envelope.seq <= min_live_seq:
                 continue
 
-            yield _format_envelope(envelope)
+            yield envelope.to_dict()
             if envelope.type == "workflow_result":
                 return
     finally:
@@ -151,7 +138,7 @@ async def stream_events(
     ticket: str,
     request: Request,
     heartbeat: float | None = None,
-) -> StreamingResponse:
+) -> EventSourceResponse:
     claimed = await _tickets(request).consume(ticket)
     if claimed is None or claimed[0] != run_id:
         raise HTTPException(status_code=403, detail="Invalid or expired ticket")
@@ -170,9 +157,6 @@ async def stream_events(
         )
     )
 
-    # Replay stored events: on initial connection (no Last-Event-ID) replay
-    # the full history so the client sees all workflow progress even if the
-    # workflow completed before the SSE connection was opened.
     replayed: list[dict[str, Any]] = []
     min_live_seq = 0
     last_event_id = request.headers.get("last-event-id", "")
@@ -192,16 +176,33 @@ async def stream_events(
         except Exception:
             logger.warning("sse_replay_failed run_id=%s", run_id, exc_info=True)
 
-    return StreamingResponse(
-        _event_source(
-            bus,
-            run_id,
-            heartbeat_seconds,
-            replayed=replayed,
-            min_live_seq=min_live_seq,
-        ),
-        media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    if replayed and not last_event_id.isdigit():
+        min_live_seq = max(int(r.get("seq") or 0) for r in replayed)
+
+    seen: set[int] = set()
+    deduped = []
+    for row in replayed:
+        seq = int(row.get("seq") or 0)
+        if seq in seen:
+            continue
+        seen.add(seq)
+        deduped.append(row)
+    replayed = deduped
+
+    gen = _event_source(bus, run_id, replayed=replayed, min_live_seq=min_live_seq)
+
+    async def sse_generator():
+        async for data in gen:
+            yield JSONServerSentEvent(
+                data=data,
+                event=data.get("type", "message"),
+                id=str(data.get("seq", "")),
+            )
+
+    return EventSourceResponse(
+        sse_generator(),
+        ping=max(1, int(heartbeat_seconds)),
+        headers={"X-Accel-Buffering": "no", "Cache-Control": "no-cache"},
     )
 
 
@@ -230,7 +231,7 @@ async def stream_dashboard_events(
     ticket: str,
     request: Request,
     heartbeat: float | None = None,
-) -> StreamingResponse:
+) -> EventSourceResponse:
     """SSE stream of dashboard events (review, job, run lifecycle)."""
     claimed = await _tickets(request).consume(ticket)
     if claimed is None:
@@ -241,25 +242,33 @@ async def stream_dashboard_events(
     if broadcaster is None:
         raise HTTPException(status_code=503, detail="Dashboard broadcaster unavailable")
 
-    heartbeat_seconds = float(heartbeat if heartbeat and heartbeat > 0 else 15.0)
+    heartbeat_seconds = float(
+        heartbeat
+        if heartbeat is not None and heartbeat > 0
+        else getattr(
+            request.app.state,
+            "heartbeat",
+            _DEFAULT_HEARTBEAT_SECONDS,
+        )
+    )
 
     async def _dashboard_source():
         gen = broadcaster.subscribe(org_id)
         while True:
             try:
-                event = await asyncio.wait_for(
-                    gen.__anext__(), timeout=heartbeat_seconds
-                )
+                event = await asyncio.wait_for(gen.__anext__(), timeout=heartbeat_seconds)
             except StopAsyncIteration:
                 return
             except TimeoutError:
-                yield ": ping\n\n"
+                await asyncio.sleep(0.1)
                 continue
-            body = json.dumps(event)
-            yield f"event: {event.get('type', 'unknown')}\ndata: {body}\n\n"
+            yield JSONServerSentEvent(
+                data=event,
+                event=event.get("type", "message"),
+            )
 
-    return StreamingResponse(
+    return EventSourceResponse(
         _dashboard_source(),
-        media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        ping=max(1, int(heartbeat_seconds)),
+        headers={"X-Accel-Buffering": "no", "Cache-Control": "no-cache"},
     )

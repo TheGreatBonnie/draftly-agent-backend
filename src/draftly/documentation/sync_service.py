@@ -103,113 +103,121 @@ class SyncService:
         memory = self.context.memory
         result = SyncResult(commit_sha=commit_sha, repository=repository_full_name)
 
-        for path in doc_paths:
-            try:
-                content = await self.github.get_file_contents(
-                    owner, repo, path, default_branch, token
+        import asyncio
+        sem = asyncio.Semaphore(8)
+
+        async def _process(path: str) -> None:
+            content = await self.github.get_file_contents(
+                owner, repo, path, default_branch, token
+            )
+            if not content:
+                return
+
+            # --- NEW: fetch per-file commit date (capped) ---
+            file_count = result.document_count + result.skipped_count + len(result.failed_files)
+            commit_date: datetime | None = None
+            if file_count < COMMIT_DATE_CAP:
+                commit_date = await self.github.get_last_commit_date(
+                    owner, repo, path, default_branch, token,
                 )
-                if not content:
-                    continue
+            elif file_count == COMMIT_DATE_CAP:
+                logger.warning(
+                    "freshness_cap_reached count=%d cap=%d",
+                    file_count, COMMIT_DATE_CAP,
+                )
+            result.last_committed_dates.append(commit_date)
+            # --- END NEW ---
 
-                # --- NEW: fetch per-file commit date (capped) ---
-                file_count = result.document_count + result.skipped_count + len(result.failed_files)
-                commit_date: datetime | None = None
-                if file_count < COMMIT_DATE_CAP:
-                    commit_date = await self.github.get_last_commit_date(
-                        owner, repo, path, default_branch, token,
-                    )
-                elif file_count == COMMIT_DATE_CAP:
-                    logger.warning(
-                        "freshness_cap_reached count=%d cap=%d",
-                        file_count, COMMIT_DATE_CAP,
-                    )
-                result.last_committed_dates.append(commit_date)
-                # --- END NEW ---
+            # Content-hash skip against persisted source_hash. A row
+            # without stored chunks is an orphan (e.g. a previous run
+            # crashed mid-file): reprocess it instead of skipping.
+            content_hash = hashlib.sha256(content.encode()).hexdigest()
+            existing = await documents.get_by_org_and_path(org_id=org_id, path=path)
+            if existing and existing.get("source_hash") == content_hash:
+                existing_meta = existing.get("metadata") or {}
+                if isinstance(existing_meta, str):
+                    try:
+                        existing_meta = json.loads(existing_meta)
+                    except (json.JSONDecodeError, TypeError):
+                        existing_meta = {}
+                if (existing_meta.get("chunk_count") or 0) > 0:
+                    result.skipped_count += 1
+                    return
 
-                # Content-hash skip against persisted source_hash. A row
-                # without stored chunks is an orphan (e.g. a previous run
-                # crashed mid-file): reprocess it instead of skipping.
-                content_hash = hashlib.sha256(content.encode()).hexdigest()
-                existing = await documents.get_by_org_and_path(org_id=org_id, path=path)
-                if existing and existing.get("source_hash") == content_hash:
-                    existing_meta = existing.get("metadata") or {}
-                    if isinstance(existing_meta, str):
-                        try:
-                            existing_meta = json.loads(existing_meta)
-                        except (json.JSONDecodeError, TypeError):
-                            existing_meta = {}
-                    if (existing_meta.get("chunk_count") or 0) > 0:
-                        result.skipped_count += 1
-                        continue
+            # Parse and chunk
+            parse_result = parse_markdown(content)
+            chunks = chunk_document(parse_result, content)
 
-                # Parse and chunk
-                parse_result = parse_markdown(content)
-                chunks = chunk_document(parse_result, content)
+            # Upsert document with sync columns so hash-skip works next run
+            document_record = await documents.upsert(
+                org_id=org_id,
+                repository=repository_full_name,
+                path=path,
+                title=parse_result.title,
+                content=content,
+                status="indexed",
+                commit_sha=commit_sha,
+                source_hash=content_hash,
+                last_committed_at=commit_date,
+                metadata={
+                    "source_url": f"https://github.com/{repository_full_name}/blob/{default_branch}/{path}",
+                    "branch": default_branch,
+                    "section_count": len(parse_result.headings),
+                    "chunk_count": len(chunks),
+                },
+            )
+            document_id = document_record["id"]
 
-                # Upsert document with sync columns so hash-skip works next run
-                document_record = await documents.upsert(
+            # Remove stale chunks for this document, then store new ones
+            # in a single embed_batch call per file (spec §4.3/§4.4).
+            if chunks:
+                await memory.delete_by_metadata(
+                    namespace=MemoryNamespaces.DOCUMENTS,
+                    key="document_id",
+                    value=document_id,
                     org_id=org_id,
-                    repository=repository_full_name,
-                    path=path,
-                    title=parse_result.title,
-                    content=content,
-                    status="indexed",
-                    commit_sha=commit_sha,
-                    source_hash=content_hash,
-                    last_committed_at=commit_date,
-                    metadata={
-                        "source_url": f"https://github.com/{repository_full_name}/blob/{default_branch}/{path}",
-                        "branch": default_branch,
-                        "section_count": len(parse_result.headings),
-                        "chunk_count": len(chunks),
-                    },
                 )
-                document_id = document_record["id"]
-
-                # Remove stale chunks for this document, then store new ones
-                # in a single embed_batch call per file (spec §4.3/§4.4).
-                if chunks:
-                    await memory.delete_by_metadata(
+                items = [
+                    Document(
                         namespace=MemoryNamespaces.DOCUMENTS,
-                        key="document_id",
-                        value=document_id,
+                        memory_type="document_chunk",
+                        content=chunk.content,
+                        importance=0.5,
+                        confidence=0.5,
                         org_id=org_id,
+                        path=path,
+                        heading_path=chunk.heading_path,
+                        start_line=chunk.start_line,
+                        end_line=chunk.end_line,
+                        metadata={
+                            "document_id": document_id,
+                            "path": path,
+                            "heading_path": chunk.heading_path,
+                            "start_line": chunk.start_line,
+                            "end_line": chunk.end_line,
+                            "commit_sha": commit_sha,
+                        },
                     )
-                    items = [
-                        Document(
-                            namespace=MemoryNamespaces.DOCUMENTS,
-                            memory_type="document_chunk",
-                            content=chunk.content,
-                            importance=0.5,
-                            confidence=0.5,
-                            org_id=org_id,
-                            path=path,
-                            heading_path=chunk.heading_path,
-                            start_line=chunk.start_line,
-                            end_line=chunk.end_line,
-                            metadata={
-                                "document_id": document_id,
-                                "path": path,
-                                "heading_path": chunk.heading_path,
-                                "start_line": chunk.start_line,
-                                "end_line": chunk.end_line,
-                                "commit_sha": commit_sha,
-                            },
-                        )
-                        for chunk in chunks
-                    ]
-                    await memory.store_batch(items)
+                    for chunk in chunks
+                ]
+                await memory.store_batch(items)
 
-                result.document_count += 1
-                result.section_count += len(parse_result.headings)
-                result.chunk_count += len(chunks)
+            result.document_count += 1
+            result.section_count += len(parse_result.headings)
+            result.chunk_count += len(chunks)
 
-                if on_progress is not None:
-                    on_progress(result.document_count, result.chunk_count)
+            if on_progress is not None:
+                on_progress(result.document_count, result.chunk_count)
 
-            except Exception:
-                logger.exception("sync_file_failed path=%s", path)
-                result.failed_files.append(path)
+        async def _worker(path: str) -> None:
+            async with sem:
+                try:
+                    await _process(path)
+                except Exception:
+                    logger.exception("sync_file_failed path=%s", path)
+                    result.failed_files.append(path)
+
+        await asyncio.gather(*(_worker(path) for path in doc_paths))
 
         # 6. Create baseline
         result.baseline = create_baseline(

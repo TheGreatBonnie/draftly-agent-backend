@@ -33,11 +33,30 @@ def client() -> TestClient:
     state.dependencies.repositories.jobs.get = AsyncMock(
         return_value={"id": "job-123", "status": "completed"}
     )
-    state.dependencies.repositories.documents.list_by_org = AsyncMock(return_value=[
-        {"repository": "owner/repo", "path": "README.md", "commit_sha": "abc123", "status": "indexed"},
-        {"repository": "owner/repo", "path": "docs/guide.md", "commit_sha": "abc123", "status": "indexed"},
-        {"repository": "owner/repo", "path": "docs/old.md", "commit_sha": "000000", "status": "stale"},
-    ])
+    state.dependencies.repositories.jobs.insert = AsyncMock()
+    state.dependencies.repositories.jobs.update_status = AsyncMock()
+    state.dependencies.repositories.documents.list_by_org = AsyncMock(
+        return_value=[
+            {
+                "repository": "owner/repo",
+                "path": "README.md",
+                "commit_sha": "abc123",
+                "status": "indexed",
+            },
+            {
+                "repository": "owner/repo",
+                "path": "docs/guide.md",
+                "commit_sha": "abc123",
+                "status": "indexed",
+            },
+            {
+                "repository": "owner/repo",
+                "path": "docs/old.md",
+                "commit_sha": "000000",
+                "status": "stale",
+            },
+        ]
+    )
     app.state.draftly = state
 
     return TestClient(app)

@@ -14,6 +14,7 @@ from typing import Any
 import structlog
 
 from draftly.agents.shared.memory_curator import build_memory_curator
+from draftly.integrations.strands.models import RoleAwareModelResolver
 
 logger = structlog.get_logger(__name__)
 
@@ -47,7 +48,23 @@ async def run_memory_curation(context: Any) -> dict[str, int]:
     )
     from draftly.app.composition.tools import _MEMORY_CURATOR_TOOLS
 
-    agent = build_memory_curator(model=context.model, tools=_MEMORY_CURATOR_TOOLS)
+    # Resolve routed curator model (offline degrades to None)
+    resolver = getattr(context, "model", None)
+    model = (
+        resolver.for_role("memory_curator")
+        if isinstance(resolver, RoleAwareModelResolver)
+        else resolver
+    )
+    if model is None:
+        # Offline: no routed model → release the claim for retry, exactly
+        # like the "curator returned nothing usable" fallback below.
+        for record in claimed:
+            await candidates.set_status_pending(
+                str(record["id"]), "offline: no routed curator model"
+            )
+        return {"claimed": 0}
+
+    agent = build_memory_curator(model=model, tools=_MEMORY_CURATOR_TOOLS)
     try:
         result = await agent.invoke_async(prompt)
         payload = _extract_json(str(result))

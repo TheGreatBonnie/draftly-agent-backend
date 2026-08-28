@@ -1,11 +1,14 @@
 """Unit tests for onboarding initialization workflow."""
 
+import asyncio
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+import structlog
 
-from draftly.workflows.onboarding.initialize import run_onboarding_initialize
+from draftly.app.api.routes import onboarding
+from draftly.workflows.onboarding.initialize import STAGES, run_onboarding_initialize
 from draftly.workflows.state import WorkflowStatus
 
 
@@ -521,7 +524,9 @@ async def test_publishes_stage_progress_for_all_stages(mock_publisher, fake_repo
 
 
 @pytest.mark.asyncio
-async def test_publishes_stage_progress_even_without_sync_callback(mock_publisher, fake_repositories):
+async def test_publishes_stage_progress_even_without_sync_callback(
+    mock_publisher, fake_repositories
+):
     from draftly.workflows.context import WorkflowContext
 
     context = WorkflowContext(
@@ -580,3 +585,398 @@ async def test_publishes_stage_progress_even_without_sync_callback(mock_publishe
     assert len(repo_progress) >= 1, (
         "stage_progress for repository_ingestion must be emitted even without sync callback"
     )
+
+
+# ============================================================
+# Task 10: live throttled progress during repository_ingestion
+# ============================================================
+
+
+def _fake_sync_result(document_count=3, chunk_count=9):
+    fake = MagicMock()
+    fake.document_count = document_count
+    fake.chunk_count = chunk_count
+    fake.failed_files = []
+    fake.baseline = None
+    fake.last_committed_dates = []
+    return fake
+
+
+def _stage_progress_events(mock_publisher, stage="repository_ingestion"):
+    return [
+        c.args[0]
+        for c in mock_publisher.publish.call_args_list
+        if hasattr(c, "args")
+        and hasattr(c.args[0], "type")
+        and c.args[0].type == "stage_progress"
+        and c.args[0].payload.get("stage") == stage
+    ]
+
+
+async def _run_workflow_with_sync(mock_publisher, fake_repositories, sync_impl):
+    """Run the full workflow with SyncService replaced by sync_impl.
+
+    ``sync_impl(on_progress)`` is awaited inside sync().
+    """
+    from draftly.workflows.context import WorkflowContext
+
+    context = WorkflowContext(
+        repositories=fake_repositories,
+        publisher=mock_publisher,
+    )
+
+    class FakeSyncService:
+        def __init__(self, github=None, context=None):
+            pass
+
+        async def sync(self, *, org_id, repository_full_name, include, exclude, on_progress=None):
+            return await sync_impl(on_progress)
+
+    with patch(
+        "draftly.integrations.github.app_auth.build_installation_client",
+        new=AsyncMock(return_value=MagicMock()),
+    ):
+        with patch(
+            "draftly.documentation.sync_service.SyncService", FakeSyncService
+        ):
+            with patch(
+                "draftly.workflows.onboarding.stages.run_knowledge_construction",
+                new=AsyncMock(return_value=MagicMock(
+                    knowledge_count=1, relationship_count=1,
+                    candidate_count=1, failed_chunks=[],
+                )),
+            ):
+                with patch(
+                    "draftly.workflows.onboarding.stages.run_initial_evaluation",
+                    new=AsyncMock(return_value=MagicMock(score=0.5, dimensions={})),
+                ):
+                    with patch(
+                        "draftly.workflows.onboarding.stages.run_health_report",
+                        return_value=MagicMock(score=0.4, dimensions={}),
+                    ):
+                        with patch(
+                            "draftly.workflows.onboarding.stages.run_recommendations",
+                            new=AsyncMock(return_value=[]),
+                        ):
+                            return await run_onboarding_initialize(
+                                context,
+                                org_id="org_test123",
+                                selected_repository={"full_name": "test/repo"},
+                            )
+
+
+@pytest.mark.asyncio
+async def test_progress_flushes_during_sync(mock_publisher, fake_repositories):
+    """Task 10: stage_progress must be published WHILE sync() is running.
+
+    The fake sync waits (bounded) until a repository_ingestion stage_progress
+    with progress > 0 is observed mid-run before returning.
+    """
+    async def sync_impl(on_progress):
+        if on_progress:
+            on_progress(2, 6)
+        for _ in range(200):
+            if any(
+                e.payload.get("progress", 0) > 0
+                for e in _stage_progress_events(mock_publisher)
+            ):
+                return _fake_sync_result()
+            await asyncio.sleep(0.01)
+        pytest.fail(
+            "stage_progress for repository_ingestion was never published during sync"
+        )
+
+    state = await _run_workflow_with_sync(mock_publisher, fake_repositories, sync_impl)
+    assert state.status == WorkflowStatus.DELIVERED
+
+
+@pytest.mark.asyncio
+async def test_progress_flusher_torn_down_after_success(mock_publisher, fake_repositories):
+    """No pending progress-flusher task may survive a successful run."""
+
+    async def sync_impl(on_progress):
+        if on_progress:
+            on_progress(1, 3)
+        await asyncio.sleep(0)
+        return _fake_sync_result()
+
+    await _run_workflow_with_sync(mock_publisher, fake_repositories, sync_impl)
+    await asyncio.sleep(0)
+
+    current = asyncio.current_task()
+    leftovers = [
+        t
+        for t in asyncio.all_tasks()
+        if t is not current and not t.done() and "_progress_loop" in repr(t.get_coro())
+    ]
+    assert leftovers == [], f"flusher task leaked: {leftovers}"
+
+
+@pytest.mark.asyncio
+async def test_progress_flusher_torn_down_on_failure(mock_publisher, fake_repositories):
+    """A failing sync must not leave the flusher loop pending."""
+
+    async def sync_impl(on_progress):
+        raise RuntimeError("sync exploded")
+
+    state = await _run_workflow_with_sync(mock_publisher, fake_repositories, sync_impl)
+    assert state.status == WorkflowStatus.FAILED
+    await asyncio.sleep(0)
+
+    current = asyncio.current_task()
+    leftovers = [
+        t
+        for t in asyncio.all_tasks()
+        if t is not current and not t.done() and "_progress_loop" in repr(t.get_coro())
+    ]
+    assert leftovers == [], f"flusher task leaked after failure: {leftovers}"
+
+
+@pytest.mark.asyncio
+async def test_idle_progress_loop_publishes_no_duplicates(mock_publisher, fake_repositories):
+    """Dirty-flag gate: one on_progress then idle → exactly one mid-sync flush
+    plus the final flush. A naive interval loop would spam duplicates."""
+    async def sync_impl(on_progress):
+        if on_progress:
+            on_progress(1, 3)
+        await asyncio.sleep(0.15)  # idle window after the single callback
+        return _fake_sync_result()
+
+    await _run_workflow_with_sync(mock_publisher, fake_repositories, sync_impl)
+
+    events = _stage_progress_events(mock_publisher)
+    assert len(events) == 2, (
+        f"expected exactly 2 repository_ingestion stage_progress events "
+        f"(mid-sync + final), got {len(events)}"
+    )
+
+
+# ============================================================
+# Task 11: watchdog timeout
+# ============================================================
+
+
+@pytest.mark.asyncio
+async def test_watchdog_fails_run_stuck_past_timeout(
+    monkeypatch, mock_publisher, fake_repositories
+):
+    """A stage hung past INIT_WORKFLOW_TIMEOUT_SECONDS fails the run loudly.
+
+    The watchdog marks the onboarding row FAILED, publishes a FAILED
+    workflow_result, and returns a FAILED state.
+    """
+    import draftly.workflows.onboarding.initialize as init_mod
+
+    monkeypatch.setattr(init_mod, "INIT_WORKFLOW_TIMEOUT_SECONDS", 0.1)
+
+    async def sync_impl(on_progress):
+        await asyncio.sleep(5.0)  # far past the injected 0.1s watchdog
+        return _fake_sync_result()
+
+    state = await _run_workflow_with_sync(mock_publisher, fake_repositories, sync_impl)
+
+    assert state.status == WorkflowStatus.FAILED
+    fake_repositories.onboarding.mark_failed.assert_awaited_once()
+    detail = fake_repositories.onboarding.mark_failed.await_args.args[2]
+    assert "exceeded" in detail["detail"]
+
+    result_events = [
+        c.args[0]
+        for c in mock_publisher.publish.call_args_list
+        if hasattr(c.args[0], "type") and c.args[0].type == "workflow_result"
+    ]
+    assert len(result_events) == 1
+    assert result_events[0].payload.get("status") == "FAILED"
+
+    # The progress flusher must not outlive a watchdog failure.
+    current = asyncio.current_task()
+    leftovers = [
+        t
+        for t in asyncio.all_tasks()
+        if t is not current and not t.done() and "_progress_loop" in repr(t.get_coro())
+    ]
+    assert leftovers == [], f"flusher task leaked after watchdog: {leftovers}"
+
+
+# ============================================================
+# Task 9: route enqueues to RQ when enabled, falls back otherwise
+# ============================================================
+
+
+def _enqueue_recorder(monkeypatch):
+    """Patch enqueue_job at the routes.onboarding module boundary."""
+    mock = MagicMock(return_value=MagicMock(id="rq-job-1"))
+    monkeypatch.setattr("draftly.app.api.routes.onboarding.enqueue_job", mock)
+    return mock
+
+
+@pytest.mark.asyncio
+async def test_execute_initialization_enqueues_to_rq_when_enabled(monkeypatch):
+    """When RQ is enabled, the route enqueues and returns immediately.
+
+    The in-process worker is bypassed entirely — execution is the RQ
+    worker's job. A jobs row is inserted so /stream-ticket can resolve
+    the run_id.
+    """
+    request = MagicMock()
+    request.app.state.draftly.rq_queues = {"default": MagicMock()}
+    request.app.state.draftly.task_handlers = {"onboarding.initialize": MagicMock()}
+    request.app.state.draftly.settings = MagicMock(rq_enabled=True)
+    request.app.state.draftly.dependencies.repositories.jobs.insert = AsyncMock()
+
+    enqueue_mock = _enqueue_recorder(monkeypatch)
+
+    async def fake_acquire(*args, **kwargs):
+        return True
+
+    async def fake_release(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(
+        "draftly.app.api.routes.onboarding._try_acquire_init_lock", fake_acquire
+    )
+    monkeypatch.setattr(
+        "draftly.app.api.routes.onboarding._release_init_lock", fake_release
+    )
+    monkeypatch.setattr(
+        "draftly.app.api.routes.workflows._tickets",
+        lambda request: MagicMock(issue=AsyncMock(return_value="tkt-fallback")),
+        raising=False,
+    )
+
+    repos = MagicMock()
+    repos.onboarding.get = AsyncMock(return_value=None)
+    repos.onboarding.upsert = AsyncMock()
+
+    result = await onboarding._execute_initialization(
+        repos, "org-1", worker=None, selected_repository={"full_name": "o/r"},
+        request=request,
+    )
+
+    assert result["state"] == "INITIALIZING"
+    assert "run_id" in result and "ticket" in result
+    enqueue_mock.assert_called_once()
+    # enqueue_job is a sync function in this module-level monkeypatch; the
+    # call lives on call_args, not await_args.
+    kwargs = enqueue_mock.call_args.kwargs
+    assert kwargs["task_name"] == "onboarding.initialize"
+    assert kwargs["org_id"] == "org-1"
+    assert kwargs["run_id"] == result["run_id"]
+
+
+# ============================================================
+# Task 3: structlog lifecycle lines for all five init stages
+# ============================================================
+
+
+@pytest.mark.asyncio
+async def test_initialize_emits_stage_lifecycle_logs(installation_client, monkeypatch):
+    from structlog.testing import capture_logs
+
+    import draftly.workflows.onboarding.initialize as init_mod
+    from draftly.documentation.baseline import BaselineSnapshot
+    from draftly.documentation.sync_service import SyncResult
+
+    sync_result = SyncResult(
+        commit_sha="abc123",
+        repository="owner/repo",
+        document_count=2,
+        chunk_count=5,
+        baseline=BaselineSnapshot(
+            commit_sha="abc123", repository="owner/repo",
+            document_count=2, section_count=4, chunk_count=5,
+        ),
+    )
+
+    with capture_logs() as logs:
+        # Fresh proxy: cache_logger_on_first_use=True (logging.py:99) means
+        # the module logger is already bound to the real config, so only a
+        # fresh proxy resolves against capture_logs' temporary processors.
+        monkeypatch.setattr(
+            init_mod, "logger", structlog.get_logger("test.initialize.stage_lifecycle")
+        )
+        with patch("draftly.documentation.sync_service.SyncService") as service_cls:
+            service_cls.return_value.sync = AsyncMock(return_value=sync_result)
+            with patch(
+                "draftly.workflows.onboarding.stages.run_knowledge_construction",
+                new=AsyncMock(return_value=MagicMock(
+                    knowledge_count=10, relationship_count=5,
+                    candidate_count=3, failed_chunks=[],
+                )),
+            ):
+                with patch(
+                    "draftly.workflows.onboarding.stages.run_initial_evaluation",
+                    new=AsyncMock(return_value=MagicMock(
+                        score=0.72, dimensions={},
+                    )),
+                ):
+                    with patch(
+                        "draftly.workflows.onboarding.stages.run_health_report",
+                        return_value=MagicMock(score=0.68, dimensions={}),
+                    ):
+                        with patch(
+                            "draftly.workflows.onboarding.stages.run_recommendations",
+                            new=AsyncMock(return_value=[
+                                MagicMock(priority="high", title="Add API ref",
+                                          detail="Missing", category="coverage"),
+                            ]),
+                        ):
+                            state = await run_onboarding_initialize(
+                                _context(), org_id="test-org",
+                                selected_repository={"full_name": "owner/repo"},
+                            )
+
+    assert state.status == WorkflowStatus.DELIVERED
+    starts = [line for line in logs if line.get("event") == "stage_start"]
+    completes = [line for line in logs if line.get("event") == "stage_complete"]
+    assert [line["stage"] for line in starts] == list(STAGES)
+    assert [line["stage"] for line in completes] == list(STAGES)
+    assert all(line["duration_ms"] >= 0 for line in completes)
+    assert all("stats" in line for line in completes)
+
+
+@pytest.mark.asyncio
+async def test_execute_initialization_falls_back_to_in_process_when_rq_disabled(monkeypatch):
+    """Without rq_queues/task_handlers, the route uses worker.run_task."""
+    request = MagicMock()
+    request.app.state.draftly.rq_queues = None
+    request.app.state.draftly.task_handlers = None
+
+    async def fake_acquire(*args, **kwargs):
+        return True
+
+    async def fake_release(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(
+        "draftly.app.api.routes.onboarding._try_acquire_init_lock", fake_acquire
+    )
+    monkeypatch.setattr(
+        "draftly.app.api.routes.onboarding._release_init_lock", fake_release
+    )
+    enqueue_mock = _enqueue_recorder(monkeypatch)
+
+    repos = MagicMock()
+    repos.onboarding.get = AsyncMock(return_value=None)
+    repos.onboarding.upsert = AsyncMock()
+
+    worker = MagicMock()
+    worker.task_runner.has_task = MagicMock(return_value=True)
+    worker.run_task = AsyncMock(return_value={"org_id": "org-1", "state": "COMPLETED"})
+
+    monkeypatch.setattr(
+        "draftly.app.api.routes.workflows._tickets",
+        lambda request: MagicMock(issue=AsyncMock(return_value="tkt-fallback")),
+        raising=False,
+    )
+
+    await onboarding._execute_initialization(
+        repos, "org-1", worker=worker, selected_repository={"full_name": "o/r"},
+        request=request,
+    )
+    # Let the background coroutine actually run.
+    await asyncio.sleep(0)
+
+    enqueue_mock.assert_not_called()
+    worker.run_task.assert_awaited_once()
+    assert worker.run_task.await_args.args[0] == "onboarding.initialize"

@@ -258,5 +258,7 @@ Tools available: memory_search, get_memory, supersede_memory,
 reinforce_memory, archive_memory, record_doc_relation, record_procedure.
 
 Respond with ONLY this JSON (no markdown, no prose):
-{"decisions": [{"candidate_id": "...", "action": "CREATE|UPDATE|MERGE|SUPERSEDE|REJECT|ARCHIVE", "target_memory_id": null, "content": null, "reason": "..."}]}
+{"decisions": [{"candidate_id": "...", "action":
+"CREATE|UPDATE|MERGE|SUPERSEDE|REJECT|ARCHIVE", "target_memory_id": null,
+"content": null, "reason": "..."}]}
 """

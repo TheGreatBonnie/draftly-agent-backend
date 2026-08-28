@@ -13,14 +13,21 @@ async def test_full_sync_flow():
     # Mock GitHub client
     github = MagicMock()
     github.get_installation_token = AsyncMock(return_value="token-123")
-    github.get_repository = AsyncMock(return_value={"default_branch": "main", "commit_sha": "abc123"})
+    github.get_repository = AsyncMock(
+        return_value={"default_branch": "main", "commit_sha": "abc123"}
+    )
     github.get_tree = AsyncMock(return_value=[
         {"path": "README.md", "type": "blob"},
         {"path": "docs/guide.md", "type": "blob"},
     ])
-    github.get_file_contents = AsyncMock(side_effect=lambda owner, repo, path, ref, token: {
-        "README.md": "# My Project\n\nThis is the README.",
-        "docs/guide.md": "# Guide\n\n## Getting Started\n\nInstall instructions.\n\n## Usage\n\nRun the app.",
+    github.get_last_commit_date = AsyncMock(return_value=None)
+    github.get_file_contents = AsyncMock(
+        side_effect=lambda owner, repo, path, ref, token: {
+            "README.md": "# My Project\n\nThis is the README.",
+            "docs/guide.md": (
+                "# Guide\n\n## Getting Started\n\nInstall instructions.\n\n"
+                "## Usage\n\nRun the app."
+            ),
     }[path])
 
     # Mock context

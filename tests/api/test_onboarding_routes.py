@@ -1,6 +1,7 @@
 """Tests for onboarding API routes."""
 
 from contextlib import ExitStack, contextmanager
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -36,6 +37,13 @@ def client() -> TestClient:
     state.worker.run_task = AsyncMock(
         return_value={"org_id": "test-org", "state": "COMPLETED", "stages": []}
     )
+    state.settings = SimpleNamespace(rq_enabled=False)
+    redis_mock = MagicMock()
+    native_mock = AsyncMock()
+    native_mock.set.return_value = True
+    native_mock.get.return_value = None
+    redis_mock.native = native_mock
+    state.redis_client = redis_mock
     app.state.draftly = state
     app.state.redis_tickets = MagicMock(issue=AsyncMock(return_value="test-ticket"))
 
@@ -627,6 +635,75 @@ class TestInitializeRobustness:
         repos = state.dependencies.repositories
         repos.onboarding.upsert.assert_not_awaited()
 
+    def test_double_initialize_single_flights(self, client):
+        self._set_state(client, "PREFERENCES_CONFIGURED")
+        state = client.app.state.draftly
+
+        # Simulate lock acquired for the first call, rejected for the second
+        redis_mock = MagicMock()
+        native_mock = AsyncMock()
+        native_mock.set.side_effect = [True, None]
+        native_mock.get.return_value = "first-run-id"
+        redis_mock.native = native_mock
+        state.redis_client = redis_mock
+
+        resp1 = client.post("/onboarding/initialize")
+        # manually update the mock return value for the second call
+        client.app.state.draftly.dependencies.repositories.onboarding.get.return_value = {
+            "org_id": "test-org",
+            "state": "INITIALIZING",
+            "selected_repository": {"init_run_id": "first-run-id"},
+        }
+        resp2 = client.post("/onboarding/initialize")
+
+        assert resp1.status_code == 200
+        assert resp2.status_code == 200
+
+        body1 = resp1.json()
+        body2 = resp2.json()
+
+        assert body1["state"] == "INITIALIZING"
+        assert body2["state"] == "INITIALIZING"
+        assert body2.get("resumed") is True
+        assert body2["run_id"] == "first-run-id"
+        assert state.worker.run_task.call_count == 1
+
+    def test_initialize_fail_open_without_redis(self, client):
+        self._set_state(client, "PREFERENCES_CONFIGURED")
+        client.app.state.draftly.redis_client = None
+
+        resp = client.post("/onboarding/initialize")
+        assert resp.status_code == 200
+        assert resp.json()["state"] == "INITIALIZING"
+
+    @pytest.mark.asyncio
+    async def test_initialize_lock_released_on_workflow_exception(self, client):
+        import asyncio
+        self._set_state(client, "PREFERENCES_CONFIGURED")
+        state = client.app.state.draftly
+        state.worker.run_task = AsyncMock(side_effect=RuntimeError("crash"))
+
+        redis_mock = MagicMock()
+        native_mock = AsyncMock()
+        native_mock.set.return_value = True
+
+        # Capture the run_id set by the handler and return it in get() so delete is called
+        def fake_get(key):
+            # lock key is onboarding:init-lock:test-org, return the value set by set()
+            run_id = native_mock.set.call_args[0][1]
+            return run_id
+
+        native_mock.get = AsyncMock(side_effect=fake_get)
+        redis_mock.native = native_mock
+        state.redis_client = redis_mock
+
+        resp = client.post("/onboarding/initialize")
+        assert resp.status_code == 200
+
+        # wait a bit for the background task to run its except/finally
+        await asyncio.sleep(0.05)
+        native_mock.delete.assert_awaited()
+
     @pytest.mark.parametrize(("path", "from_state"), INIT_PATHS)
     def test_run_failure_marks_failed_and_returns_502(self, client, path, from_state):
         self._set_state(client, from_state)
@@ -701,6 +778,96 @@ class TestInitializeRobustness:
         assert body["state"] == "INITIALIZING"
         assert "run_id" in body
         assert "ticket" in body
+
+
+class TestInitializeRqDispatch:
+    """Task 9: when RQ is enabled the init route enqueues and returns
+    immediately; the in-process worker only runs as a fallback."""
+
+    def _set_state(self, client, state="PREFERENCES_CONFIGURED"):
+        client.app.state.draftly.dependencies.repositories.onboarding.get.return_value = {
+            "org_id": "test-org",
+            "state": state,
+            "selected_repository": {"full_name": "o/r"},
+        }
+
+    def test_rq_enabled_enqueues_and_returns_immediately(self, client):
+        self._set_state(client)
+        state = client.app.state.draftly
+        state.settings = SimpleNamespace(rq_enabled=True)
+        state.rq_queues = {"default": MagicMock()}
+        state.task_handlers = {"onboarding.initialize": MagicMock()}
+
+        job = MagicMock()
+        job.id = "rqjob-123"
+
+        with (
+            patch(
+                "draftly.app.api.routes.onboarding.enqueue_job",
+                return_value=job,
+            ) as enqueue_mock,
+            patch(
+                "draftly.integrations.database.jobs_store.DatabaseJobsStore"
+            ) as store_cls,
+        ):
+            store = store_cls.return_value
+            store.insert = AsyncMock()
+            resp = client.post("/onboarding/initialize")
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["state"] == "INITIALIZING"
+        assert body["run_id"]
+        assert body["ticket"] == "test-ticket"
+
+        enqueue_mock.assert_called_once_with(
+            queues=state.rq_queues,
+            task_handlers=state.task_handlers,
+            task_name="onboarding.initialize",
+            org_id="test-org",
+            selected_repository={"full_name": "o/r"},
+            run_id=body["run_id"],
+        )
+        store.insert.assert_awaited_once()
+        store.insert.assert_awaited_with(
+            run_id=body["run_id"],
+            org_id="test-org",
+            name="onboarding.initialize",
+            job_type="onboarding",
+            schedule="manual",
+            configuration={"rq_job_id": "rqjob-123"},
+        )
+        state.worker.run_task.assert_not_awaited()
+
+    def test_rq_disabled_falls_back_to_in_process_worker(self, client):
+        self._set_state(client)
+        state = client.app.state.draftly
+        state.settings = SimpleNamespace(rq_enabled=False)
+        state.rq_queues = {"default": MagicMock()}
+        state.task_handlers = {"onboarding.initialize": MagicMock()}
+
+        with (
+            patch(
+                "draftly.app.api.routes.onboarding.enqueue_job"
+            ) as enqueue_mock,
+            patch(
+                "draftly.integrations.database.jobs_store.DatabaseJobsStore"
+            ) as store_cls,
+        ):
+            resp = client.post("/onboarding/initialize")
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["state"] == "INITIALIZING"
+        assert body["run_id"]
+        state.worker.run_task.assert_awaited_with(
+            "onboarding.initialize",
+            org_id="test-org",
+            selected_repository={"full_name": "o/r"},
+            run_id=body["run_id"],
+        )
+        enqueue_mock.assert_not_called()
+        store_cls.assert_not_called()
 
 
 class TestRepositoriesAndCompleteHardening:

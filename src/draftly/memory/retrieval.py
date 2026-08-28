@@ -27,17 +27,24 @@ class MemoryRetrieval:
         query: str,
         limit: int = 10,
         min_similarity: float = 0.0,
+        org_id: str | None = None,
     ) -> list[dict[str, Any]]:
-        """Semantic search, then re-rank by recency/importance/quality."""
+        """Semantic search, then re-rank by recency/importance/quality.
+
+        The query is embedded exactly once and reused for both the DB search
+        and the in-process similarity pass — previously the identical query
+        was embedded once per candidate (a 1 + N embedding amplification).
+        """
+        query_embedding = await self.repository.embeddings.embed(query)
         candidates = await self.repository.search(
             namespace=namespace,
             query=query,
             limit=max(limit * 3, 10),
+            org_id=org_id,
+            embedding=query_embedding,
         )
         for record in candidates:
-            record["similarity"] = _cosine(
-                record.get("embedding"), await self.repository.embeddings.embed(query)
-            )
+            record["similarity"] = _cosine(record.get("embedding"), query_embedding)
         if min_similarity > 0:
             candidates = [r for r in candidates if r["similarity"] >= min_similarity]
         return self.ranking.rank(candidates, limit=limit)
@@ -48,6 +55,7 @@ class MemoryRetrieval:
         namespaces: list[str],
         query: str,
         per_namespace: int = 5,
+        org_id: str | None = None,
     ) -> dict[str, list[dict[str, Any]]]:
         """Fan out across namespaces (e.g. knowledge + solutions)."""
         results: dict[str, list[dict[str, Any]]] = {}
@@ -56,6 +64,7 @@ class MemoryRetrieval:
                 namespace=namespace,
                 query=query,
                 limit=per_namespace,
+                org_id=org_id,
             )
         return results
 

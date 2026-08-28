@@ -7,6 +7,7 @@ initial evaluation -> health calculation -> recommendations -> mark COMPLETED
 from __future__ import annotations
 
 import asyncio
+import time
 from typing import Any
 
 import structlog
@@ -32,6 +33,12 @@ STAGE_LABELS: dict[str, str] = {
     "recommendations": "Preparing recommendations",
 }
 
+# Task 11: overall ceiling for stages 1-5. A hung provider can no longer
+# stall the workflow forever; per-chunk CHUNK_TIMEOUT_SECONDS makes this a
+# rare backstop. The Redis init-lock TTL (7200s) stays >= this value so a
+# legitimate run never outlives its lock.
+INIT_WORKFLOW_TIMEOUT_SECONDS = 1200
+
 
 async def run_onboarding_initialize(
     context: WorkflowContext,
@@ -44,6 +51,7 @@ async def run_onboarding_initialize(
     del kwargs
     state = WorkflowState(run_id=run_id or f"onboarding-init-{org_id}")
     seq = 0
+    _stage_starts: dict[str, float] = {}
 
     async def _publish(envelope_type: str, payload: dict[str, Any]) -> None:
         nonlocal seq
@@ -63,6 +71,8 @@ async def run_onboarding_initialize(
         )
 
     async def _stage_start(stage: str, stats: dict[str, Any] | None = None) -> None:
+        _stage_starts[stage] = time.monotonic()
+        logger.info("stage_start", stage=stage)
         payload: dict[str, Any] = {"stage": stage, "status": "started"}
         if stats:
             payload["stats"] = stats
@@ -70,6 +80,15 @@ async def run_onboarding_initialize(
         await asyncio.sleep(0)  # yield so the SSE subscriber can pick up the event
 
     async def _stage_complete(stage: str, stats: dict[str, Any] | None = None) -> None:
+        duration_ms = int(
+            (time.monotonic() - _stage_starts.get(stage, time.monotonic())) * 1000
+        )
+        logger.info(
+            "stage_complete",
+            stage=stage,
+            duration_ms=duration_ms,
+            stats=stats or {},
+        )
         payload: dict[str, Any] = {"stage": stage, "status": "completed"}
         if stats:
             payload["stats"] = stats
@@ -81,12 +100,24 @@ async def run_onboarding_initialize(
     _progress_lock = asyncio.Lock()
     _latest_progress: dict[str, Any] = {}
     _sync_total_files: int = 0
+    # Task 10: dirty-flag + background flusher so sync progress reaches the
+    # UI while sync() is still running, not only after it returns.
+    _flush_event = asyncio.Event()
+    _flush_task: asyncio.Task | None = None
 
     def _on_sync_progress(document_count: int, chunk_count: int) -> None:
         nonlocal _latest_progress, _sync_total_files
         _latest_progress = {"document_count": document_count, "chunk_count": chunk_count}
         if document_count > _sync_total_files:
             _sync_total_files = document_count
+        _flush_event.set()
+
+    async def _cancel_flusher() -> None:
+        nonlocal _flush_task
+        if _flush_task is not None:
+            _flush_task.cancel()
+            await asyncio.gather(_flush_task, return_exceptions=True)
+            _flush_task = None
 
     async def _emit_stage_progress(stage: str, progress: int) -> None:
         await _publish("stage_progress", {
@@ -105,6 +136,24 @@ async def run_onboarding_initialize(
         total = max(_sync_total_files, 1)
         progress = min(int((doc_count / total) * 92), 92) if _sync_total_files > 0 else 0
         await _emit_stage_progress("repository_ingestion", progress)
+
+    async def _progress_loop() -> None:
+        """Task 10: publish buffered progress ~1s after it changes.
+
+        The dirty flag (``_flush_event``) gates publishing: an idle loop
+        times out without publishing, so no duplicate frames enter the
+        1000-entry stream while sync is between callbacks. Uses
+        ``asyncio.timeout`` (not ``wait_for``) so task cancellation is
+        always honored — wait_for can lose the wakeup on cancel in 3.11.
+        """
+        while True:
+            try:
+                async with asyncio.timeout(1.0):
+                    await _flush_event.wait()
+            except TimeoutError:
+                continue  # nothing changed since the last flush
+            _flush_event.clear()
+            await _flush_progress()
 
     if not selected_repository:
         state.errors.append("No repository selected")
@@ -127,7 +176,7 @@ async def run_onboarding_initialize(
     repo_full = selected_repository.get("full_name", "")
     onboarding_repo = getattr(context.repositories, "onboarding", None)
 
-    try:
+    async def _run_stages() -> WorkflowState:
         installation = await context.repositories.github_installations.first_for_org(org_id)
         if installation is None:
             raise RuntimeError(f"No GitHub installation found for org {org_id}")
@@ -141,18 +190,26 @@ async def run_onboarding_initialize(
         sync_service = SyncService(github=github, context=context)
         include = selected_repository.get("doc_include", ["README.md", "docs/**", "*.md", "*.mdx"])
         exclude = selected_repository.get("doc_exclude", ["node_modules/**", "dist/**"])
-        sync_result = await sync_service.sync(
-            org_id=org_id,
-            repository_full_name=repo_full,
-            include=include,
-            exclude=exclude,
-            on_progress=_on_sync_progress,
-        )
-        # Flush any buffered progress after sync completes
+        nonlocal _flush_task
+        _flush_task = asyncio.create_task(_progress_loop())
+        try:
+            sync_result = await sync_service.sync(
+                org_id=org_id,
+                repository_full_name=repo_full,
+                include=include,
+                exclude=exclude,
+                on_progress=_on_sync_progress,
+            )
+        except BaseException:
+            await _cancel_flusher()
+            raise
         await _flush_progress()
+        await _cancel_flusher()
 
-        # A sync that stored nothing while failing every file is a hard
-        # failure, not success (R-C): raise so mark_failed records it.
+        doc_count = _latest_progress.get("document_count", 0) if _latest_progress else 0
+        if _sync_total_files > 0 and doc_count < _sync_total_files:
+            await _emit_stage_progress("repository_ingestion", 92)
+
         if sync_result.document_count == 0 and sync_result.failed_files:
             raise RuntimeError(
                 "Documentation sync stored 0 documents; "
@@ -164,7 +221,7 @@ async def run_onboarding_initialize(
             {"document_count": sync_result.document_count, "chunk_count": sync_result.chunk_count},
         )
 
-        # Stage 2: Knowledge construction — extract from synced chunks
+        # Stage 2
         await _update_stage(onboarding_repo, org_id, "knowledge_construction")
         await _stage_start("knowledge_construction", {"document_count": sync_result.document_count})
         from draftly.workflows.onboarding.stages import (
@@ -185,7 +242,7 @@ async def run_onboarding_initialize(
             "candidate_count": extraction.candidate_count,
         })
 
-        # Stage 3: Initial evaluation — score corpus quality
+        # Stage 3
         await _update_stage(onboarding_repo, org_id, "initial_evaluation")
         await _stage_start("initial_evaluation")
         await _emit_stage_progress("initial_evaluation", 20)
@@ -193,7 +250,7 @@ async def run_onboarding_initialize(
         await _emit_stage_progress("initial_evaluation", 100)
         await _stage_complete("initial_evaluation", {"score": eval_result.score})
 
-        # Stage 4: Health report — aggregate scores
+        # Stage 4
         await _update_stage(onboarding_repo, org_id, "health_report")
         await _stage_start("health_report")
         await _emit_stage_progress("health_report", 30)
@@ -206,7 +263,7 @@ async def run_onboarding_initialize(
         await _emit_stage_progress("health_report", 100)
         await _stage_complete("health_report", {"score": health_result.score})
 
-        # Stage 5: Recommendations — generate suggestions
+        # Stage 5
         await _update_stage(onboarding_repo, org_id, "recommendations")
         await _stage_start("recommendations")
         await _emit_stage_progress("recommendations", 15)
@@ -255,12 +312,50 @@ async def run_onboarding_initialize(
         logger.info("onboarding_initialize_done org=%s docs=%d", org_id, sync_result.document_count)
         return state.finish(WorkflowStatus.DELIVERED)
 
-    except Exception as exc:
-        logger.exception("onboarding_initialize_failed org=%s", org_id)
+    async def _run_inner() -> WorkflowState:
+        try:
+            return await _run_stages()
+        except asyncio.CancelledError:
+            # Task 11: outer wait_for cancelled us. Clean up the flusher so
+            # it never outlives the workflow, then re-raise.
+            await _cancel_flusher()
+            raise
+        except Exception as exc:
+            # Regular failure path: persist the failure and return a FAILED
+            # state (preserves the pre-watchdog contract that the caller
+            # always receives a WorkflowState).
+            logger.exception("onboarding_initialize_failed org=%s", org_id)
+            await _cancel_flusher()
+            if onboarding_repo:
+                await onboarding_repo.mark_failed(
+                    org_id, "initialize", {"detail": str(exc)}
+                )
+            state.errors.append(str(exc))
+            await _publish("workflow_result", {"status": "FAILED", "error": str(exc)})
+            return state.finish(WorkflowStatus.FAILED)
+
+    try:
+        return await asyncio.wait_for(
+            _run_inner(), timeout=INIT_WORKFLOW_TIMEOUT_SECONDS
+        )
+    except TimeoutError:
+        # Task 11: the stage sequence exceeded the watchdog ceiling.
+        logger.error(
+            "onboarding_initialize_timeout org=%s timeout=%ds",
+            org_id, INIT_WORKFLOW_TIMEOUT_SECONDS,
+        )
+        await _cancel_flusher()
         if onboarding_repo:
-            await onboarding_repo.mark_failed(org_id, "initialize", {"detail": str(exc)})
-        state.errors.append(str(exc))
-        await _publish("workflow_result", {"status": "FAILED", "error": str(exc)})
+            await onboarding_repo.mark_failed(
+                org_id,
+                "initialize",
+                {"detail": f"Initialization exceeded {INIT_WORKFLOW_TIMEOUT_SECONDS}s"},
+            )
+        state.errors.append("Initialization timed out")
+        await _publish(
+            "workflow_result",
+            {"status": "FAILED", "error": "Initialization timed out"},
+        )
         return state.finish(WorkflowStatus.FAILED)
 
 

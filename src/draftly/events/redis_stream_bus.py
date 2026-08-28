@@ -72,7 +72,11 @@ class RedisStreamBus:
                         try:
                             import json as _json
                             payload_str = fields.get("payload", "{}")
-                            payload = _json.loads(payload_str) if isinstance(payload_str, str) else {}
+                            payload = (
+                                _json.loads(payload_str)
+                                if isinstance(payload_str, str)
+                                else {}
+                            )
                             envelope = StreamEnvelope(
                                 type=fields.get("type", "unknown"),
                                 run_id=run_id,

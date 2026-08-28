@@ -37,14 +37,17 @@ class PerformanceRepository:
         model_name: str,
         success: bool,
         latency_ms: float,
+        flush: bool = True,
     ) -> None:
         # 1. Live cache first: the very next route() call sees it.
         if self._stats_store is not None:
             self._stats_store.record_outcome(
                 task_type, model_name, success=success, latency_ms=latency_ms
             )
-        # 2. Durable aggregate.
-        await self.flush_entry(task_type, model_name)
+        # 2. Durable aggregate. flush=False lets a caller batch many
+        # outcomes into ONE upsert via flush_entry (stage-level batching).
+        if flush:
+            await self.flush_entry(task_type, model_name)
 
     async def flush_entry(self, task_type: str, model_name: str) -> None:
         if self._stats_store is None:

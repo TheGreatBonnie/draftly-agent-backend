@@ -307,25 +307,25 @@ def build_model_router(
     # Ox Alpha (stealth/ox-alpha): free reasoning model with a 1M context
     # window; preferred over nvidia/requesty/orca, below mantle/bedrock.
     # structured_output stripped: probe returned prose instead of schema JSON.
-    registry.register_model(
-        ModelConfig(
-            name="reasoning-openrouter-ox-alpha",
-            provider="openrouter",
-            model_id=_resolve_model_id(
-                "OPENROUTER_OX_ALPHA_MODEL",
-                default="stealth/ox-alpha",
-            ),
-            capabilities=(
-                "reasoning",
-                "tool_calling",
-            ),
-            priority=6,
-            max_tokens=4096,
-            context_window=1_048_576,
-            input_cost_per_1m_tokens=0.0,
-            output_cost_per_1m_tokens=0.0,
-        )
-    )
+    # registry.register_model(
+    #     ModelConfig(
+    #         name="reasoning-openrouter-ox-alpha",
+    #         provider="openrouter",
+    #         model_id=_resolve_model_id(
+    #             "OPENROUTER_OX_ALPHA_MODEL",
+    #             default="stealth/ox-alpha",
+    #         ),
+    #         capabilities=(
+    #             "reasoning",
+    #             "tool_calling",
+    #         ),
+    #         priority=6,
+    #         max_tokens=4096,
+    #         context_window=1_048_576,
+    #         input_cost_per_1m_tokens=0.0,
+    #         output_cost_per_1m_tokens=0.0,
+    #     )
+    # )
 
     # ---------------------------------------------------------
     # .env.example candidate models — registered unconditionally so

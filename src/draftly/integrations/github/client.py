@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import base64
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Any, cast
 
 import httpx
@@ -39,6 +39,20 @@ class GitHubClient:
         self.auth = auth or GitHubAuth()
         self.timeout = timeout
         self.repository = repository
+        self._shared_client: httpx.AsyncClient | None = None
+
+    def _client(self) -> httpx.AsyncClient:
+        if self._shared_client is None:
+            self._shared_client = httpx.AsyncClient(
+                timeout=self.timeout,
+                limits=httpx.Limits(max_connections=20, max_keepalive_connections=10),
+            )
+        return self._shared_client
+
+    async def aclose(self) -> None:
+        if self._shared_client is not None:
+            await self._shared_client.aclose()
+            self._shared_client = None
 
     def _headers(self) -> dict[str, str]:
         return {
@@ -108,16 +122,14 @@ class GitHubClient:
         if token:
             headers = {**headers, "Authorization": f"Bearer {token}"}
 
-        async with httpx.AsyncClient(
-            timeout=self.timeout,
-        ) as client:
-            response = await client.request(
-                method,
-                url,
-                headers=headers,
-                params=params,
-                json=json,
-            )
+        client = self._client()
+        response = await client.request(
+            method,
+            url,
+            headers=headers,
+            params=params,
+            json=json,
+        )
 
         response.raise_for_status()
 
@@ -141,16 +153,14 @@ class GitHubClient:
         if token:
             headers = {**headers, "Authorization": f"Bearer {token}"}
 
-        async with httpx.AsyncClient(
-            timeout=self.timeout,
-        ) as client:
-            response = await client.request(
-                method,
-                url,
-                headers=headers,
-                params=params,
-                json=json,
-            )
+        client = self._client()
+        response = await client.request(
+            method,
+            url,
+            headers=headers,
+            params=params,
+            json=json,
+        )
 
         response.raise_for_status()
 
@@ -454,7 +464,12 @@ class GitHubClient:
             date_str = data[0]["commit"]["committer"]["date"]
             return datetime.fromisoformat(date_str.replace("Z", "+00:00"))
         except Exception:
-            logger.warning("get_last_commit_date_failed owner=%s repo=%s path=%s", owner, repo, path)
+            logger.warning(
+                "get_last_commit_date_failed owner=%s repo=%s path=%s",
+                owner,
+                repo,
+                path,
+            )
             return None
 
     async def get_repository(

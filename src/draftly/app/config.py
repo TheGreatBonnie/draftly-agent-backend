@@ -176,6 +176,11 @@ class Settings(BaseSettings):
     rq_queue_prefix: str = "draftly"
     rq_scheduler_enabled: bool = True
     rq_worker_queues: list[str] = ["scheduled", "webhooks", "default"]
+    # When enabled, POST /onboarding/initialize dispatches to the RQ worker
+    # (default queue) and returns immediately; the worker process releases
+    # the init lock. Defaults to off so single-process/local mode keeps the
+    # in-process background-task fallback.
+    rq_enabled: bool = False
 
     # ------------------------------------------------------------------
     # Security

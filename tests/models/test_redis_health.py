@@ -1,5 +1,5 @@
-import pytest
 import fakeredis
+import pytest
 
 
 @pytest.fixture

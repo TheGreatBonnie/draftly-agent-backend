@@ -35,6 +35,9 @@ ROLE_TO_TASK_TYPE: dict[str, TaskType] = {
     "memory_curator": TaskType.FAST,
     "classifier": TaskType.FAST,
     "context": TaskType.RESEARCH,
+    "knowledge_extractor": TaskType.DOCUMENTATION_GENERATION,
+    "initial_evaluator": TaskType.EVALUATION,
+    "recommender": TaskType.DOCUMENTATION_REVIEW,
 }
 
 

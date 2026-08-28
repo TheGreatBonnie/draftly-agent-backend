@@ -75,3 +75,28 @@ def test_helper_resolves_via_resolver(router):
     assert resolve_model_for_role(
         RoleAwareModelResolver(router), "github_intelligence"
     ) == "MODEL<writer-model>"
+
+
+def test_for_role_with_decision_returns_model_and_decision(router):
+    resolver = RoleAwareModelResolver(router)
+    model, decision = resolver.for_role_with_decision("documentation_engineer")
+    assert model == "MODEL<writer-model>"
+    assert decision.selected_model == "writer-model"
+    assert decision.task_type == "documentation_generation"
+
+
+def test_for_role_delegates_to_for_role_with_decision(router):
+    resolver = RoleAwareModelResolver(router)
+    model, _decision = resolver.for_role_with_decision("github_intelligence")
+    assert resolver.for_role("github_intelligence") == model
+
+
+def test_for_role_with_decision_degrades_offline():
+    from draftly.models.health import ProviderHealthRegistry
+    from draftly.models.registry import ModelRegistry
+    from draftly.models.router import ModelRouter
+
+    empty = ModelRouter(registry=ModelRegistry(), health=ProviderHealthRegistry())
+    resolver = RoleAwareModelResolver(empty)
+    assert resolver.for_role_with_decision("support_engineer") == (None, None)
+    assert resolver.for_role("support_engineer") is None

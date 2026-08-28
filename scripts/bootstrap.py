@@ -6,10 +6,13 @@ import os
 import sys
 from pathlib import Path
 
+from dotenv import load_dotenv
+
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from draftly.integrations.database.client import DatabaseClient
 
+load_dotenv()
 
 async def run_migrations() -> None:
     """Apply all SQL migration files in order."""

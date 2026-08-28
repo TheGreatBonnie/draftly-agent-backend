@@ -111,6 +111,79 @@ class DatabaseMemoryStore:
 
         return self._row_to_memory(row)
 
+    async def insert_batch(
+        self,
+        *,
+        items: Sequence[dict],
+        model: str = "text-embedding-3-small",
+        dimensions: int = 1536,
+    ) -> list[dict]:
+        memory_ids = [str(uuid4()) for _ in items]
+        rows = []
+        async with self.client.transaction() as conn:
+            for item, memory_id in zip(items, memory_ids):
+                row = await self.client.fetch_one_conn(
+                    conn,
+                    f"""
+                    INSERT INTO memory_items (
+                        id, org_id, namespace, memory_type, content,
+                        importance, confidence, metadata
+                    )
+                    VALUES (
+                        $1, $2, $3, $4, $5, $6, $7, $8::jsonb
+                    )
+                    RETURNING {_MEMORY_COLUMNS}
+                    """,
+                    memory_id,
+                    item.get("org_id"),
+                    item["namespace"],
+                    item["memory_type"],
+                    item["content"],
+                    item["importance"],
+                    item.get("confidence", 0.5),
+                    json.dumps(item.get("metadata") or {}),
+                )
+
+                await self.client.execute_conn(
+                    conn,
+                    """
+                    INSERT INTO memory_embeddings (
+                        id, memory_item_id, org_id, embedding, model, dimensions
+                    )
+                    VALUES (
+                        $1, $2, $3, $4::VECTOR, $5, $6
+                    )
+                    """,
+                    str(uuid4()),
+                    memory_id,
+                    item.get("org_id"),
+                    self._format_vector(item["embedding"]),
+                    model,
+                    dimensions,
+                )
+                rows.append(row)
+        return [self._row_to_memory(r) for r in rows]
+
+    async def delete_by_metadata_bulk(
+        self, *, namespace: str, key: str, value: str, org_id: str
+    ) -> int:
+        """Delete all items for one document atomically. Returns deleted count."""
+        row = await self.client.fetch_one(
+            """
+            WITH deleted AS (
+                DELETE FROM memory_items
+                WHERE org_id = $1 AND namespace = $2 AND metadata->>$3 = $4
+                RETURNING id
+            )
+            SELECT count(*)::int AS deleted FROM deleted
+            """,
+            org_id,
+            namespace,
+            key,
+            value,
+        )
+        return int(row["deleted"]) if row else 0
+
     async def get(
         self,
         *,

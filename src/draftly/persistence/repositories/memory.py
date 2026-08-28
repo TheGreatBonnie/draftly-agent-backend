@@ -39,6 +39,13 @@ class MemoryRepository:
             embedding=embedding,
         )
 
+    async def create_batch(
+        self,
+        *,
+        items: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        return await self.store.insert_batch(items=items)
+
     async def get(self, *, memory_id: str) -> dict[str, Any] | None:
         return await self.store.get(memory_id=memory_id)
 
@@ -48,11 +55,13 @@ class MemoryRepository:
         namespace: str,
         embedding: Sequence[float],
         limit: int = 10,
+        org_id: str | None = None,
     ) -> list[dict[str, Any]]:
         return await self.vector_search.search(
             namespace=namespace,
             embedding=embedding,
             limit=limit,
+            org_id=org_id,
         )
 
     async def update(
@@ -109,8 +118,14 @@ class MemoryRepository:
         namespace: str,
         key: str,
         value: str,
+        org_id: str | None = None,
     ) -> int:
         """Delete items in a namespace matching metadata[key]; returns count."""
+        if org_id:
+            return await self.store.delete_by_metadata_bulk(
+                namespace=namespace, key=key, value=value, org_id=org_id
+            )
+
         items = await self.list_namespace(namespace=namespace)
         deleted = 0
         for item in items:
