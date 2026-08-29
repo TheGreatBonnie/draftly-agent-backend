@@ -13,9 +13,10 @@ from typing import Any
 import structlog
 from rq import Queue, Retry
 from rq.job import Job
+from rq.serializers import JSONSerializer
 
 from draftly.app.composition.workers import TASK_REGISTRY
-from draftly.app.workers.async_sync import make_sync_handler
+from draftly.app.workers.rq_dispatch import dispatch
 
 logger = structlog.get_logger(__name__)
 
@@ -53,6 +54,7 @@ def build_rq_queues(
         queues[queue_name] = Queue(
             f"{prefix}:{queue_name}",
             connection=connection,
+            serializer=JSONSerializer,
         )
     return queues
 
@@ -89,12 +91,15 @@ def enqueue_job(
     if handler is None:
         raise ValueError(f"No handler registered for task: {task_name}")
 
-    sync_handler = make_sync_handler(handler)
     job_id = str(uuid.uuid4())
 
+    # Enqueue the module-level (importable) dispatcher with the task name and
+    # job args.  The worker resolves its OWN in-process handler by task name.
+    # Serializing the handler closure would make the job un-importable by RQ
+    # (ValueError: Invalid attribute name) and the job would never execute.
     job = queue.enqueue(
-        sync_handler,
-        kwargs=kwargs,
+        dispatch,
+        kwargs={"name": task_name, **kwargs},
         job_id=job_id,
         retry=Retry(max=3, interval=[10, 30, 60]),
         ttl=3600,

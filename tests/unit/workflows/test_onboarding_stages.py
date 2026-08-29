@@ -641,6 +641,41 @@ async def test_knowledge_construction_enforces_chunk_timeout(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_knowledge_construction_chunk_timeout_zero_waits_for_slow_llm(
+    monkeypatch,
+):
+    """``CHUNK_TIMEOUT_SECONDS=0`` disables the per-call timeout: a slow LLM
+    call that would exceed time-limited behavior is allowed to complete instead
+    of being cut off and recorded as failed.
+    """
+    monkeypatch.setattr(stages, "CHUNK_TIMEOUT_SECONDS", 0)
+
+    async def slow_llm(model, prompt, agent=None, *, output_model=None, telemetry=None):
+        await asyncio.sleep(0.15)  # exceeds what time-limited calls would allow
+        return ExtractionOutput(facts=["slow but complete"])
+
+    monkeypatch.setattr(stages, "_llm_generate", slow_llm)
+
+    context = MagicMock()
+    context.memory.recall = AsyncMock(return_value=[
+        {"id": "chunk-slow", "content": "Slow content.", "metadata": {}},
+    ])
+    context.memory.store_batch = AsyncMock(return_value=[])
+    context.docgraph.link = AsyncMock(return_value={"id": "edge-1"})
+    context.candidates.enqueue = AsyncMock(return_value={"id": "c-1"})
+    publish = AsyncMock()
+
+    with patch("draftly.workflows.onboarding.stages.Agent"):
+        result = await run_knowledge_construction(
+            context, org_id="test-org", publish=publish,
+        )
+
+    assert "chunk-slow" not in result.failed_chunks
+    assert result.knowledge_count == 1
+    context.memory.store_batch.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_knowledge_construction_caps_llm_concurrency(monkeypatch):
     """LLM calls run concurrently but never exceed LLM_MAX_CONCURRENCY."""
     monkeypatch.setattr(stages, "CHUNK_TIMEOUT_SECONDS", 5)

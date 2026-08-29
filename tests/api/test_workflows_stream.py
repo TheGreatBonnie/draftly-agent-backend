@@ -167,6 +167,24 @@ class TestTicketRoute:
         resp = client.post("/workflows/missing/stream-ticket")
         assert resp.status_code == 404
 
+    def test_issue_ticket_unknown_run_logs_structured_error(self) -> None:
+        """Task 3: an unknown run must emit a structured error line so the
+        incident is visible in production logging."""
+        from structlog.testing import capture_logs
+
+        with capture_logs() as cap:
+            app = make_app()
+            client = TestClient(app)
+            resp = client.post("/workflows/missing/stream-ticket")
+
+        assert resp.status_code == 404
+        assert any(
+            e.get("event") == "stream_ticket_unknown_run"
+            and e.get("run_id") == "missing"
+            and e.get("org_id") == "org-1"
+            for e in cap
+        ), f"expected structured log, got: {cap}"
+
     def test_issue_ticket_returns_ticket(self) -> None:
         app = make_app()
         client = TestClient(app)

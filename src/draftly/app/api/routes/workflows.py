@@ -58,6 +58,7 @@ async def issue_ticket(
 
     record = await jobs.get(job_id=run_id)
     if record is None:
+        logger.error("stream_ticket_unknown_run", run_id=run_id, org_id=org_id)
         raise HTTPException(status_code=404, detail=f"Unknown run: {run_id}")
     if str(record.get("org_id") or "") != org_id:
         raise HTTPException(

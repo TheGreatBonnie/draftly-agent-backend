@@ -11,7 +11,6 @@ Usage:
 from __future__ import annotations
 
 import signal
-import sys
 from typing import Any
 
 import structlog
@@ -21,6 +20,7 @@ from draftly.app.composition.rq_jobs import build_rq_queues
 from draftly.app.config import get_settings
 from draftly.app.lifecycle import create_application
 from draftly.app.services.init_lock import release_init_lock_sync
+from draftly.app.workers.rq_dispatch import register_handlers, run_on_loop
 from draftly.observability.logging import configure_logging
 
 ONBOARDING_INIT_TASK = "onboarding.initialize"
@@ -65,10 +65,21 @@ def main() -> None:
 
     application = create_application(settings=settings)
 
+    # application.startup() is async: build the runtime (including
+    # application.task_handlers = task_runner._tasks) BEFORE entering the blocking
+    # RQ worker loop. It MUST run on the dispatcher's persistent event loop (not a
+    # throwaway loop): the asyncpg/DB pool created here is bound to that loop, and
+    # dispatch() later executes every job on the same loop (Bug 3).
+    run_on_loop(application.startup())
+    register_handlers(application.task_handlers or {})
+    log.info("rq_handlers_registered count=%d", len(application.task_handlers or {}))
+
     import redis as sync_redis
 
     redis_url = settings.redis_url
-    conn = sync_redis.Redis.from_url(redis_url, decode_responses=True)
+    # RQ always zlib-compresses job data and needs raw bytes to decompress it;
+    # decode_responses=True would UTF-8-decode the compressed payload and crash.
+    conn = sync_redis.Redis.from_url(redis_url, decode_responses=False)
 
     queues = build_rq_queues(conn, prefix=settings.rq_queue_prefix)
 
@@ -86,23 +97,24 @@ def main() -> None:
         prefix=settings.rq_queue_prefix,
     )
 
+    # RQ's BaseWorker.request_stop(signum, frame) IS a signal handler (it
+    # requests a warm shutdown, then re-arms for a force stop on a second
+    # signal). Register it directly rather than wrapping it — calling it with
+    # no args raises TypeError (it expects signum + frame).
     def shutdown(signum: int, frame: object) -> None:
         log.info("RQ worker shutting down", signal=signum)
-        worker.stop()
-        sys.exit(0)
+        worker.request_stop(signum, frame)
 
     signal.signal(signal.SIGINT, shutdown)
     signal.signal(signal.SIGTERM, shutdown)
 
     try:
-        application.startup()
         worker.work()
     except KeyboardInterrupt:
         log.info("RQ worker interrupted")
     except Exception:
         log.exception("RQ worker failed")
     finally:
-        worker.stop()
         conn.close()
 
 

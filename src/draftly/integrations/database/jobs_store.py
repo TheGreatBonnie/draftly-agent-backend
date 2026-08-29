@@ -1,3 +1,4 @@
+import json
 from typing import Any
 from uuid import uuid4
 
@@ -46,7 +47,8 @@ class DatabaseJobsStore:
                 $4,
                 $5,
                 $6,
-                $7::JSONB
+                $7,
+                $8::JSONB
             )
             RETURNING
                 id,
@@ -56,7 +58,9 @@ class DatabaseJobsStore:
                 job_type,
                 schedule,
                 status,
-                configuration
+                configuration,
+                last_run_at,
+                next_run_at
             """,
             job_id,
             run_id,
@@ -65,8 +69,77 @@ class DatabaseJobsStore:
             job_type,
             schedule,
             status,
-            configuration,
+            json.dumps(configuration),
         )
+
+        return self._to_dict(row)
+
+    async def upsert_on_conflict(
+        self,
+        *,
+        run_id: str,
+        org_id: str,
+        name: str,
+        job_type: str,
+        schedule: str,
+        configuration: dict[str, Any],
+        status: str = "pending",
+    ) -> dict[str, Any] | None:
+        """Idempotently insert a jobs row keyed by run_id.
+
+        The run_id column has a UNIQUE constraint (migration 036), so a
+        pre-existing row (e.g. a stale/dead initial run) is left untouched
+        and no error is raised. Used to guarantee a jobs row exists on the
+        resumed-onboarding path so /stream-ticket never 404s.
+        """
+
+        row = await self.client.fetch_one(
+            """
+            INSERT INTO jobs (
+                id,
+                run_id,
+                org_id,
+                name,
+                job_type,
+                schedule,
+                status,
+                configuration
+            )
+            VALUES (
+                $1,
+                $2,
+                $3,
+                $4,
+                $5,
+                $6,
+                $7,
+                $8::JSONB
+            )
+            ON CONFLICT (run_id) DO NOTHING
+            RETURNING
+                id,
+                run_id,
+                org_id,
+                name,
+                job_type,
+                schedule,
+                status,
+                configuration,
+                last_run_at,
+                next_run_at
+            """,
+            uuid4(),
+            run_id,
+            org_id,
+            name,
+            job_type,
+            schedule,
+            status,
+            json.dumps(configuration),
+        )
+
+        if row is None:
+            return None
 
         return self._to_dict(row)
 

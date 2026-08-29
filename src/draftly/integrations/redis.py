@@ -43,7 +43,10 @@ class RedisClient:
             host=kwargs.get("host", "localhost"),
             port=kwargs.get("port", 6379),
             db=kwargs.get("db", 0),
-            decode_responses=True,
+            # RQ always zlib-compresses job data (rq/job.py) and needs the raw
+            # bytes to decompress; decode_responses=True would UTF-8-decode the
+            # compressed payload and crash the worker with a UnicodeDecodeError.
+            decode_responses=False,
         )
 
     async def close(self) -> None:

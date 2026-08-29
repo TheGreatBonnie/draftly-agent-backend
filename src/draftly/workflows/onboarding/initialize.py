@@ -51,6 +51,29 @@ async def run_onboarding_initialize(
     del kwargs
     state = WorkflowState(run_id=run_id or f"onboarding-init-{org_id}")
     seq = 0
+
+    async def _set_job_status(status: str) -> None:
+        """Best-effort: persist the terminal status to the jobs table.
+
+        The jobs row is created (as ``pending``) when /initialize registers the
+        run so /stream-ticket always has a backing row. Flip it here on the
+        finish paths so it stops reporting ``pending`` once the flow ends.
+        Never fails the workflow — it is bookkeeping secondary to the run.
+        """
+        jobs = getattr(getattr(context, "repositories", None), "jobs", None)
+        if jobs is None:
+            return
+        try:
+            await jobs.update_status(job_id=state.run_id, status=status)
+            logger.info(
+                "onboarding_job_status org=%s run=%s status=%s",
+                org_id, state.run_id, status,
+            )
+        except Exception:
+            logger.warning(
+                "onboarding_job_status_failed org=%s run=%s status=%s",
+                org_id, state.run_id, status,
+            )
     _stage_starts: dict[str, float] = {}
 
     async def _publish(envelope_type: str, payload: dict[str, Any]) -> None:
@@ -157,6 +180,7 @@ async def run_onboarding_initialize(
 
     if not selected_repository:
         state.errors.append("No repository selected")
+        await _set_job_status("failed")
         await _publish("workflow_result", {"status": "FAILED", "error": "No repository selected"})
         return state.finish(WorkflowStatus.FAILED)
 
@@ -310,6 +334,7 @@ async def run_onboarding_initialize(
             },
         )
         logger.info("onboarding_initialize_done org=%s docs=%d", org_id, sync_result.document_count)
+        await _set_job_status("completed")
         return state.finish(WorkflowStatus.DELIVERED)
 
     async def _run_inner() -> WorkflowState:
@@ -330,6 +355,7 @@ async def run_onboarding_initialize(
                 await onboarding_repo.mark_failed(
                     org_id, "initialize", {"detail": str(exc)}
                 )
+            await _set_job_status("failed")
             state.errors.append(str(exc))
             await _publish("workflow_result", {"status": "FAILED", "error": str(exc)})
             return state.finish(WorkflowStatus.FAILED)
@@ -351,6 +377,7 @@ async def run_onboarding_initialize(
                 "initialize",
                 {"detail": f"Initialization exceeded {INIT_WORKFLOW_TIMEOUT_SECONDS}s"},
             )
+        await _set_job_status("failed")
         state.errors.append("Initialization timed out")
         await _publish(
             "workflow_result",

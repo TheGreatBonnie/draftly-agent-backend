@@ -142,7 +142,7 @@ class Settings(BaseSettings):
         default="redis://localhost:6379/0",
         validation_alias=AliasChoices("REDIS_URL"),
     )
-    events_streaming_enabled: bool = False
+    events_streaming_enabled: bool = True
     events_heartbeat_seconds: int = 15
 
     # ------------------------------------------------------------------
@@ -180,7 +180,7 @@ class Settings(BaseSettings):
     # (default queue) and returns immediately; the worker process releases
     # the init lock. Defaults to off so single-process/local mode keeps the
     # in-process background-task fallback.
-    rq_enabled: bool = False
+    rq_enabled: bool = True
 
     # ------------------------------------------------------------------
     # Security

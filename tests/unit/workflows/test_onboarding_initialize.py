@@ -26,6 +26,7 @@ def _context():
     context.repositories.github_installations.first_for_org = AsyncMock(
         return_value={"installation_id": 42}
     )
+    context.repositories.jobs.update_status = AsyncMock(return_value={})
     return context
 
 
@@ -92,6 +93,82 @@ async def test_initialize_workflow_completes(installation_client):
     assert state.result["document_count"] == 2
     assert state.result["baseline"]["commit_sha"] == "abc123"
     installation_client.assert_awaited_once_with(42)
+
+
+@pytest.mark.asyncio
+async def test_initialize_workflow_marks_job_completed(installation_client):
+    """On success the jobs row's status is flipped to 'completed'."""
+    from draftly.documentation.baseline import BaselineSnapshot
+    from draftly.documentation.sync_service import SyncResult
+
+    sync_result = SyncResult(
+        commit_sha="abc123",
+        repository="owner/repo",
+        document_count=2,
+        chunk_count=5,
+        baseline=BaselineSnapshot(
+            commit_sha="abc123", repository="owner/repo",
+            document_count=2, section_count=4, chunk_count=5,
+        ),
+    )
+    context = _context()
+
+    with patch("draftly.documentation.sync_service.SyncService") as service_cls:
+        service_cls.return_value.sync = AsyncMock(return_value=sync_result)
+        with patch(
+            "draftly.workflows.onboarding.stages.run_knowledge_construction",
+            new=AsyncMock(return_value=MagicMock(
+                knowledge_count=10, relationship_count=5,
+                candidate_count=3, failed_chunks=[],
+            )),
+        ):
+            with patch(
+                "draftly.workflows.onboarding.stages.run_initial_evaluation",
+                new=AsyncMock(return_value=MagicMock(score=0.72, dimensions={})),
+            ):
+                with patch(
+                    "draftly.workflows.onboarding.stages.run_health_report",
+                    return_value=MagicMock(score=0.68, dimensions={}),
+                ):
+                    with patch(
+                        "draftly.workflows.onboarding.stages.run_recommendations",
+                        new=AsyncMock(return_value=[
+                            MagicMock(priority="high", title="Add API ref",
+                                      detail="Missing", category="coverage"),
+                        ]),
+                    ):
+                        state = await run_onboarding_initialize(
+                            context,
+                            org_id="test-org",
+                            selected_repository={"full_name": "owner/repo"},
+                            run_id="run-job-123",
+                        )
+
+    assert state.status == WorkflowStatus.DELIVERED
+    context.repositories.jobs.update_status.assert_awaited_once_with(
+        job_id="run-job-123", status="completed"
+    )
+
+
+@pytest.mark.asyncio
+async def test_initialize_workflow_marks_job_failed_on_error(installation_client):
+    """On failure the jobs row's status is flipped to 'failed'."""
+    context = _context()
+    context.repositories.github_installations.first_for_org = AsyncMock(
+        side_effect=RuntimeError("boom")
+    )
+
+    state = await run_onboarding_initialize(
+        context,
+        org_id="test-org",
+        selected_repository={"full_name": "owner/repo"},
+        run_id="run-job-456",
+    )
+
+    assert state.status == WorkflowStatus.FAILED
+    context.repositories.jobs.update_status.assert_awaited_once_with(
+        job_id="run-job-456", status="failed"
+    )
 
 
 @pytest.mark.asyncio
@@ -222,6 +299,7 @@ def fake_repositories():
     repos.onboarding.upsert = AsyncMock()
     repos.onboarding.mark_step = AsyncMock()
     repos.onboarding.mark_step_and_set_state = AsyncMock()
+    repos.jobs.update_status = AsyncMock(return_value={})
     return repos
 
 
@@ -822,7 +900,6 @@ async def test_execute_initialization_enqueues_to_rq_when_enabled(monkeypatch):
     request.app.state.draftly.rq_queues = {"default": MagicMock()}
     request.app.state.draftly.task_handlers = {"onboarding.initialize": MagicMock()}
     request.app.state.draftly.settings = MagicMock(rq_enabled=True)
-    request.app.state.draftly.dependencies.repositories.jobs.insert = AsyncMock()
 
     enqueue_mock = _enqueue_recorder(monkeypatch)
 
@@ -847,6 +924,7 @@ async def test_execute_initialization_enqueues_to_rq_when_enabled(monkeypatch):
     repos = MagicMock()
     repos.onboarding.get = AsyncMock(return_value=None)
     repos.onboarding.upsert = AsyncMock()
+    jobs_upsert = repos.jobs.upsert_on_conflict = AsyncMock()
 
     result = await onboarding._execute_initialization(
         repos, "org-1", worker=None, selected_repository={"full_name": "o/r"},
@@ -862,6 +940,64 @@ async def test_execute_initialization_enqueues_to_rq_when_enabled(monkeypatch):
     assert kwargs["task_name"] == "onboarding.initialize"
     assert kwargs["org_id"] == "org-1"
     assert kwargs["run_id"] == result["run_id"]
+    # Task 1: the app-wired store is used and pins the RQ job id so
+    # /stream-ticket can later resolve run_id -> job_id. Registered via
+    # conflict-tolerant upsert_on_conflict per Task 10.
+    jobs_upsert.assert_awaited_once()
+    jobs_upsert.assert_awaited_with(
+        run_id=result["run_id"],
+        org_id="org-1",
+        name="onboarding.initialize",
+        job_type="onboarding",
+        schedule="manual",
+        configuration={"rq_job_id": "rq-job-1"},
+    )
+
+
+@pytest.mark.asyncio
+async def test_execute_initialization_reconciles_jobs_row_when_resumed(monkeypatch):
+    """Task 2: when the init lock is held (resumed path), reconcile a jobs
+    row for the stored run_id idempotently so /stream-ticket never 404s."""
+    request = MagicMock()
+    request.app.state.draftly.settings = MagicMock(rq_enabled=True)
+    request.app.state.draftly.rq_queues = {"default": MagicMock()}
+    request.app.state.draftly.task_handlers = {"onboarding.initialize": MagicMock()}
+
+    async def fake_acquire(*args, **kwargs):
+        return False
+
+    monkeypatch.setattr(
+        "draftly.app.api.routes.onboarding._try_acquire_init_lock", fake_acquire
+    )
+
+    repos = MagicMock()
+    repos.onboarding.get = AsyncMock(
+        return_value={
+            "state": "INITIALIZING",
+            "selected_repository": {"init_run_id": "stored-run-1"},
+        }
+    )
+    repos_jobs = repos.jobs
+    repos_jobs.upsert_on_conflict = AsyncMock()
+
+    result = await onboarding._execute_initialization(
+        repos, "org-1", worker=None, selected_repository={"full_name": "o/r"},
+        request=request,
+    )
+
+    assert result == {
+        "state": "INITIALIZING",
+        "run_id": "stored-run-1",
+        "resumed": True,
+    }
+    repos_jobs.upsert_on_conflict.assert_awaited_once_with(
+        run_id="stored-run-1",
+        org_id="org-1",
+        name="onboarding.initialize",
+        job_type="onboarding",
+        schedule="manual",
+        configuration={},
+    )
 
 
 # ============================================================
@@ -959,6 +1095,7 @@ async def test_execute_initialization_falls_back_to_in_process_when_rq_disabled(
     repos = MagicMock()
     repos.onboarding.get = AsyncMock(return_value=None)
     repos.onboarding.upsert = AsyncMock()
+    repos.jobs.upsert_on_conflict = AsyncMock()
 
     worker = MagicMock()
     worker.task_runner.has_task = MagicMock(return_value=True)

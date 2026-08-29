@@ -12,7 +12,7 @@ import structlog
 from rq_scheduler import Scheduler
 
 from draftly.app.composition.workers import SCHEDULED_JOBS
-from draftly.app.workers.async_sync import make_sync_handler
+from draftly.app.workers.rq_dispatch import dispatch
 
 logger = structlog.get_logger(__name__)
 
@@ -41,12 +41,12 @@ def setup_rq_scheduler(
             )
             continue
 
-        sync_handler = make_sync_handler(handler)
+        sync_handler = dispatch
 
         scheduler.cron(
             job_def["schedule"],
             func=sync_handler,
-            kwargs=job_def.get("arguments", {}),
+            kwargs={"name": task_name, **job_def.get("arguments", {})},
             queue_name=f"{prefix}:scheduled",
             id=job_def["id"],
         )

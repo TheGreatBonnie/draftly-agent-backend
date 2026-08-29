@@ -5,13 +5,20 @@ from __future__ import annotations
 import json
 from typing import Any
 
+import structlog
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
 from draftly.app.api.auth import get_verified_token
 from draftly.app.composition.rq_jobs import enqueue_job
-from draftly.app.services.init_lock import release_init_lock, try_acquire_init_lock
+from draftly.app.services.init_lock import (
+    force_release_init_lock,
+    release_init_lock,
+    try_acquire_init_lock,
+)
 from draftly.workflows.onboarding.initialize import STAGE_LABELS, STAGES
+
+logger = structlog.get_logger(__name__)
 
 router = APIRouter(
     prefix="/onboarding",
@@ -400,11 +407,69 @@ async def _execute_initialization(
 
     if not await _try_acquire_init_lock(request, org_id, run_id):
         current = await repos.onboarding.get(org_id)
-        return {
-            "state": "INITIALIZING",
-            "run_id": (current or {}).get("selected_repository", {}).get("init_run_id"),
-            "resumed": True,
-        }
+        stored_run_id = (current or {}).get("selected_repository", {}).get("init_run_id")
+        # Task 2: reconcile a jobs row for the stored run_id idempotently so
+        # /stream-ticket never 404s on a resumed (stale) run.
+        if stored_run_id:
+            try:
+                await repos.jobs.upsert_on_conflict(
+                    run_id=stored_run_id,
+                    org_id=org_id,
+                    name="onboarding.initialize",
+                    job_type="onboarding",
+                    schedule="manual",
+                    configuration={},
+                )
+                logger.info(
+                    "onboarding_jobs_reconciled",
+                    run_id=stored_run_id,
+                    org_id=org_id,
+                )
+            except Exception:
+                logger.exception(
+                    "onboarding_jobs_reconcile_failed",
+                    run_id=stored_run_id,
+                    org_id=org_id,
+                )
+                # Never hand out a run_id with no backing jobs row, or the
+                # very stream-ticket 404 this task fixes would recur.
+                raise HTTPException(
+                    status_code=500,
+                    detail="Failed to register initialization run",
+                ) from None
+            return {
+                "state": "INITIALIZING",
+                "run_id": stored_run_id,
+                "resumed": True,
+            }
+        # Lock is held but there is no run_id to resume (persisted init_run_id
+        # was cleared while the owning job never released the lock). This is an
+        # orphaned/stale lock — without recovery a fresh start would silently
+        # return a null run_id and strand the frontend. Force-release it and
+        # acquire for the fresh run below.
+        logger.warning(
+            "onboarding_stale_init_lock_recovered",
+            org_id=org_id,
+            run_id=run_id,
+        )
+        await force_release_init_lock(_redis(request), org_id)
+        if not await _try_acquire_init_lock(request, org_id, run_id):
+            raise HTTPException(
+                status_code=503,
+                detail="Initialization already in progress",
+            )
+
+    # Guard: the initialize workflow ingests a repo keyed by selected_repository
+    # "full_name" (initialize.py reads repo_full = selected_repository["full_name"]).
+    # If it's missing, the job would call GitHub with an empty repo path and fail
+    # with a cryptic 404 (https://api.github.com/repos/). Reject up front so the
+    # frontend can recover (re-select a repository) instead of a doomed job.
+    repo_full = (selected_repository or {}).get("full_name", "")
+    if not repo_full or "/" not in repo_full:
+        raise HTTPException(
+            status_code=409,
+            detail="No repository selected; choose a repository before initializing",
+        )
 
     ticket = await _tickets(request).issue(run_id, org_id=org_id)
 
@@ -419,8 +484,7 @@ async def _execute_initialization(
     )
 
     # Task 9: dispatch to RQ when enabled, otherwise fall back to the
-    # in-process worker (single-process / unit-test mode). The RQ branch
-    # inserts a jobs row so /stream-ticket can resolve run_id → job_id.
+    # in-process worker (single-process / unit-test mode).
     app_state = request.app.state.draftly
     rq_queues = getattr(app_state, "rq_queues", None)
     task_handlers = getattr(app_state, "task_handlers", None)
@@ -431,6 +495,7 @@ async def _execute_initialization(
         else False
     )
 
+    rq_job_id = ""
     if rq_enabled and rq_queues is not None and task_handlers is not None:
         job = enqueue_job(
             queues=rq_queues,
@@ -440,25 +505,36 @@ async def _execute_initialization(
             selected_repository=selected_repository,
             run_id=run_id,
         )
-        # Persist a jobs row keyed by run_id so the stream-ticket handler
-        # can authorize the SSE connection (workflows.py:59-65). The
-        # ticket above is still valid for the same (run_id, org_id) pair.
-        try:
-            from draftly.integrations.database.jobs_store import DatabaseJobsStore
-            store = DatabaseJobsStore()
-            await store.insert(
-                run_id=run_id,
-                org_id=org_id,
-                name="onboarding.initialize",
-                job_type="onboarding",
-                schedule="manual",
-                configuration={"rq_job_id": getattr(job, "id", None)},
-            )
-        except Exception:
-            import structlog
-            structlog.get_logger(__name__).warning(
-                "onboarding_jobs_insert_failed org=%s", org_id
-            )
+        rq_job_id = getattr(job, "id", "")
+
+    # Task 1: persist the jobs row via the app-wired repository store so
+    # /stream-ticket (workflows.py:59) is guaranteed to see it. A failure is
+    # fatal — never silently swallow, or the frontend's SSE would 404 forever.
+    try:
+        # Task 10: use the conflict-tolerant upsert_on_conflict (ON CONFLICT
+        # (run_id) DO NOTHING) rather than a plain insert. Two concurrent
+        # /initialize calls that converge on the same run_id (one acquires the
+        # lock, the other reconciles and inserts first) would otherwise 500 on
+        # the run_id UNIQUE constraint. Idempotency keeps both callers 200 and
+        # the stream fully backed by a jobs row.
+        await repos.jobs.upsert_on_conflict(
+            run_id=run_id,
+            org_id=org_id,
+            name="onboarding.initialize",
+            job_type="onboarding",
+            schedule="manual",
+            configuration={"rq_job_id": rq_job_id},
+        )
+        logger.info("onboarding_jobs_inserted", run_id=run_id, org_id=org_id)
+    except Exception:
+        logger.exception(
+            "onboarding_jobs_insert_failed", run_id=run_id, org_id=org_id
+        )
+        raise HTTPException(
+            status_code=500, detail="Failed to register initialization run"
+        ) from None
+
+    if rq_enabled and rq_queues is not None and task_handlers is not None:
         return {"state": "INITIALIZING", "run_id": run_id, "ticket": ticket}
 
     # In-process fallback (single-process / unit tests / RQ not yet enabled).
@@ -481,9 +557,10 @@ async def _execute_initialization(
                         failure={"step": "initialization", "detail": detail},
                     )
         except Exception as exc:
-            import structlog
-            structlog.get_logger(__name__).exception(
-                "onboarding_initialize_background_failed org=%s", org_id
+            logger.exception(
+                "onboarding_initialize_background_failed",
+                org_id=org_id,
+                run_id=run_id,
             )
             await repos.onboarding.upsert(
                 org_id,

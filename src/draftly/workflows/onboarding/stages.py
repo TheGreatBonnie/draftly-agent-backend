@@ -100,7 +100,13 @@ class HealthResult:
 
 
 CHUNK_BATCH_SIZE = 50
-CHUNK_TIMEOUT_SECONDS = 10
+# Per-chunk/LLM-call timeout in seconds. "0" disables the per-call deadline so
+# slower providers (e.g. kimi-k2.5, which streams a structured tool call before
+# returning) are given time to complete instead of being cut off mid-stream
+# (observed as every chunk failing with a bare TimeoutError). Mirrors the
+# LLM_TOTAL_TOKENS_CAP=0 -> no-limit convention. Deployments can restore a hard
+# ceiling by setting CHUNK_TIMEOUT_SECONDS to a positive value.
+CHUNK_TIMEOUT_SECONDS = int(os.environ.get("CHUNK_TIMEOUT_SECONDS", "0"))
 
 # Bounded LLM concurrency (Task 7). Configurable so deployments can trade
 # stage latency against provider rate limits.
@@ -307,6 +313,18 @@ def _agent_pool(
     return pool if not pool.empty() else None
 
 
+async def _llm_with_chunk_timeout(coro: Awaitable[Any]) -> Any:
+    """Await an LLM coroutine, optionally bounded by ``CHUNK_TIMEOUT_SECONDS``.
+
+    ``CHUNK_TIMEOUT_SECONDS > 0`` enforces a per-call deadline so a hung
+    provider is recorded as a failed chunk rather than stalling the batch.
+    ``0`` disables the deadline, letting slower providers complete.
+    """
+    if CHUNK_TIMEOUT_SECONDS > 0:
+        return await asyncio.wait_for(coro, timeout=CHUNK_TIMEOUT_SECONDS)
+    return await coro
+
+
 EXPECTED_TOPICS = {
     "readme", "getting started", "installation", "api",
     "usage", "examples", "changelog", "contributing",
@@ -395,22 +413,26 @@ async def run_knowledge_construction(
                 if agent_pool is not None:
                     agent = await agent_pool.get()
                 try:
-                    extracted = await asyncio.wait_for(
+                    extracted = await _llm_with_chunk_timeout(
                         _llm_generate(
                             stage_model, prompt, agent=agent,
                             output_model=ExtractionOutput,
                             telemetry=recorder.record,
                         ),
-                        timeout=CHUNK_TIMEOUT_SECONDS,
                     )
                     return extracted, cid
                 finally:
                     if agent is not None:
                         agent_pool.put_nowait(agent)
         except Exception as exc:
-            # TimeoutError subclasses Exception on 3.11+ — hung providers are
-            # recorded as failed chunks instead of stalling the workflow.
-            logger.warning("knowledge_extraction_chunk_failed chunk=%s err=%s", cid, exc)
+            # With a CHUNK_TIMEOUT_SECONDS ceiling a TimeoutError subclasses
+            # Exception on 3.11+ — hung providers are recorded as failed chunks
+            # instead of stalling the workflow. The bare TimeoutError has an
+            # empty str(), so log the type to keep failures diagnosable.
+            logger.warning(
+                "knowledge_extraction_chunk_failed chunk=%s err=%s err_type=%s",
+                cid, exc, type(exc).__name__,
+            )
             return None, cid
 
     for i in range(0, total, CHUNK_BATCH_SIZE):
@@ -608,13 +630,12 @@ async def run_initial_evaluation(
                     if agent_pool is not None:
                         agent = await agent_pool.get()
                     try:
-                        scores = await asyncio.wait_for(
+                        scores = await _llm_with_chunk_timeout(
                             _llm_generate(
                                 stage_model, prompt, agent=agent,
                                 output_model=EvaluationScores,
                                 telemetry=recorder.record,
                             ),
-                            timeout=CHUNK_TIMEOUT_SECONDS,
                         )
                         return scores
                     finally:

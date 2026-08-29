@@ -15,6 +15,13 @@ class JobRepositoryImpl:
     async def get(self, *, job_id: str) -> dict[str, Any] | None:
         return await self.store.get(job_id=job_id)
 
+    async def insert(self, **kwargs: Any) -> dict[str, Any]:
+        """App-wired / /stream-ticket surface for persisting a jobs row."""
+        return await self.store.insert(**kwargs)
+
+    async def upsert_on_conflict(self, **kwargs: Any) -> dict[str, Any] | None:
+        return await self.store.upsert_on_conflict(**kwargs)
+
     async def create(self, **kwargs: Any) -> dict[str, Any]:
         return await self.store.insert(**kwargs)
 

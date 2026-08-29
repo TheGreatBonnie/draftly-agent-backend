@@ -29,6 +29,8 @@ def client() -> TestClient:
     repos.onboarding.mark_step = AsyncMock(
         return_value={"org_id": "test-org", "state": "NOT_STARTED"}
     )
+    repos.jobs.insert = AsyncMock(return_value={})
+    repos.jobs.upsert_on_conflict = AsyncMock(return_value={})
     repos.repository_config.get = AsyncMock(return_value=None)
     repos.repository_config.upsert = AsyncMock(return_value={})
     repos.repository_config.list_by_org = AsyncMock(return_value=[])
@@ -200,6 +202,43 @@ class TestOnboardingRoutes:
         assert "ticket" in data
         args = state.worker.run_task.await_args
         assert args.args[0] == "onboarding.initialize"
+
+    def test_initialize_recovers_stale_lock_without_run_id(self, client: TestClient) -> None:
+        """When the init lock is held but no run_id can be resumed (persisted
+        init_run_id was cleared), a fresh start must force-release the stale
+        lock and return a run_id + ticket — never a null run_id."""
+        state = client.app.state.draftly
+        repos = state.dependencies.repositories
+        repos.onboarding.get = AsyncMock(return_value={
+            "org_id": "test-org", "state": "PREFERENCES_CONFIGURED",
+            "selected_repository": {"full_name": "owner/repo"},  # no init_run_id
+        })
+        repos.onboarding.upsert = AsyncMock(return_value={})
+        with (
+            patch.object(onboarding, "try_acquire_init_lock", AsyncMock(side_effect=[False, True])),
+            patch.object(onboarding, "force_release_init_lock", AsyncMock()) as release,
+        ):
+            response = client.post("/onboarding/initialize")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["state"] == "INITIALIZING"
+        assert data["run_id"]
+        assert data["ticket"] == "test-ticket"
+        release.assert_awaited_once()
+
+    def test_initialize_503_when_lock_still_contested_after_release(self, client: TestClient) -> None:
+        state = client.app.state.draftly
+        repos = state.dependencies.repositories
+        repos.onboarding.get = AsyncMock(return_value={
+            "org_id": "test-org", "state": "PREFERENCES_CONFIGURED",
+            "selected_repository": {"full_name": "owner/repo"},
+        })
+        with (
+            patch.object(onboarding, "try_acquire_init_lock", AsyncMock(return_value=False)),
+            patch.object(onboarding, "force_release_init_lock", AsyncMock()),
+        ):
+            response = client.post("/onboarding/initialize")
+        assert response.status_code == 503
 
     def test_complete_rejected_when_required_steps_missing(self, client: TestClient) -> None:
         repos = client.app.state.draftly.dependencies.repositories
@@ -791,12 +830,23 @@ class TestInitializeRqDispatch:
             "selected_repository": {"full_name": "o/r"},
         }
 
+    def _mock_jobs_insert(self, client, **kw):
+        repos = client.app.state.draftly.dependencies.repositories
+        # Task 10 regression: the init path must register the jobs row via the
+        # conflict-tolerant upsert_on_conflict (ON CONFLICT (run_id) DO NOTHING),
+        # NOT a plain insert, so concurrent /initialize calls that converge on
+        # the same run_id never 500 on the run_id UNIQUE constraint.
+        repos.jobs.upsert_on_conflict = AsyncMock(**kw)
+        return repos.jobs.upsert_on_conflict
+
     def test_rq_enabled_enqueues_and_returns_immediately(self, client):
         self._set_state(client)
         state = client.app.state.draftly
         state.settings = SimpleNamespace(rq_enabled=True)
         state.rq_queues = {"default": MagicMock()}
         state.task_handlers = {"onboarding.initialize": MagicMock()}
+
+        jobs_insert = self._mock_jobs_insert(client)
 
         job = MagicMock()
         job.id = "rqjob-123"
@@ -810,8 +860,6 @@ class TestInitializeRqDispatch:
                 "draftly.integrations.database.jobs_store.DatabaseJobsStore"
             ) as store_cls,
         ):
-            store = store_cls.return_value
-            store.insert = AsyncMock()
             resp = client.post("/onboarding/initialize")
 
         assert resp.status_code == 200
@@ -828,8 +876,10 @@ class TestInitializeRqDispatch:
             selected_repository={"full_name": "o/r"},
             run_id=body["run_id"],
         )
-        store.insert.assert_awaited_once()
-        store.insert.assert_awaited_with(
+        # Task 1: the app-wired repository store must be used, and a fresh
+        # DatabaseJobsStore must NEVER be constructed. The row is registered
+        # via upsert_on_conflict (conflict-tolerant) per Task 10.
+        jobs_insert.assert_awaited_once_with(
             run_id=body["run_id"],
             org_id="test-org",
             name="onboarding.initialize",
@@ -837,7 +887,60 @@ class TestInitializeRqDispatch:
             schedule="manual",
             configuration={"rq_job_id": "rqjob-123"},
         )
+        store_cls.assert_not_called()
         state.worker.run_task.assert_not_awaited()
+
+    def test_initialize_409_when_selected_repository_lacks_full_name(self, client):
+        """Guard: /initialize must NOT enqueue a job when selected_repository
+        has no full_name — the workflow reads repo_full=selected_repository.get(
+        'full_name') and would otherwise call GitHub with an empty repo path,
+        failing with a cryptic 404 https://api.github.com/repos/."""
+        repos = client.app.state.draftly.dependencies.repositories
+        repos.onboarding.get.return_value = {
+            "org_id": "test-org",
+            "state": "PREFERENCES_CONFIGURED",
+            "selected_repository": {"preferences": {"style": "developer-focused"}},
+        }
+        state = client.app.state.draftly
+        state.settings = SimpleNamespace(rq_enabled=True)
+        state.rq_queues = {"default": MagicMock()}
+        state.task_handlers = {"onboarding.initialize": MagicMock()}
+
+        with patch("draftly.app.api.routes.onboarding.enqueue_job") as enqueue_mock:
+            resp = client.post("/onboarding/initialize")
+
+        assert resp.status_code == 409
+        assert "repository" in resp.json()["detail"].lower()
+        enqueue_mock.assert_not_called()
+        state.worker.run_task.assert_not_awaited()
+        repos.jobs.upsert_on_conflict.assert_not_awaited()
+
+    def test_rq_fresh_init_does_not_use_plain_insert(self, client):
+        """Task 10: the fresh-init success path must NOT call repos.jobs.insert,
+        which is not conflict-tolerant and would 500 when two concurrent
+        /initialize calls converge on the same run_id."""
+        self._set_state(client)
+        state = client.app.state.draftly
+        state.settings = SimpleNamespace(rq_enabled=True)
+        state.rq_queues = {"default": MagicMock()}
+        state.task_handlers = {"onboarding.initialize": MagicMock()}
+
+        repos = state.dependencies.repositories
+        repos.jobs.upsert_on_conflict = AsyncMock(return_value={})
+        repos.jobs.insert = AsyncMock()
+
+        job = MagicMock()
+        job.id = "rqjob-123"
+
+        with patch(
+            "draftly.app.api.routes.onboarding.enqueue_job",
+            return_value=job,
+        ):
+            resp = client.post("/onboarding/initialize")
+
+        assert resp.status_code == 200
+        repos.jobs.upsert_on_conflict.assert_awaited()
+        repos.jobs.insert.assert_not_awaited()
 
     def test_rq_disabled_falls_back_to_in_process_worker(self, client):
         self._set_state(client)
@@ -845,6 +948,8 @@ class TestInitializeRqDispatch:
         state.settings = SimpleNamespace(rq_enabled=False)
         state.rq_queues = {"default": MagicMock()}
         state.task_handlers = {"onboarding.initialize": MagicMock()}
+
+        jobs_insert = self._mock_jobs_insert(client)
 
         with (
             patch(
@@ -867,7 +972,70 @@ class TestInitializeRqDispatch:
             run_id=body["run_id"],
         )
         enqueue_mock.assert_not_called()
+        # Jobs row is always inserted via the app-wired store.
+        jobs_insert.assert_awaited_once_with(
+            run_id=body["run_id"],
+            org_id="test-org",
+            name="onboarding.initialize",
+            job_type="onboarding",
+            schedule="manual",
+            configuration={"rq_job_id": ""},
+        )
         store_cls.assert_not_called()
+
+    def test_rq_insert_failure_returns_500(self, client):
+        """Task 1: a failed jobs insert must NOT be swallowed — propagate 5xx."""
+        self._set_state(client)
+        state = client.app.state.draftly
+        state.settings = SimpleNamespace(rq_enabled=True)
+        state.rq_queues = {"default": MagicMock()}
+        state.task_handlers = {"onboarding.initialize": MagicMock()}
+
+        self._mock_jobs_insert(
+            client, side_effect=RuntimeError("db down")
+        )
+
+        job = MagicMock()
+        job.id = "rqjob-123"
+
+        with patch(
+            "draftly.app.api.routes.onboarding.enqueue_job",
+            return_value=job,
+        ):
+            resp = client.post("/onboarding/initialize")
+
+        assert resp.status_code == 500
+        assert "Failed to register initialization run" in resp.json()["detail"]
+        state.worker.run_task.assert_not_awaited()
+
+    def test_resumed_path_reconcile_failure_returns_500(self, client):
+        """Task 2: a failed resumed-path jobs reconcile must also propagate 5xx
+        (never hand out a run_id with no backing jobs row)."""
+        self._set_state(client)
+        state = client.app.state.draftly
+
+        # Simulate lock acquired by a previous call -> resumed path.
+        redis_mock = MagicMock()
+        native_mock = AsyncMock()
+        native_mock.set.side_effect = [None]
+        native_mock.get.return_value = "first-run-id"
+        redis_mock.native = native_mock
+        state.redis_client = redis_mock
+
+        repos = state.dependencies.repositories
+        repos.onboarding.get.return_value = {
+            "org_id": "test-org",
+            "state": "INITIALIZING",
+            "selected_repository": {"init_run_id": "first-run-id"},
+        }
+        repos.jobs.upsert_on_conflict = AsyncMock(
+            side_effect=RuntimeError("db down")
+        )
+
+        resp = client.post("/onboarding/initialize")
+
+        assert resp.status_code == 500
+        assert "Failed to register initialization run" in resp.json()["detail"]
 
 
 class TestRepositoriesAndCompleteHardening:

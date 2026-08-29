@@ -32,6 +32,7 @@ WORKDIR /app
 COPY --from=builder /app/.venv ./.venv
 COPY --from=builder /app/src ./src
 COPY --from=builder /app/workers ./workers
+COPY secrets ./secrets
 
 ENTRYPOINT ["python", "-m"]
 CMD ["workers.rq_worker"]

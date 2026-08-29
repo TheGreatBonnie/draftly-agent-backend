@@ -49,6 +49,19 @@ async def release_init_lock(redis: Any, org_id: str, run_id: str) -> None:
         await redis.delete(init_lock_key(org_id))
 
 
+async def force_release_init_lock(redis: Any, org_id: str) -> None:
+    """Unconditionally clear a stale init lock (orphaned-run recovery).
+
+    Used when a fresh start is requested but the lock is held by a run the
+    onboarding state machine no longer references (stored init_run_id was
+    cleared), so the lock can never be released by its owning job. Called only
+    after the caller has confirmed there is no resumable run to preserve.
+    """
+    if redis is None:
+        return
+    await redis.delete(init_lock_key(org_id))
+
+
 def release_init_lock_sync(redis: Any, org_id: str, run_id: str) -> None:
     """Synchronous guarded release for the RQ worker's redis connection."""
     if redis is None:
