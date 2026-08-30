@@ -121,6 +121,20 @@ LLM_LIMITS = {"total_tokens": LLM_TOTAL_TOKENS_CAP} if LLM_TOTAL_TOKENS_CAP > 0 
 # dimensions still scan the full corpus; only the LLM blend is sampled.
 EVAL_LLM_SAMPLE_SIZE = 25
 
+# Cap on stage_progress events emitted per LLM-heavy stage regardless of corpus
+# size. Protects SSE volume and keeps the Redis event stream (MAX_STREAM_LEN)
+# safe.
+EMIT_TICK_BUDGET = 50
+
+
+def tick_interval(total_units: int, budget: int = EMIT_TICK_BUDGET) -> int:
+    """Number of work units between progress emits, so a stage emits <= budget
+    ticks total (plus the final one), independent of corpus size."""
+    if total_units <= 0:
+        return 1
+    # Integer ceiling (-(-n // b)) so stages.py needs no `import math`
+    return max(1, -(-total_units // budget))
+
 
 def _sample_docs(docs: list[dict], k: int = EVAL_LLM_SAMPLE_SIZE) -> list[dict]:
     """Deterministic spread of up to ``k`` docs (no RNG) for the LLM eval pass."""
@@ -435,6 +449,10 @@ async def run_knowledge_construction(
             )
             return None, cid
 
+    # Corpus-scaled emit cadence: keep the per-batch progress cadence but never
+    # exceed the tick budget, no matter how many chunks are ingested.
+    emit_every = tick_interval(total)
+
     for i in range(0, total, CHUNK_BATCH_SIZE):
         batch = chunks[i : i + CHUNK_BATCH_SIZE]
         facts: list[Knowledge] = []
@@ -516,17 +534,19 @@ async def run_knowledge_construction(
         # Granular stage progress so the UI bar animates during slow LLM
         # extraction. Band keeps values above the start (10) emitted in
         # initialize.py and below the closing 100 emitted after this returns.
-        pct = processed / total
-        await publish("stage_progress", {
-            "stage": "knowledge_construction",
-            "progress": min(int(10 + pct * 85), 95),
-        })
-        logger.info(
-            "knowledge_construction_progress",
-            stage="knowledge_construction",
-            done=processed,
-            total=total,
-        )
+        # Guarded by the tick budget so large corpora don't flood the stream.
+        if processed == total or processed % emit_every == 0:
+            pct = processed / total
+            await publish("stage_progress", {
+                "stage": "knowledge_construction",
+                "progress": min(int(10 + pct * 85), 95),
+            })
+            logger.info(
+                "knowledge_construction_progress",
+                stage="knowledge_construction",
+                done=processed,
+                total=total,
+            )
 
     logger.info(
         "knowledge_construction_done",
@@ -649,6 +669,10 @@ async def run_initial_evaluation(
         # full corpus, so only EVAL_LLM_SAMPLE_SIZE docs get an LLM call.
         eval_docs = _sample_docs(docs)
         eval_total = len(eval_docs)
+        # Corpus-scaled emit cadence: replace the fixed "every 10 docs" tick
+        # with a budget-bounded interval so the stream stays small for large
+        # samples yet stays animated for tiny ones (interval == 1).
+        emit_every = tick_interval(eval_total)
         eval_results = await asyncio.gather(
             *(_evaluate(doc) for doc in eval_docs)
         )
@@ -659,8 +683,8 @@ async def run_initial_evaluation(
                     llm_scores[dim] += getattr(scores, dim)
                 llm_count += 1
 
-            if publish and (i + 1) % 10 == 0:
-                processed = i + 1
+            processed = i + 1
+            if publish and (processed == eval_total or processed % emit_every == 0):
                 await publish("tool_progress", {
                     "name": "initial_evaluation",
                     "processed": processed,

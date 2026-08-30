@@ -665,6 +665,138 @@ async def test_publishes_stage_progress_even_without_sync_callback(
     )
 
 
+@pytest.mark.asyncio
+async def test_repository_ingestion_emits_final_100_progress(mock_publisher, fake_repositories):
+    """The repository_ingestion bar must fill to 100% before the stage completes.
+
+    Regression: the stage topped out at 92% (or 0% when sync reported no
+    progress) and then flipped straight to a check mark, so the active bar
+    never visually completed.
+    """
+    from draftly.workflows.context import WorkflowContext
+
+    context = WorkflowContext(
+        repositories=fake_repositories,
+        publisher=mock_publisher,
+    )
+    with patch(
+        "draftly.integrations.github.app_auth.build_installation_client",
+        new=AsyncMock(return_value=MagicMock()),
+    ):
+        fake_sync_result = MagicMock()
+        fake_sync_result.document_count = 3
+        fake_sync_result.chunk_count = 10
+        fake_sync_result.failed_files = []
+        fake_sync_result.baseline = None
+        fake_sync_result.last_committed_dates = []
+
+        with patch(
+            "draftly.documentation.sync_service.SyncService"
+        ) as service_cls:
+            service_cls.return_value.sync = AsyncMock(return_value=fake_sync_result)
+            with patch(
+                "draftly.workflows.onboarding.stages.run_knowledge_construction",
+                new=AsyncMock(return_value=MagicMock(
+                    knowledge_count=5, relationship_count=2,
+                    candidate_count=1, failed_chunks=[],
+                )),
+            ):
+                with patch(
+                    "draftly.workflows.onboarding.stages.run_initial_evaluation",
+                    new=AsyncMock(return_value=MagicMock(score=0.5, dimensions={})),
+                ):
+                    with patch(
+                        "draftly.workflows.onboarding.stages.run_health_report",
+                        return_value=MagicMock(score=0.4, dimensions={}),
+                    ):
+                        with patch(
+                            "draftly.workflows.onboarding.stages.run_recommendations",
+                            new=AsyncMock(return_value=[]),
+                        ):
+                            await run_onboarding_initialize(
+                                context,
+                                org_id="org_test123",
+                                selected_repository={"full_name": "test/repo"},
+                            )
+
+    repo_progress = _stage_progress_events(mock_publisher, "repository_ingestion")
+    assert len(repo_progress) >= 2, (
+        "Expected at least the flush emit plus a final 100 emit"
+    )
+    assert repo_progress[-1].payload["progress"] == 100, (
+        f"Last repository_ingestion stage_progress must be 100, got "
+        f"{repo_progress[-1].payload.get('progress')}"
+    )
+
+
+def _overall_progress_events(mock_publisher) -> list:
+    """Mirror _stage_progress_events: publish() is always called positionally."""
+    return [
+        c.args[0]
+        for c in mock_publisher.publish.call_args_list
+        if hasattr(c, "args")
+        and hasattr(c.args[0], "type")
+        and c.args[0].type == "overall_progress"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_emits_overall_progress_events(mock_publisher, fake_repositories):
+    """The backend is the single source of truth for the overall aggregate."""
+    from draftly.workflows.context import WorkflowContext
+
+    context = WorkflowContext(
+        repositories=fake_repositories,
+        publisher=mock_publisher,
+    )
+    with patch(
+        "draftly.integrations.github.app_auth.build_installation_client",
+        new=AsyncMock(return_value=MagicMock()),
+    ):
+        fake_sync_result = MagicMock()
+        fake_sync_result.document_count = 3
+        fake_sync_result.chunk_count = 10
+        fake_sync_result.failed_files = []
+        fake_sync_result.baseline = None
+        fake_sync_result.last_committed_dates = []
+
+        with patch("draftly.documentation.sync_service.SyncService") as service_cls:
+            service_cls.return_value.sync = AsyncMock(return_value=fake_sync_result)
+            with patch(
+                "draftly.workflows.onboarding.stages.run_knowledge_construction",
+                new=AsyncMock(return_value=MagicMock(
+                    knowledge_count=5, relationship_count=2,
+                    candidate_count=1, failed_chunks=[],
+                )),
+            ):
+                with patch(
+                    "draftly.workflows.onboarding.stages.run_initial_evaluation",
+                    new=AsyncMock(return_value=MagicMock(score=0.5, dimensions={})),
+                ):
+                    with patch(
+                        "draftly.workflows.onboarding.stages.run_health_report",
+                        return_value=MagicMock(score=0.4, dimensions={}),
+                    ):
+                        with patch(
+                            "draftly.workflows.onboarding.stages.run_recommendations",
+                            new=AsyncMock(return_value=[]),
+                        ):
+                            await run_onboarding_initialize(
+                                context,
+                                org_id="org_test123",
+                                selected_repository={"full_name": "test/repo"},
+                            )
+
+    overall = _overall_progress_events(mock_publisher)
+    assert len(overall) >= 1
+    assert overall[-1].payload["progress"] == 100, (
+        "Overall must reach 100 when the last stage completes"
+    )
+    # overall must be monotonic non-decreasing across the run in this happy path
+    values = [e.payload["progress"] for e in overall]
+    assert values == sorted(values), f"overall_progress must be monotonic, got {values}"
+
+
 # ============================================================
 # Task 10: live throttled progress during repository_ingestion
 # ============================================================
@@ -813,7 +945,8 @@ async def test_progress_flusher_torn_down_on_failure(mock_publisher, fake_reposi
 @pytest.mark.asyncio
 async def test_idle_progress_loop_publishes_no_duplicates(mock_publisher, fake_repositories):
     """Dirty-flag gate: one on_progress then idle → exactly one mid-sync flush
-    plus the final flush. A naive interval loop would spam duplicates."""
+    plus the final flush and the close-at-100 emit, and nothing from the idle
+    window. A naive interval loop would spam duplicates."""
     async def sync_impl(on_progress):
         if on_progress:
             on_progress(1, 3)
@@ -823,10 +956,11 @@ async def test_idle_progress_loop_publishes_no_duplicates(mock_publisher, fake_r
     await _run_workflow_with_sync(mock_publisher, fake_repositories, sync_impl)
 
     events = _stage_progress_events(mock_publisher)
-    assert len(events) == 2, (
-        f"expected exactly 2 repository_ingestion stage_progress events "
-        f"(mid-sync + final), got {len(events)}"
+    assert len(events) == 3, (
+        f"expected exactly 3 repository_ingestion stage_progress events "
+        f"(mid-sync + final + close-at-100), got {len(events)}"
     )
+    assert events[-1].payload["progress"] == 100
 
 
 # ============================================================

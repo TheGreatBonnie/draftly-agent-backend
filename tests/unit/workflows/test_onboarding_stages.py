@@ -14,6 +14,7 @@ import draftly.workflows.onboarding.stages as stages
 from draftly.integrations.strands.models import RoleAwareModelResolver
 from draftly.models.schemas import RoutingDecision
 from draftly.workflows.onboarding.stages import (
+    EMIT_TICK_BUDGET,
     EvaluationScores,
     ExtractionOutput,
     KnowledgeExtractionResult,
@@ -23,6 +24,7 @@ from draftly.workflows.onboarding.stages import (
     Relationship,
     run_initial_evaluation,
     run_knowledge_construction,
+    tick_interval,
 )
 
 
@@ -1131,3 +1133,53 @@ async def test_knowledge_construction_offline_never_records(monkeypatch):
     assert result.knowledge_count == 1
     assert context.repositories.performance.record_outcome.call_count == 0
     assert context.repositories.performance.flush_entry.call_count == 0
+
+
+def test_tick_interval_scales_to_budget():
+    assert tick_interval(0) == 1
+    assert tick_interval(1) == 1
+    assert tick_interval(10, budget=50) == 1        # tiny corpus: every unit
+    assert tick_interval(100, budget=50) == 2       # 50 ticks
+    assert tick_interval(100_000, budget=50) == 2_000
+    assert tick_interval(10_000_000, budget=50) == 200_000
+    # Emit counts stay within budget + 1 for any corpus
+    for total in (10, 100, 1_000, 100_000, 10_000_000):
+        interval = tick_interval(total, budget=50)
+        ticks = -(-total // interval)
+        assert ticks <= 51, f"total={total} yields {ticks} ticks"
+
+
+@pytest.mark.asyncio
+async def test_knowledge_construction_respects_emit_tick_budget():
+    """stage_progress emissions stay bounded even when the corpus forces
+    per-unit batches (today's per-batch cadence would exceed the budget)."""
+    context = MagicMock()
+    chunks = [
+        {"id": f"chunk-{i}", "content": f"Documentation chunk number {i}.", "metadata": {}}
+        for i in range(500)  # recall() hard cap; > any realistic batch count
+    ]
+    context.memory.recall = AsyncMock(return_value=chunks)
+    context.memory.remember = AsyncMock(return_value={"id": "k-1"})
+    context.memory.store_batch = AsyncMock(return_value=[{"id": "k-1"}])
+    context.docgraph.link = AsyncMock(return_value={"id": "edge-1"})
+    context.candidates.enqueue = AsyncMock(return_value={"id": "c-1"})
+    publish = AsyncMock()
+
+    with (
+        patch("draftly.workflows.onboarding.stages.Agent") as mock_agent_cls,
+        patch("draftly.workflows.onboarding.stages.CHUNK_BATCH_SIZE", 1),
+    ):
+        mock_agent = mock_agent_cls.return_value
+        mock_agent.invoke_async = AsyncMock(
+            return_value=fake_agent_result(ExtractionOutput(facts=["f"]))
+        )
+
+        await run_knowledge_construction(
+            context, org_id="test-org", publish=publish,
+        )
+
+    stage_progress_calls = [
+        c for c in publish.call_args_list if c.args[0] == "stage_progress"
+    ]
+    assert stage_progress_calls, "expected some stage_progress emissions"
+    assert len(stage_progress_calls) <= EMIT_TICK_BUDGET + 2  # + final + start

@@ -33,6 +33,16 @@ STAGE_LABELS: dict[str, str] = {
     "recommendations": "Preparing recommendations",
 }
 
+# Duration-heuristic weights for the overall_progress aggregate. Sums to 1.0.
+# This is the single source of truth; the frontend memo is only a fallback.
+STAGE_WEIGHTS: dict[str, float] = {
+    "repository_ingestion": 0.35,
+    "knowledge_construction": 0.35,
+    "initial_evaluation": 0.15,
+    "health_report": 0.075,
+    "recommendations": 0.075,
+}
+
 # Task 11: overall ceiling for stages 1-5. A hung provider can no longer
 # stall the workflow forever; per-chunk CHUNK_TIMEOUT_SECONDS makes this a
 # rare backstop. The Redis init-lock TTL (7200s) stays >= this value so a
@@ -75,6 +85,9 @@ async def run_onboarding_initialize(
                 org_id, state.run_id, status,
             )
     _stage_starts: dict[str, float] = {}
+    # Latest reported % per manifest stage feeding the overall_progress
+    # aggregate (0 until reported; 100 once completed).
+    _overall_parts: dict[str, int] = {}
 
     async def _publish(envelope_type: str, payload: dict[str, Any]) -> None:
         nonlocal seq
@@ -117,6 +130,8 @@ async def run_onboarding_initialize(
             payload["stats"] = stats
         await _publish("stage_change", payload)
         await asyncio.sleep(0)
+        _overall_parts[stage] = 100
+        await _emit_overall()
 
     # Buffer for intermediate progress updates during repository_ingestion.
     # Coalesced so we don't flood the stream with per-file events.
@@ -142,12 +157,23 @@ async def run_onboarding_initialize(
             await asyncio.gather(_flush_task, return_exceptions=True)
             _flush_task = None
 
+    async def _emit_overall() -> None:
+        # round() then clamp so a drifting float can never escape [0, 100]
+        total = sum(
+            STAGE_WEIGHTS.get(stage, 0) * _overall_parts.get(stage, 0)
+            for stage in STAGES
+        )
+        progress = min(max(round(total), 0), 100)
+        await _publish("overall_progress", {"progress": progress})
+
     async def _emit_stage_progress(stage: str, progress: int) -> None:
+        _overall_parts[stage] = min(max(progress, 0), 100)
         await _publish("stage_progress", {
             "stage": stage,
             "progress": min(max(progress, 0), 100),
         })
         await asyncio.sleep(0)
+        await _emit_overall()
 
     async def _flush_progress() -> None:
         if _latest_progress:
@@ -233,6 +259,10 @@ async def run_onboarding_initialize(
         doc_count = _latest_progress.get("document_count", 0) if _latest_progress else 0
         if _sync_total_files > 0 and doc_count < _sync_total_files:
             await _emit_stage_progress("repository_ingestion", 92)
+
+        # Close the repository_ingestion bar at 100 so the UI shows it fill
+        # before the stage_change "completed" flips the row to a check mark.
+        await _emit_stage_progress("repository_ingestion", 100)
 
         if sync_result.document_count == 0 and sync_result.failed_files:
             raise RuntimeError(
