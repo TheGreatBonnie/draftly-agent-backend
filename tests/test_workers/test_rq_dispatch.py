@@ -13,12 +13,10 @@ from __future__ import annotations
 import asyncio
 
 import fakeredis
-from rq import Queue, Retry
 
 from draftly.app.composition.rq_jobs import build_rq_queues, enqueue_job
 from draftly.app.workers.rq_dispatch import (
     dispatch,
-    get_handler,
     register_handlers,
 )
 
@@ -123,3 +121,46 @@ def test_enqueued_job_executes_through_dispatch():
     fetched = queues["default"].fetch_job(job.id)
     result = dispatch(**fetched.kwargs)
     assert result == {"status": "executed", "org_id": "org-1", "run_id": "run-7"}
+
+
+def test_enqueued_job_timeout_exceeds_workflow_watchdog():
+    """Regression: RQ's 180s DEFAULT_TIMEOUT killed onboarding.initialize long
+    before the workflow's own 1200s watchdog (INIT_WORKFLOW_TIMEOUT_SECONDS)
+    could fire. The job must carry an explicit timeout greater than the
+    workflow watchdog so the workflow logic — not RQ's default — bounds the run.
+    """
+    from draftly.workflows.onboarding.initialize import (
+        INIT_WORKFLOW_TIMEOUT_SECONDS,
+    )
+
+    register_handlers({TASK: _fake_onboarding})
+    queues = build_rq_queues(_raw_conn())
+
+    job = enqueue_job(
+        queues=queues,
+        task_handlers={TASK: _fake_onboarding},
+        task_name=TASK,
+        org_id="org-1",
+        run_id="run-timeout",
+    )
+
+    assert job.timeout is not None
+    assert job.timeout > INIT_WORKFLOW_TIMEOUT_SECONDS
+
+
+def test_enqueued_job_timeout_for_short_tasks_stays_bounded():
+    """Short/scheduled tasks must not inherit the long-running onboarding
+    timeout; they keep a modest explicit timeout (bounded, not the long one)."""
+    short_task = "documentation.sync"
+    register_handlers({short_task: _fake_onboarding})
+    queues = build_rq_queues(_raw_conn())
+
+    job = enqueue_job(
+        queues=queues,
+        task_handlers={short_task: _fake_onboarding},
+        task_name=short_task,
+        org_id="org-1",
+    )
+
+    assert job.timeout is not None
+    assert job.timeout <= 600
