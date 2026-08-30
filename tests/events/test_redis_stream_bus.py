@@ -51,6 +51,30 @@ async def test_subscribe_reads_messages(fake_redis):
 
 
 @pytest.mark.asyncio
+async def test_subscribe_preserves_payload_roundtrip(fake_redis):
+    """The payload must survive the publish -> subscribe round-trip intact.
+
+    Regression: publish stored the whole envelope JSON in the stream's
+    ``payload`` field, so subscribers received the envelope nested inside
+    its own payload (``payload.payload``), breaking ``stage_progress`` /
+    ``tool_progress`` / ``workflow_result`` consumers.
+    """
+    from draftly.events.redis_stream_bus import RedisStreamBus
+
+    bus = RedisStreamBus(fake_redis)
+    original = _make_envelope(seq=1)
+    await bus.publish(original)
+
+    async for envelope in bus.subscribe("run-test", block_ms=100):
+        assert envelope.seq == 1
+        assert envelope.type == "node_start"
+        assert envelope.surface == "documentation"
+        assert envelope.node_id == "classify"
+        assert envelope.payload == {"node_type": "agent"}
+        break
+
+
+@pytest.mark.asyncio
 async def test_publish_never_raises(fake_redis):
     from draftly.events.redis_stream_bus import RedisStreamBus
 

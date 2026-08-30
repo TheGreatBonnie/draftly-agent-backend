@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -35,7 +36,7 @@ class RedisStreamBus:
                     "type": envelope.type,
                     "node_id": envelope.node_id or "",
                     "surface": envelope.surface,
-                    "payload": envelope.to_json(),
+                    "payload": json.dumps(envelope.payload, default=str),
                     "ts": envelope.ts,
                 },
                 maxlen=MAX_STREAM_LEN,
