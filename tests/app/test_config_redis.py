@@ -14,7 +14,7 @@ def test_redis_settings_defaults():
     assert s.event_bus_backend == "dual"
     assert s.rate_limiting_enabled is True
     assert s.api_cache_enabled is True
-    assert s.rq_enabled is False
+    assert s.rq_enabled is True
 
 
 def test_redis_settings_can_be_overridden():

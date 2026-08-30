@@ -178,8 +178,8 @@ class Settings(BaseSettings):
     rq_worker_queues: list[str] = ["scheduled", "webhooks", "default"]
     # When enabled, POST /onboarding/initialize dispatches to the RQ worker
     # (default queue) and returns immediately; the worker process releases
-    # the init lock. Defaults to off so single-process/local mode keeps the
-    # in-process background-task fallback.
+    # the init lock. Defaults to on so job dispatch goes through the RQ queue,
+    # with in-process execution only used when no RQ queues are wired.
     rq_enabled: bool = True
 
     # ------------------------------------------------------------------
