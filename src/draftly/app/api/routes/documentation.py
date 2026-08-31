@@ -20,6 +20,18 @@ router = APIRouter(
 )
 
 
+def derive_status(db_status: str | None) -> str:
+    """Map DB status to the UI status enum (indexed -> published)."""
+    mapping = {
+        "indexed": "published",
+        "published": "published",
+        "needs-review": "needs-review",
+        "needs-verification": "needs-verification",
+        "stale": "stale",
+    }
+    return mapping.get(db_status or "", db_status or "published")
+
+
 def _documents(request: Request) -> Any:
     application = request.app.state.draftly
     repo = getattr(
@@ -156,23 +168,58 @@ async def get_baseline(
 @router.get("")
 async def list_documentation(
     request: Request,
-    repository: str,
+    repository: str | None = None,
+    status: str | None = None,
+    limit: int = 1000,
+    token: dict = Depends(get_verified_token),
 ) -> dict[str, Any]:
-    """List generated documentation for a repository (plan §9.1)."""
-    repo = _documents(request)
-    items = await repo.find_by_repository(repository=repository)
+    """List documentation for the token org, optionally filtered by repo/status."""
+    org_id = token.get("org_id")
+    if not org_id:
+        raise HTTPException(status_code=400, detail="No organization selected")
+    docs = _documents(request)
+    items = await docs.list_by_org(org_id=org_id, limit=min(limit, 1000))
+    if repository:
+        items = [i for i in items if i.get("repository") == repository]
+    if status:
+        items = [i for i in items if derive_status(i.get("status")) == status]
     return {"items": items}
+
+
+@router.get("/stats")
+async def documentation_stats(
+    request: Request,
+    token: dict = Depends(get_verified_token),
+) -> dict[str, Any]:
+    """Real aggregates for the documentation filter cards."""
+    org_id = token.get("org_id")
+    if not org_id:
+        raise HTTPException(status_code=400, detail="No organization selected")
+    docs = _documents(request)
+    items = await docs.list_by_org(org_id=org_id, limit=1000)
+    by_status = Counter(derive_status(i.get("status")) for i in items)
+    return {
+        "total": len(items),
+        "by_status": dict(by_status),
+        "stale": sum(1 for i in items if i.get("stale")),
+        "outdated": sum(1 for i in items if i.get("outdated")),
+        "incomplete": sum(1 for i in items if i.get("incomplete")),
+        "broken_links": sum(1 for i in items if i.get("broken_links")),
+        "unsupported_claims": sum(1 for i in items if i.get("unsupported_claims")),
+    }
 
 
 @router.get("/{document_id}")
 async def get_documentation(
     document_id: str,
     request: Request,
+    token: dict = Depends(get_verified_token),
 ) -> dict[str, Any]:
-    """Fetch one generated document by id."""
-    repo = _documents(request)
-    document = await repo.get(document_id=document_id)
-    if document is None:
+    """Fetch one document by id, scoped to the token org."""
+    docs = _documents(request)
+    document = await docs.get(document_id=document_id)
+    org_id = token.get("org_id")
+    if document is None or (org_id and document.get("org_id") != org_id):
         raise HTTPException(
             status_code=404,
             detail=f"Document {document_id} not found",

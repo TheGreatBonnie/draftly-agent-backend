@@ -64,12 +64,28 @@ class FakeReviewsRepository:
 
 
 class FakeDocumentsRepository:
+    async def list_by_org(
+        self, *, org_id: str, limit: int = 1000
+    ) -> list[dict]:
+        return [
+            {
+                "id": "doc-1",
+                "org_id": org_id,
+                "repository": "acme/api",
+                "status": "indexed",
+            }
+        ]
+
     async def find_by_repository(self, *, repository: str) -> list[dict]:
         return [{"id": "doc-1", "repository": repository}]
 
     async def get(self, *, document_id: str) -> dict | None:
         if document_id == "doc-1":
-            return {"id": "doc-1", "content": "# hi"}
+            return {
+                "id": "doc-1",
+                "org_id": "org-1",
+                "content": "# hi",
+            }
         return None
 
 
@@ -115,7 +131,10 @@ def client() -> TestClient:
     app.include_router(documentation.router, prefix="/api")
     app.include_router(evaluations.router, prefix="/api")
     app.include_router(support.router, prefix="/api")
-    app.dependency_overrides[get_verified_token] = lambda: {"sub": "tester"}
+    app.dependency_overrides[get_verified_token] = lambda: {
+        "sub": "tester",
+        "org_id": "org-1",
+    }
 
     reviews = FakeReviewsRepository(_review_record())
     state = SimpleNamespace(
