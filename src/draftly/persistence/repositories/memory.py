@@ -138,8 +138,9 @@ class MemoryRepository:
         self,
         *,
         namespace: str,
+        org_id: str | None = None,
     ) -> list[dict[str, Any]]:
-        return await self.store.list_namespace(namespace=namespace)
+        return await self.store.list_namespace(namespace=namespace, org_id=org_id)
 
     async def record_access(
         self,

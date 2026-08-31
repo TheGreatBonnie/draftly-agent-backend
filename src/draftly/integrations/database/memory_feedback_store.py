@@ -44,3 +44,21 @@ class MemoryFeedbackStore:
         )
 
         return dict(row)
+
+    async def list_by_memory(
+        self,
+        *,
+        org_id: str | None,
+        memory_item_id: str,
+    ) -> list[dict[str, Any]]:
+        rows = await self.client.fetch_all(
+            """
+            SELECT id, org_id, memory_item_id, feedback_type, source,
+                   score, comment, created_at
+            FROM memory_feedback
+            WHERE memory_item_id = $1
+            ORDER BY created_at DESC
+            """,
+            memory_item_id,
+        )
+        return [dict(r) for r in rows]

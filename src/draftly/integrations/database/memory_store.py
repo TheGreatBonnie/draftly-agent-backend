@@ -298,17 +298,29 @@ class DatabaseMemoryStore:
         self,
         *,
         namespace: str,
+        org_id: str | None = None,
     ) -> list[dict[str, Any]]:
-        rows = await self.client.fetch_all(
-            f"""
-            SELECT {_MEMORY_COLUMNS}
-            FROM memory_items
-            WHERE namespace = $1
-            ORDER BY importance DESC
-            """,
-            namespace,
-        )
-
+        if org_id is not None:
+            rows = await self.client.fetch_all(
+                f"""
+                SELECT {_MEMORY_COLUMNS}
+                FROM memory_items
+                WHERE namespace = $1 AND org_id = $2
+                ORDER BY importance DESC
+                """,
+                namespace,
+                org_id,
+            )
+        else:
+            rows = await self.client.fetch_all(
+                f"""
+                SELECT {_MEMORY_COLUMNS}
+                FROM memory_items
+                WHERE namespace = $1
+                ORDER BY importance DESC
+                """,
+                namespace,
+            )
         return [self._row_to_memory(row) for row in rows]
 
     @staticmethod

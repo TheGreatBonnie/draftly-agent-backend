@@ -55,3 +55,23 @@ class MemorySourcesStore:
         )
 
         return dict(row)
+
+    async def list_by_memory(
+        self,
+        *,
+        org_id: str | None,
+        memory_item_id: str,
+    ) -> list[dict[str, Any]]:
+        rows = await self.client.fetch_all(
+            """
+            SELECT id, org_id, memory_item_id, source_type, source_id,
+                   source_url, repository, commit_sha, evidence
+            FROM memory_sources
+            WHERE memory_item_id = $1
+              AND ($2::text IS NULL OR org_id = $2::text)
+            ORDER BY created_at ASC
+            """,
+            memory_item_id,
+            org_id,
+        )
+        return [dict(r) for r in rows]

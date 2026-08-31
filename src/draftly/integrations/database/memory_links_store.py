@@ -41,3 +41,21 @@ class MemoryLinksStore:
         )
 
         return dict(row)
+
+    async def list_by_memory(
+        self,
+        *,
+        org_id: str | None,
+        memory_item_id: str,
+    ) -> list[dict[str, Any]]:
+        rows = await self.client.fetch_all(
+            """
+            SELECT id, org_id, source_memory_id, target_memory_id,
+                   relationship, confidence, created_at
+            FROM memory_links
+            WHERE source_memory_id = $1 OR target_memory_id = $1
+            ORDER BY created_at DESC
+            """,
+            memory_item_id,
+        )
+        return [dict(r) for r in rows]
