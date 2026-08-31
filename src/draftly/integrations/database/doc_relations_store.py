@@ -63,6 +63,58 @@ class DocRelationsStore:
         )
         return dict(row) if row else {}
 
+    async def link_batch(self, relations: list[dict]) -> int:
+        async with self.client.transaction() as conn:
+            count = 0
+            for rel in relations:
+                src = await self.client.fetch_one_conn(
+                    conn,
+                    """
+                    INSERT INTO knowledge_nodes (org_id, node_type, key, title)
+                    VALUES ($1, $2, $3, $4)
+                    ON CONFLICT (org_id, node_type, key)
+                    DO UPDATE SET title = COALESCE(EXCLUDED.title, knowledge_nodes.title)
+                    RETURNING id, org_id, node_type, key, title
+                    """,
+                    rel.get("org_id"),
+                    rel.get("source_type", "code"),
+                    rel["source"],
+                    None,
+                )
+                tgt = await self.client.fetch_one_conn(
+                    conn,
+                    """
+                    INSERT INTO knowledge_nodes (org_id, node_type, key, title)
+                    VALUES ($1, $2, $3, $4)
+                    ON CONFLICT (org_id, node_type, key)
+                    DO UPDATE SET title = COALESCE(EXCLUDED.title, knowledge_nodes.title)
+                    RETURNING id, org_id, node_type, key, title
+                    """,
+                    rel.get("org_id"),
+                    rel.get("target_type", "doc"),
+                    rel["target"],
+                    None,
+                )
+                await self.client.fetch_one_conn(
+                    conn,
+                    """
+                    INSERT INTO doc_edges (
+                        org_id, source_node_id, target_node_id, relation_type, evidence
+                    ) VALUES ($1, $2::UUID, $3::UUID, $4, $5::JSONB)
+                    ON CONFLICT (source_node_id, target_node_id, relation_type)
+                    DO UPDATE SET last_confirmed_at = now(),
+                                  evidence = EXCLUDED.evidence
+                    RETURNING id
+                    """,
+                    rel.get("org_id"),
+                    src["id"],
+                    tgt["id"],
+                    rel["type"],
+                    json.dumps(rel.get("evidence") or []),
+                )
+                count += 1
+        return count
+
     async def docs_for_code(
         self,
         *,

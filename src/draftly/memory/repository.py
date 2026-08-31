@@ -59,14 +59,16 @@ class DomainMemoryRepository:
         *,
         namespace: str,
         query: str,
+        embedding: Sequence[float],
         limit: int = 10,
         org_id: str | None = None,
-        embedding: Sequence[float] | None = None,
     ) -> list[dict[str, Any]]:
-        """Semantic search. ``embedding`` lets callers reuse one query vector
-        instead of re-embedding; when omitted the query is embedded here."""
-        if embedding is None:
-            embedding = await self.embeddings.embed(query)
+        """Semantic search over a precomputed query vector.
+
+        ``embedding`` is required and used verbatim — retrieval embed the
+        query once and passes the same vector here, so no hidden per-call
+        embedding can occur.
+        """
         return await self.repository.semantic_search(
             namespace=namespace,
             embedding=embedding,

@@ -67,6 +67,16 @@ class EmbeddingService:
 
     async def embed_batch(self, texts: Sequence[str]) -> list[list[float]]:
         import asyncio
+
+        router = self.router
+        if router is not None and hasattr(router, "embed_batch"):
+            try:
+                vectors = await asyncio.to_thread(router.embed_batch, list(texts))
+                if vectors and len(vectors) == len(texts):
+                    return [list(v) for v in vectors]
+            except Exception as exc:
+                logger.warning("embedder_batch_fallback_used error=%s", exc)
+
         return list(
             await asyncio.gather(*(self.embed(text) for text in texts))
         )

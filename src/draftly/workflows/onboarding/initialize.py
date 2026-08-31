@@ -43,13 +43,6 @@ STAGE_WEIGHTS: dict[str, float] = {
     "recommendations": 0.075,
 }
 
-# Task 11: overall ceiling for stages 1-5. A hung provider can no longer
-# stall the workflow forever; per-chunk CHUNK_TIMEOUT_SECONDS makes this a
-# rare backstop. The Redis init-lock TTL (7200s) stays >= this value so a
-# legitimate run never outlives its lock.
-INIT_WORKFLOW_TIMEOUT_SECONDS = 1200
-
-
 async def run_onboarding_initialize(
     context: WorkflowContext,
     *,
@@ -371,8 +364,8 @@ async def run_onboarding_initialize(
         try:
             return await _run_stages()
         except asyncio.CancelledError:
-            # Task 11: outer wait_for cancelled us. Clean up the flusher so
-            # it never outlives the workflow, then re-raise.
+            # External cancellation (e.g. RQ horse killed). Clean up the
+            # flusher so it never outlives the workflow, then re-raise.
             await _cancel_flusher()
             raise
         except Exception as exc:
@@ -390,30 +383,7 @@ async def run_onboarding_initialize(
             await _publish("workflow_result", {"status": "FAILED", "error": str(exc)})
             return state.finish(WorkflowStatus.FAILED)
 
-    try:
-        return await asyncio.wait_for(
-            _run_inner(), timeout=INIT_WORKFLOW_TIMEOUT_SECONDS
-        )
-    except TimeoutError:
-        # Task 11: the stage sequence exceeded the watchdog ceiling.
-        logger.error(
-            "onboarding_initialize_timeout org=%s timeout=%ds",
-            org_id, INIT_WORKFLOW_TIMEOUT_SECONDS,
-        )
-        await _cancel_flusher()
-        if onboarding_repo:
-            await onboarding_repo.mark_failed(
-                org_id,
-                "initialize",
-                {"detail": f"Initialization exceeded {INIT_WORKFLOW_TIMEOUT_SECONDS}s"},
-            )
-        await _set_job_status("failed")
-        state.errors.append("Initialization timed out")
-        await _publish(
-            "workflow_result",
-            {"status": "FAILED", "error": "Initialization timed out"},
-        )
-        return state.finish(WorkflowStatus.FAILED)
+    return await _run_inner()
 
 
 async def _update_stage(onboarding_repo: Any, org_id: str, stage: str) -> None:

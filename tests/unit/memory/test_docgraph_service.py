@@ -31,3 +31,15 @@ async def test_affected_docs_traverses_graph():
     )
     docs = await svc.affected_docs(["auth/token_service.py"], org_id="org1")
     assert [d["key"] for d in docs] == ["docs/auth/tokens.md"]
+
+
+@pytest.mark.asyncio
+async def test_link_batch_links_all_relations():
+    store = FakeDocGraphStore()
+    svc = DocGraphService(store=store)
+    n = await svc.link_batch([
+        {"source": "a.py", "target": "docs/a.md", "type": "DOCUMENTED_BY", "org_id": "o"},
+        {"source": "b.py", "target": "docs/b.md", "type": "DOCUMENTED_BY", "org_id": "o"},
+    ])
+    assert n == 2
+    assert len(store.edges) == 2

@@ -15,10 +15,10 @@ from typing import Any
 
 # MUST exceed the longest legitimate run. Raised from 600s: pre-P1
 # runs take 35-90 min, so a 10-min TTL expired mid-run and let a
-# refresh start a duplicate pipeline. The Task 11 watchdog (1200s) is
-# authoritative once shipped: keep TTL >= watchdog. CAS-keyed release
-# stays safe across TTL expiry.
-INIT_LOCK_TTL_SECONDS = 7200
+# refresh start a duplicate pipeline. With the workflow watchdog removed,
+# onboarding may run for hours (large corpora), so keep the TTL far above
+# any realistic run. CAS-keyed release stays safe across TTL expiry.
+INIT_LOCK_TTL_SECONDS = 7 * 24 * 60 * 60  # 7 days
 
 
 def init_lock_key(org_id: str) -> str:

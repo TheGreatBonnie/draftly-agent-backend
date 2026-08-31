@@ -38,25 +38,18 @@ QUEUE_MAP: dict[str, str] = {
     "discord_support": "webhooks",
 }
 
-# Task name → explicit RQ job timeout (seconds).
-#
-# Without an explicit timeout RQ falls back to DEFAULT_TIMEOUT=180, which
-# killed `onboarding.initialize` long before the workflow's own watchdog
-# (INIT_WORKFLOW_TIMEOUT_SECONDS=1200) could fire — observed as
-# `JobTimeoutException: Task exceeded maximum timeout value (180 seconds)`
-# mid-`knowledge_construction`. Long-running jobs MUST declare a timeout
-# greater than their internal watchdog; short tasks stay bounded.
-LONG_JOB_TIMEOUT_SECONDS = 1800  # > onboarding watchdog (1200) with headroom
-DEFAULT_JOB_TIMEOUT_SECONDS = 600
-
-JOB_TIMEOUT_MAP: dict[str, int] = {
-    "onboarding.initialize": LONG_JOB_TIMEOUT_SECONDS,
-}
+# RQ job timeout (seconds). "-1" is the RQ 2.x sentinel for "jobs never
+# timeout" — required because long-running workflows (e.g. onboarding
+# knowledge construction) legitimately exceed the old watchdog ceilings.
+# Without an explicit timeout RQ would fall back to DEFAULT_TIMEOUT=180 and
+# kill these jobs mid-run with `JobTimeoutException`. Set to -1 so RQ never
+# enforces a job deadline.
+JOB_TIMEOUT_NONE = -1
 
 
 def get_job_timeout(task_name: str) -> int:
-    """Return the explicit RQ job timeout for a task."""
-    return JOB_TIMEOUT_MAP.get(task_name, DEFAULT_JOB_TIMEOUT_SECONDS)
+    """Return the explicit RQ job timeout for a task (-1 = never timeout)."""
+    return JOB_TIMEOUT_NONE
 
 
 def get_queue_for_task(task_name: str) -> str:

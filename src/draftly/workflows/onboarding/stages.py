@@ -108,6 +108,14 @@ CHUNK_BATCH_SIZE = 50
 # ceiling by setting CHUNK_TIMEOUT_SECONDS to a positive value.
 CHUNK_TIMEOUT_SECONDS = int(os.environ.get("CHUNK_TIMEOUT_SECONDS", "0"))
 
+# Per-batch ceiling for stage 2 (extraction + store). Replaces the removed
+# overall workflow watchdog (INIT_WORKFLOW_TIMEOUT_SECONDS): a hung provider
+# or embedder stalls one batch for at most this long, is recorded as failed,
+# and the stage continues. Positive default; set env to 0 to disable.
+KNOWLEDGE_BATCH_TIMEOUT_SECONDS = int(
+    os.environ.get("KNOWLEDGE_BATCH_TIMEOUT_SECONDS", "600")
+)
+
 # Bounded LLM concurrency (Task 7). Configurable so deployments can trade
 # stage latency against provider rate limits.
 LLM_MAX_CONCURRENCY = max(1, int(os.environ.get("LLM_MAX_CONCURRENCY", "8")))
@@ -453,13 +461,35 @@ async def run_knowledge_construction(
     # exceed the tick budget, no matter how many chunks are ingested.
     emit_every = tick_interval(total)
 
+    async def _bounded(coro: Awaitable[Any]) -> Any:
+        if KNOWLEDGE_BATCH_TIMEOUT_SECONDS > 0:
+            return await asyncio.wait_for(
+                coro, timeout=KNOWLEDGE_BATCH_TIMEOUT_SECONDS
+            )
+        return await coro
+
     for i in range(0, total, CHUNK_BATCH_SIZE):
         batch = chunks[i : i + CHUNK_BATCH_SIZE]
         facts: list[Knowledge] = []
+        # Accumulate across all chunks in this batch, then flush once.
+        batch_relations: list[dict] = []
+        batch_candidates: list[MemoryCandidate] = []
 
-        extracted_results = await asyncio.gather(
-            *(_extract(chunk) for chunk in batch)
-        )
+        try:
+            extracted_results = await _bounded(
+                asyncio.gather(*(_extract(chunk) for chunk in batch))
+            )
+        except TimeoutError:
+            # A hung provider stalled the whole batch past the ceiling; record
+            # every chunk as failed and move on instead of hanging the workflow.
+            logger.warning(
+                "knowledge_batch_extract_timeout count=%d",
+                len(batch),
+            )
+            result.failed_chunks.extend(
+                chunk.get("id", "unknown") for chunk in batch
+            )
+            continue
 
         for chunk, (extracted, chunk_id) in zip(batch, extracted_results):
             if extracted is None:
@@ -482,41 +512,118 @@ async def run_knowledge_construction(
                 )
 
             try:
+                # Collect relationships for the batch-level flush below.
+                # _chunk_id is used only by the per-item fallback for
+                # failure isolation; doc_edges SQL reads named keys only.
                 for rel in extracted.relationships:
-                    await context.docgraph.link(
-                        source_key=rel.source,
-                        target_key=rel.target,
-                        relation_type=rel.type,
-                        org_id=org_id,
-                    )
-                    result.relationship_count += 1
+                    batch_relations.append({
+                        "_chunk_id": chunk_id,
+                        "source": rel.source,
+                        "target": rel.target,
+                        "type": rel.type,
+                        "org_id": org_id,
+                        "source_type": "code",
+                        "target_type": "doc",
+                    })
 
-                # Store procedure patterns
+                # Collect procedure patterns for the batch-level flush below.
                 for proc in extracted.procedures:
-                    candidate = MemoryCandidate(
-                        org_id=org_id,
-                        candidate_type="procedure_pattern",
-                        payload=proc.model_dump(),
-                        source_type="document_chunk",
-                        source_id=chunk_id,
-                        evidence=[chunk.get("content", "")[:200]],
-                        confidence=0.6,
+                    batch_candidates.append(
+                        MemoryCandidate(
+                            org_id=org_id,
+                            candidate_type="procedure_pattern",
+                            payload=proc.model_dump(),
+                            source_type="document_chunk",
+                            source_id=chunk_id,
+                            evidence=[chunk.get("content", "")[:200]],
+                            confidence=0.6,
+                        )
                     )
-                    await context.candidates.enqueue(candidate)
-                    result.candidate_count += 1
             except Exception as exc:
                 logger.warning(
-                    "knowledge_postprocess_failed chunk=%s err=%s", chunk_id, exc
+                    "knowledge_extraction_collect_failed chunk=%s err=%s",
+                    chunk_id, exc,
                 )
                 result.failed_chunks.append(chunk_id)
+
+        # Flush relationships + candidates once per batch. Real services
+        # (production) take the batch path; mock contexts take per-item.
+        from draftly.memory.candidates.service import CandidateService
+        from draftly.memory.docgraph.service import DocGraphService
+
+        if batch_relations:
+            if isinstance(context.docgraph, DocGraphService):
+                try:
+                    result.relationship_count += await context.docgraph.link_batch(
+                        batch_relations
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "knowledge_link_batch_failed count=%d err=%s",
+                        len(batch_relations), exc,
+                    )
+                    result.failed_chunks.extend(
+                        chunk.get("id", "unknown") for chunk in batch
+                    )
+            else:
+                # Per-item fallback with per-chunk failure isolation.
+                for rel_def in batch_relations:
+                    try:
+                        await context.docgraph.link(
+                            source_key=rel_def["source"],
+                            target_key=rel_def["target"],
+                            relation_type=rel_def["type"],
+                            org_id=org_id,
+                        )
+                        result.relationship_count += 1
+                    except Exception as exc:
+                        logger.warning(
+                            "knowledge_link_failed err=%s", exc,
+                        )
+                        result.failed_chunks.append(rel_def.get("_chunk_id"))
+
+        if batch_candidates:
+            if isinstance(context.candidates, CandidateService):
+                try:
+                    result.candidate_count += await context.candidates.enqueue_batch(
+                        batch_candidates
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "knowledge_enqueue_batch_failed count=%d err=%s",
+                        len(batch_candidates), exc,
+                    )
+                    result.failed_chunks.extend(
+                        chunk.get("id", "unknown") for chunk in batch
+                    )
+            else:
+                for cand in batch_candidates:
+                    try:
+                        await context.candidates.enqueue(cand)
+                        result.candidate_count += 1
+                    except Exception as exc:
+                        # cand.source_id is the chunk id (document_chunk).
+                        logger.warning("knowledge_enqueue_failed err=%s", exc)
+                        result.failed_chunks.append(cand.source_id)
+
 
         # Store all facts of this batch in one call (single embed_batch +
         # single transaction per batch). A store failure marks the batch's
         # chunks failed rather than losing the count silently.
         if facts:
             try:
-                await context.memory.store_batch(facts)
+                await _bounded(context.memory.store_batch(facts))
                 result.knowledge_count += len(facts)
+            except TimeoutError:
+                # TimeoutError subclasses Exception on 3.11+, so the specific
+                # clause must precede the generic one. A hung embedder stalls
+                # the store; record its chunks failed and keep going.
+                logger.warning(
+                    "knowledge_batch_store_timeout count=%d", len(facts)
+                )
+                result.failed_chunks.extend(
+                    chunk.get("id", "unknown") for chunk in batch
+                )
             except Exception as exc:
                 logger.warning(
                     "knowledge_fact_store_failed count=%d err=%s", len(facts), exc
@@ -530,6 +637,8 @@ async def run_knowledge_construction(
             "name": "knowledge_extraction",
             "processed": processed,
             "total": total,
+            "knowledge_count": result.knowledge_count,
+            "relationship_count": result.relationship_count,
         })
         # Granular stage progress so the UI bar animates during slow LLM
         # extraction. Band keeps values above the start (10) emitted in

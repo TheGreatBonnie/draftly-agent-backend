@@ -52,6 +52,13 @@ class OpenAICompatibleEmbedder:
 
         return response.data[0].embedding
 
+    def embed_queries(self, texts: Sequence[str]) -> list[list[float]]:
+        response = self._client.embeddings.create(
+            model=self.model_id,
+            input=list(texts),
+        )
+        return [item.embedding for item in response.data]
+
 
 class EmbeddingRouter:
     """
@@ -149,6 +156,57 @@ class EmbeddingRouter:
             )
 
             return vector
+
+        raise RuntimeError("No healthy embedding provider was available.") from (
+            errors[-1] if errors else None
+        )
+
+    def embed_batch(self, texts: Sequence[str]) -> list[Sequence[float]]:
+        candidates = self._ordered_candidates()
+        errors: list[Exception] = []
+
+        for config in candidates:
+            provider_health = self.health.get(config.provider)
+            if not provider_health.available():
+                continue
+            provider = self.registry.get_provider(config.provider)
+            if not provider.is_enabled():
+                continue
+
+            logger.info(
+                "embedding batch attempting provider=%s model=%s count=%d",
+                config.provider, config.model_id, len(texts),
+            )
+            try:
+                embedder = provider.create_embedder(config)
+                vectors = embedder.embed_queries(texts)
+            except Exception as exc:
+                from .router import ModelRouter
+
+                failure = ModelRouter._classify_failure(exc)
+                logger.warning(
+                    "embedding batch failure provider=%s model=%s type=%s error=%s",
+                    config.provider, config.model_id, failure, exc,
+                )
+                if failure == FAILURE_INVALID_REQUEST:
+                    raise
+                if failure == FAILURE_AUTH:
+                    provider_health.disable()
+                    errors.append(exc)
+                    continue
+                provider_health.record_failure(failure)
+                errors.append(exc)
+                continue
+
+            for vector in vectors:
+                self._validate_dimensions(config, vector)
+            provider_health.record_success()
+            self.last_provider = config.provider
+            logger.info(
+                "embedding batch resolved provider=%s model=%s count=%d",
+                config.provider, config.model_id, len(vectors),
+            )
+            return vectors
 
         raise RuntimeError("No healthy embedding provider was available.") from (
             errors[-1] if errors else None

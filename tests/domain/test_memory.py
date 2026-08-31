@@ -231,10 +231,3 @@ class TestMemoryRetrieval:
             namespace="knowledge", query="pooling", embedding=[1.0, 0.0]
         )
         assert embeddings.calls == 0
-
-    async def test_search_embeds_when_no_embedding_given(self) -> None:
-        service, embeddings = self._service_with_spy()
-        await service.remember(Knowledge(namespace="knowledge", content="pooling"))
-        embeddings.calls = 0
-        await service.repository.search(namespace="knowledge", query="pooling")
-        assert embeddings.calls == 1

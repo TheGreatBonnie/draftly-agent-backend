@@ -12,6 +12,8 @@ from pydantic import ValidationError
 
 import draftly.workflows.onboarding.stages as stages
 from draftly.integrations.strands.models import RoleAwareModelResolver
+from draftly.memory.candidates.service import CandidateService
+from draftly.memory.docgraph.service import DocGraphService
 from draftly.models.schemas import RoutingDecision
 from draftly.workflows.onboarding.stages import (
     EMIT_TICK_BUDGET,
@@ -26,6 +28,7 @@ from draftly.workflows.onboarding.stages import (
     run_knowledge_construction,
     tick_interval,
 )
+from tests.fakes.memory_stores import FakeCandidatesStore, FakeDocGraphStore
 
 
 def fake_agent_result(model_instance=None, usage=None):
@@ -252,6 +255,61 @@ async def test_knowledge_construction_publishes_granular_stage_progress():
     values = [p["progress"] for p in progress_calls]
     assert values == sorted(values), "stage_progress values should be monotonic"
     assert len(values) >= 2, "multiple batches should emit multiple progress values"
+
+
+@pytest.mark.asyncio
+async def test_knowledge_construction_publishes_counts_in_tool_progress():
+    """Stage 2 `tool_progress` events should carry cumulative fact and
+    relationship counts so the right-column stat tiles show live numbers and
+    are not stuck on the em-dash placeholder."""
+    context = MagicMock()
+    chunks = [
+        {"id": f"chunk-{i}", "content": f"Documentation chunk number {i}.", "metadata": {}}
+        for i in range(55)  # > CHUNK_BATCH_SIZE (50) -> two batches
+    ]
+    context.memory.recall = AsyncMock(return_value=chunks)
+    context.memory.store_batch = AsyncMock(return_value={"inserted": 1})
+    context.docgraph.link = AsyncMock(return_value={"id": "edge-1"})
+    context.candidates.enqueue = AsyncMock(return_value={"id": "c-1"})
+    publish = AsyncMock()
+
+    with patch("draftly.workflows.onboarding.stages.Agent") as mock_agent_cls:
+        mock_agent = mock_agent_cls.return_value
+        mock_agent.invoke_async = AsyncMock(
+            return_value=fake_agent_result(
+                ExtractionOutput(
+                    facts=["f"],
+                    relationships=[Relationship(source="a", target="b")],
+                )
+            )
+        )
+
+        result = await run_knowledge_construction(
+            context, org_id="test-org", publish=publish,
+        )
+
+    progress_calls = [
+        c.args[1]
+        for c in publish.call_args_list
+        if c.args[0] == "tool_progress"
+        and c.args[1].get("name") == "knowledge_extraction"
+    ]
+    assert progress_calls, "expected knowledge_extraction tool_progress emissions"
+    facts_values = []
+    rel_values = []
+    for payload in progress_calls:
+        assert "knowledge_count" in payload
+        assert "relationship_count" in payload
+        assert isinstance(payload["knowledge_count"], int)
+        assert isinstance(payload["relationship_count"], int)
+        facts_values.append(payload["knowledge_count"])
+        rel_values.append(payload["relationship_count"])
+    assert facts_values == sorted(facts_values), "fact counts should be monotonic"
+    assert rel_values == sorted(rel_values), "relationship counts should be monotonic"
+    # Every chunk stored one fact and one relationship, and the final tick's
+    # counts must match the result returned by the stage.
+    assert facts_values[-1] == result.knowledge_count == len(chunks)
+    assert rel_values[-1] == result.relationship_count == len(chunks)
 
 
 @pytest.mark.asyncio
@@ -1183,3 +1241,78 @@ async def test_knowledge_construction_respects_emit_tick_budget():
     ]
     assert stage_progress_calls, "expected some stage_progress emissions"
     assert len(stage_progress_calls) <= EMIT_TICK_BUDGET + 2  # + final + start
+
+
+@pytest.mark.asyncio
+async def test_knowledge_construction_batches_relationships_and_candidates():
+    context = MagicMock()
+    context.memory.recall = AsyncMock(return_value=[
+        {"id": "chunk-1", "content": "About the auth system.", "metadata": {}},
+        {"id": "chunk-2", "content": "About the tokens endpoint.", "metadata": {}},
+    ])
+    context.memory.store_batch = AsyncMock(return_value=[{"id": "k-1"}])
+    # Real services carry real batch methods; MagicMock context stays per-item.
+    context.docgraph = DocGraphService(store=FakeDocGraphStore())
+    context.candidates = CandidateService(store=FakeCandidatesStore())
+    publish = AsyncMock()
+
+    with patch.object(stages, "Agent") as mock_agent_cls:
+        mock_agent = mock_agent_cls.return_value
+        mock_agent.invoke_async = AsyncMock(return_value=fake_agent_result(
+            ExtractionOutput(
+                facts=["fact"],
+                relationships=[Relationship(source="a", target="b", type="DOCUMENTED_BY")],
+                procedures=[Procedure(title="Run", steps=["go"])],
+            )
+        ))
+
+        result = await run_knowledge_construction(
+            context, org_id="test-org", publish=publish,
+        )
+
+    # Two chunks × (1 relationship + 1 procedure) were flushed to the real
+    # stores via batch methods. Edge count is NOT asserted: both chunks emit
+    # the same a->b relationship, which FakeDocGraphStore.upsert_edge dedups
+    # to one edge (count still returns 2). relationship_count/candidate_count
+    # come from the batch-method return values.
+    assert result.relationship_count == 2
+    assert result.candidate_count == 2
+    assert len(context.candidates.store.rows) == 2
+
+
+def test_knowledge_batch_timeout_has_positive_default():
+    assert stages.KNOWLEDGE_BATCH_TIMEOUT_SECONDS > 0
+
+
+@pytest.mark.asyncio
+async def test_knowledge_construction_times_out_slow_batch(monkeypatch):
+    """A hung extract/store is cut off at the per-batch ceiling; the chunk is
+    recorded failed and the stage still returns instead of hanging forever."""
+    monkeypatch.setattr(stages, "KNOWLEDGE_BATCH_TIMEOUT_SECONDS", 0.05)
+
+    async def slow_store(items):
+        await asyncio.sleep(1.0)
+        return [{"id": "k"}]
+
+    async def fast_llm(model, prompt, agent=None, *, output_model=None, telemetry=None):
+        return ExtractionOutput(facts=["f"])
+
+    monkeypatch.setattr(stages, "_llm_generate", fast_llm)
+
+    context = MagicMock()
+    context.memory.recall = AsyncMock(return_value=[
+        {"id": "c1", "content": "Content.", "metadata": {}},
+    ])
+    context.memory.store_batch = slow_store
+    context.docgraph.link = AsyncMock()
+    context.candidates.enqueue = AsyncMock()
+    publish = AsyncMock()
+
+    with patch("draftly.workflows.onboarding.stages.Agent"):
+        result = await run_knowledge_construction(
+            context, org_id="test-org", publish=publish,
+        )
+
+    # The slow store_batch was cut off; the chunk is recorded failed and the
+    # stage still returns (does not hang the workflow).
+    assert "c1" in result.failed_chunks

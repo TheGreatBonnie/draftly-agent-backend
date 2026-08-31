@@ -54,6 +54,9 @@ class DocGraphService:
         logger.debug("doc_edge_linked type=%s", relation_type)
         return edge
 
+    async def link_batch(self, relations: list[dict]) -> int:
+        return await self.store.link_batch(relations)
+
     async def affected_docs(
         self,
         code_paths: list[str],

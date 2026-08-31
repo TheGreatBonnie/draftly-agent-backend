@@ -35,6 +35,29 @@ class CandidateService:
         logger.debug("candidate_enqueued type=%s", candidate.candidate_type)
         return record
 
+    async def enqueue_batch(self, candidates: list[MemoryCandidate]) -> int:
+        if not candidates:
+            return 0
+        if hasattr(self.store, "insert_batch"):
+            fields_list = [
+                {
+                    "org_id": c.org_id,
+                    "candidate_type": c.candidate_type,
+                    "payload": json.dumps(c.payload),
+                    "source_type": c.source_type,
+                    "source_id": c.source_id,
+                    "evidence": json.dumps(c.evidence),
+                    "confidence": c.confidence,
+                }
+                for c in candidates
+            ]
+            rows = await self.store.insert_batch(fields_list=fields_list)
+            logger.debug("candidate_batch_enqueued count=%d", len(rows))
+            return len(rows)
+        for c in candidates:
+            await self.enqueue(c)
+        return len(candidates)
+
     async def claim_batch(self, limit: int = 10) -> list[dict[str, Any]]:
         return await self.store.claim_pending(limit=limit)
 

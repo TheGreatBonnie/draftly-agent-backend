@@ -88,6 +88,21 @@ class FakeDocGraphStore:
         self.edges.append(e)
         return dict(e)
 
+    async def link_batch(self, relations):
+        count = 0
+        for rel in relations:
+            src = self._node(rel.get("source_type", "code"), rel["source"], rel.get("org_id"))
+            tgt = self._node(rel.get("target_type", "doc"), rel["target"], rel.get("org_id"))
+            await self.upsert_edge(
+                source_node_id=src["id"],
+                target_node_id=tgt["id"],
+                relation_type=rel["type"],
+                org_id=rel.get("org_id"),
+                evidence=rel.get("evidence"),
+            )
+            count += 1
+        return count
+
     async def docs_for_code(self, *, code_keys, org_id=None) -> list[dict]:
         by_id = {n["id"]: n for n in self.nodes}
         code_nodes = {n["id"] for n in self.nodes if n["key"] in code_keys}
@@ -116,6 +131,11 @@ class FakeCandidatesStore:
                   "decision_reason": None, **fields}
         self.rows.append(fields)
         return dict(fields)
+
+    async def insert_batch(self, *, fields_list):
+        for fields in fields_list:
+            await self.insert(fields=fields)
+        return list(self.rows[-len(fields_list):])
 
     async def claim_pending(self, *, limit: int) -> list[dict]:
         claimed = []
