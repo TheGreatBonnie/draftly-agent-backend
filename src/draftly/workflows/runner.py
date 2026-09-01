@@ -124,6 +124,16 @@ class WorkflowRunner:
             return state.finish(WorkflowStatus.SKIPPED)
         state.surface = surface
 
+        # Only merged PRs run the documentation graph; other PR actions skip
+        # before the idempotency claim so they leave no audit/duplicate record.
+        # Gate on the event prefix (not the surface) so push/release events that
+        # share the "pull_request" surface still run.
+        event_type = str(event.get("event_type") or "")
+        if event_type.split(".")[0] == "pull_request" and not event_type.endswith(
+            ".merged"
+        ):
+            return state.finish(WorkflowStatus.SKIPPED)
+
         # 1. Idempotency: claim the event before touching the graph.
         if not await self._claim(event, run_id):
             existing = await self._existing(event.get("event_id", ""))

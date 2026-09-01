@@ -114,7 +114,7 @@ def failed_result() -> GraphResult:
 
 PR_EVENT = {
     "event_id": "evt-1",
-    "event_type": "pull_request.opened",
+    "event_type": "pull_request.merged",
     "repository": "acme/api",
     "actor": "dev",
     "source": "github",
@@ -184,6 +184,54 @@ class TestRunnerOutcomes:
         invocation_state = graph.calls[0]["invocation_state"]
         assert invocation_state["run_id"] == "evt-1"
         assert invocation_state["review_policy"] == "risky"
+
+
+class TestRunnerMergedOnlyGate:
+    async def _run_event(self, event_type: str) -> tuple[WorkflowState, object]:
+        from draftly.workflows.context import WorkflowContext
+        from draftly.workflows.runner import WorkflowRunner
+
+        context = make_context()
+        graph = FakeGraph(completed_result())
+        runner = WorkflowRunner(context, graph_factory=lambda r, s: graph)
+        state = await runner.run(
+            {"event_id": "evt-gate", "event_type": event_type, "source": "github"}
+        )
+        return state, context
+
+    async def test_opened_pr_skips_before_claim(self) -> None:
+        state, context = await self._run_event("pull_request.opened")
+        assert state.status.value == "skipped"
+        assert state.surface == "pull_request"
+        # Idempotency claim never happened -> no audit/duplicate record.
+        assert context.events.claimed == {}
+        assert context.events.statuses == {}
+
+    async def test_edited_pr_skips(self) -> None:
+        state, _ = await self._run_event("pull_request.edited")
+        assert state.status.value == "skipped"
+
+    async def test_closed_not_merged_pr_skips(self) -> None:
+        state, _ = await self._run_event("pull_request.closed")
+        assert state.status.value == "skipped"
+
+    async def test_merged_pr_runs_graph(self) -> None:
+        state, context = await self._run_event("pull_request.merged")
+        assert state.status.value == "delivered"
+        assert context.events.statuses["evt-gate"] == "completed"
+
+    async def test_push_and_release_not_skipped(self) -> None:
+        # Guard: push/release share the pull_request surface but must keep running.
+        for event_type in ("push.pushed", "release.published"):
+            ctx = make_context()
+            graph = FakeGraph(completed_result())
+            runner = WorkflowRunner(
+                ctx, graph_factory=lambda r, s: graph, dispatcher=EventDispatcher()
+            )
+            state = await runner.run(
+                {"event_id": event_type, "event_type": event_type, "source": "github"}
+            )
+            assert state.status.value == "delivered", event_type
 
 
 # ================================================================
