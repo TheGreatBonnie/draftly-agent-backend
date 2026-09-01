@@ -25,6 +25,8 @@ class PullRequestProcessor(BaseProcessor):
         repo = (payload.get("repository") or {}).get("full_name", "")
         sender = (payload.get("sender") or {}).get("login", "")
         action = self._action(payload, default="updated")
+        if action == "closed" and pr.get("merged"):
+            action = "merged"
 
         return ProcessedEvent(
             event_id=event_id or self._derive_id(payload, pr, action),
