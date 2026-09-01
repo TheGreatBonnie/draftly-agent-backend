@@ -253,6 +253,19 @@ async def github_webhook(
         logger.warning("github_webhook_unhandled", error=str(exc))
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
+    # Only merged PRs proceed to the runner; drop other PR actions at the
+    # edge. Defense-in-depth — the runner gate (workflow/runner.py) is the
+    # authoritative filter for all entry paths.
+    if str(event.get("event_type", "")).startswith("pull_request.") and not str(
+        event.get("event_type", "")
+    ).endswith(".merged"):
+        logger.info(
+            "github_webhook_pr_skipped",
+            event_type=event.get("event_type"),
+            delivery_id=delivery_id,
+        )
+        return WebhookResponse(status=f"{event.get('event_type')} (skipped, not merged)")
+
     background_tasks.add_task(app_state.workflows.runner.run, event)
 
     logger.info(
