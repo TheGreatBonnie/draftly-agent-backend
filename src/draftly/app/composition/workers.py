@@ -12,8 +12,9 @@ logger = structlog.get_logger(__name__)
 
 
 # Scheduled task name → WorkflowRegistry workflow name. Surface workflows
-# (github_pr / github_issue / slack_support / discord_support) are NOT
-# here: they run through the webhook → WorkflowRunner path (§7.4).
+# (github_issue / slack_support / discord_support) are NOT here: they run
+# through the webhook → WorkflowRunner path (§7.4). `github_pr.enqueue` is
+# dispatched via RQ/in-process through the same WorkflowRunner graph.
 TASK_REGISTRY: dict[str, str] = {
     "documentation.sync": "documentation_sync",
     "documentation.sync_repository": "documentation_sync",
@@ -23,6 +24,7 @@ TASK_REGISTRY: dict[str, str] = {
     "onboarding.initialize": "onboarding_initialize",
     "memory.curation": "memory_curation",
     "memory.maintenance": "memory_maintenance",
+    "github_pr.enqueue": "github_pr",
 }
 
 

@@ -40,6 +40,20 @@ def _tickets(request: Request) -> RedisTicketStore:
     return store
 
 
+@router.get("")
+async def list_workflows(
+    request: Request,
+    token: dict[str, Any] = Depends(get_verified_token),
+) -> dict[str, Any]:
+    """Live workflows list: github_workflows identity joined to jobs/events state."""
+    org_id = str(token.get("org_id") or "")
+    deps = request.app.state.draftly.dependencies
+    db = deps.integrations.database
+    from draftly.persistence.repositories.github import list_github_workflows_record
+    rows = await list_github_workflows_record(org_id=org_id, db=db)
+    return {"items": rows}
+
+
 @router.post("/{run_id}/stream-ticket")
 async def issue_ticket(
     run_id: str,
@@ -76,7 +90,7 @@ async def _event_source(
     min_live_seq: int = 0,
 ) -> AsyncIterator[dict]:
     """Yield event dicts for sse-starlette wrapping."""
-    logger.debug("sse_event_source_start", run_id=run_id, replayed_count=len(replayed or []), min_live_seq=min_live_seq)
+    logger.debug("sse_event_source_start", run_id=run_id, replayed_count=len(replayed or []), min_live_seq=min_live_seq)  # noqa: E501
     replayed_done = False
     for row in replayed or []:
         envelope = StreamEnvelope(
@@ -104,7 +118,7 @@ async def _event_source(
         logger.debug("sse_pump_start", run_id=run_id)
         try:
             async for envelope in bus.subscribe(run_id):
-                logger.debug("sse_pump_envelope", run_id=run_id, type=envelope.type, seq=envelope.seq)
+                logger.debug("sse_pump_envelope", run_id=run_id, type=envelope.type, seq=envelope.seq)  # noqa: E501
                 await queue.put(envelope)
         except asyncio.CancelledError:
             logger.debug("sse_pump_cancelled", run_id=run_id)
@@ -129,7 +143,7 @@ async def _event_source(
                 return
 
             if envelope.seq <= min_live_seq:
-                logger.debug("sse_skip_old_seq", run_id=run_id, seq=envelope.seq, min_live_seq=min_live_seq)
+                logger.debug("sse_skip_old_seq", run_id=run_id, seq=envelope.seq, min_live_seq=min_live_seq)  # noqa: E501
                 continue
 
             logger.debug("sse_yield", run_id=run_id, type=envelope.type, seq=envelope.seq)
@@ -189,7 +203,7 @@ async def stream_events(
                 replayed = await events_repo.list_after(run_id, seq=min_live_seq)
             else:
                 replayed = await events_repo.list_after(run_id, seq=0)
-            logger.info("sse_replay_loaded", run_id=run_id, count=len(replayed), min_live_seq=min_live_seq)
+            logger.info("sse_replay_loaded", run_id=run_id, count=len(replayed), min_live_seq=min_live_seq)  # noqa: E501
         except Exception:
             logger.warning("sse_replay_failed run_id=%s", run_id, exc_info=True)
     else:
@@ -213,7 +227,7 @@ async def stream_events(
     async def sse_generator():
         logger.debug("sse_generator_start", run_id=run_id)
         async for data in gen:
-            logger.debug("sse_frame_send", run_id=run_id, type=data.get("type"), seq=data.get("seq"))
+            logger.debug("sse_frame_send", run_id=run_id, type=data.get("type"), seq=data.get("seq"))  # noqa: E501
             yield JSONServerSentEvent(
                 data=data,
                 event=data.get("type", "message"),

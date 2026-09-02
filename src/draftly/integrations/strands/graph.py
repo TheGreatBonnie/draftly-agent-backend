@@ -53,6 +53,8 @@ def build_graph_for_run(
     session_manager: Any | None = None,
     audit_repo: Any = None,
     memory: Any = None,
+    publisher: Any = None,
+    jobs_repo: Any = None,
     **graph_kwargs: Any,
 ):
     """Build the graph for ONE surface, with its own session manager.
@@ -70,5 +72,7 @@ def build_graph_for_run(
         hooks=hooks,
         audit_repo=audit_repo,
         memory=memory,
+        publisher=publisher,
+        jobs_repo=jobs_repo,
         **graph_kwargs,
     )

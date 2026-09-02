@@ -9,6 +9,23 @@ from uuid import uuid4
 from draftly.integrations.database.client import DatabaseClient
 
 
+def _reason_detail(reason: Any) -> dict[str, Any]:
+    """Extract structured detail from a review-gate reason.
+
+    The gate builds ``reason = {"run_id", "summary", "evaluation", "evidence_count"}``
+    (review_gate.py:62-67). Only dict reasons carry structured fields; other
+    types degrade to an empty detail so the column stays JSONB-null-ish.
+    """
+    if isinstance(reason, dict):
+        return {
+            "summary": reason.get("summary"),
+            "evaluation": reason.get("evaluation"),
+            "evidence_count": reason.get("evidence_count"),
+            "run_id": reason.get("run_id"),
+        }
+    return {}
+
+
 @dataclass
 class ReviewRecord:
     id: str
@@ -27,6 +44,7 @@ class ReviewRecord:
     expires_at: datetime | None = None
     notification_sent_at: datetime | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
+    detail: dict[str, Any] | None = None
 
 
 class ReviewsRepository:
@@ -190,6 +208,8 @@ class ReviewsRepository:
         Maps the strands interrupt onto the reviews schema:
         thread_id=run_id, tool_name='doc-review', and the interrupt
         identity in tool_args/metadata so the §9 resume route can find it.
+        Persists a structured ``detail`` JSONB column for the frontend
+        (summary/evaluation/evidence_count) instead of flattening to a string.
         """
         now = datetime.now(UTC)
         expires_at = now + timedelta(hours=24)
@@ -198,9 +218,9 @@ class ReviewsRepository:
         query = """
         INSERT INTO reviews (
             id, org_id, thread_id, workflow, tool_name, tool_args,
-            action_description, status, created_at, expires_at, metadata
+            action_description, status, created_at, expires_at, metadata, detail
         ) VALUES ($1, $2, $3, $4, 'doc-review', $5::JSONB, $6,
-                  'pending', $7, $8, $9::JSONB)
+                  'pending', $7, $8, $9::JSONB, $10::JSONB)
         """
 
         tool_args = {"interrupt_id": interrupt_id}
@@ -209,6 +229,12 @@ class ReviewsRepository:
             "interrupt_id": interrupt_id,
             "reason": reason if isinstance(reason, (str, int, float, bool)) else json.dumps(reason),
         }
+        detail = _reason_detail(reason)
+        # Prefer the summary text for action_description over a raw dict repr
+        if isinstance(reason, dict):
+            action_description = str(reason.get("summary") or reason.get("run_id") or reason)
+        else:
+            action_description = str(reason) if reason is not None else None
 
         await self.database.execute(
             query,
@@ -217,10 +243,11 @@ class ReviewsRepository:
             run_id,
             workflow_type,
             json.dumps(tool_args),
-            str(reason) if reason is not None else None,
+            action_description,
             now,
             expires_at,
             json.dumps(metadata),
+            json.dumps(detail),
         )
 
         return ReviewRecord(
@@ -230,17 +257,38 @@ class ReviewsRepository:
             workflow=workflow_type,
             tool_name="doc-review",
             tool_args=tool_args,
-            action_description=str(reason) if reason is not None else None,
+            action_description=action_description,
             status="pending",
             created_at=now,
             expires_at=expires_at,
             metadata=metadata,
+            detail=detail,
         )
 
     def _row_to_record(self, row: Any) -> ReviewRecord:
         tool_args = row.get("tool_args", "{}")
         if isinstance(tool_args, str):
             tool_args = json.loads(tool_args)
+        # detail is JSONB — may be a string, dict, or None
+        detail = row.get("detail")
+        if isinstance(detail, str):
+            try:
+                detail = json.loads(detail)
+            except Exception:
+                detail = {}
+        elif detail is None:
+            detail = None
+        elif not isinstance(detail, dict):
+            detail = {}
+
+        # metadata may be string or dict
+        metadata = row.get("metadata", {})
+        if isinstance(metadata, str):
+            try:
+                metadata = json.loads(metadata)
+            except Exception:
+                metadata = {}
+
         return ReviewRecord(
             id=str(row["id"]),
             org_id=str(row["org_id"]),
@@ -257,5 +305,6 @@ class ReviewsRepository:
             created_at=row.get("created_at", datetime.now(UTC)),
             expires_at=row.get("expires_at"),
             notification_sent_at=row.get("notification_sent_at"),
-            metadata=row.get("metadata", {}),
+            metadata=metadata if isinstance(metadata, dict) else {},
+            detail=detail if isinstance(detail, dict) else None,
         )

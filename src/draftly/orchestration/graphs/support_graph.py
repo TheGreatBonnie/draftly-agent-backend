@@ -45,6 +45,8 @@ def build_support_graph(
     graph_id: str = SUPPORT_GRAPH_ID,
     audit_repo: Any = None,
     memory: Any = None,
+    publisher: Any = None,
+    jobs_repo: Any = None,
     max_node_executions: int = DEFAULT_MAX_NODE_EXECUTIONS,
     execution_timeout: float = DEFAULT_EXECUTION_TIMEOUT,
     node_timeout: float = DEFAULT_NODE_TIMEOUT,
@@ -169,10 +171,10 @@ def build_support_graph(
     if session_manager is not None:
         builder.set_session_manager(session_manager)
     providers: list[Any] = [ReviewGate()]
-    if audit_repo is not None:
+    if audit_repo is not None or publisher is not None or jobs_repo is not None:
         from draftly.orchestration.hooks.audit import RunAuditLogger
 
-        providers.append(RunAuditLogger(audit_repo))
+        providers.append(RunAuditLogger(audit_repo, publisher=publisher, jobs_repo=jobs_repo))
     if hooks:
         providers.extend(hooks)
     builder.set_hook_providers(providers)

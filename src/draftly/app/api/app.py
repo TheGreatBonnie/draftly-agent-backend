@@ -5,6 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from draftly.app.api.middleware.logging import RequestLoggingMiddleware
 from draftly.app.api.routes import (
+    agents,
     clerk,
     discord,
     documentation,
@@ -132,6 +133,11 @@ def create_api_app() -> FastAPI:
 
     app.include_router(
         knowledge.router,
+        prefix="/api",
+    )
+
+    app.include_router(
+        agents.router,
         prefix="/api",
     )
 

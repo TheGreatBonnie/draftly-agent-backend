@@ -80,6 +80,7 @@ def _default_graph_factory(context: WorkflowContext) -> GraphFactory:
     def factory(run_id: str, surface: str) -> Any:
         from draftly.integrations.strands.graph import build_graph_for_run
 
+        jobs_repo = getattr(getattr(context, "repositories", None), "jobs", None)
         return build_graph_for_run(
             run_id,
             surface=surface,
@@ -89,6 +90,8 @@ def _default_graph_factory(context: WorkflowContext) -> GraphFactory:
             storage_dir=context.storage_dir,
             audit_repo=context.audit_repo,
             memory=getattr(context, "memory", None),
+            publisher=getattr(context, "publisher", None),
+            jobs_repo=jobs_repo,
             **context.graph_limits(),
         )
 
