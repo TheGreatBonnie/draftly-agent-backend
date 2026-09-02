@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 from types import SimpleNamespace
 from typing import Any
 
@@ -114,3 +115,37 @@ def test_steps_require_known_run_and_return_ordered_items() -> None:
     assert found.status_code == 200
     items = found.json()["items"]
     assert [s["seq"] for s in items] == [1, 2]
+
+
+def test_repository_container_wires_agent_runs() -> None:
+    from draftly.app.dependencies import RepositoryDependencies, build_repositories
+
+    params = inspect.signature(RepositoryDependencies.__init__).parameters
+    assert "agent_runs" in params
+    # Must be constructed with the shared database client like its siblings
+    src = inspect.getsource(build_repositories)
+    assert "AgentRunsRepository(" in src
+    assert "database=database" in src
+
+
+def test_runs_return_200_through_real_repository_builder(
+    monkeypatch: Any,
+) -> None:
+    """Regression: the app container never wired agent_runs, so /runs 503'd."""
+    from draftly.app.dependencies import build_repositories
+
+    monkeypatch.setenv("DATABASE_URL", "postgresql://user:pass@localhost/draftly")
+    db = FakeDatabase(runs=[RUN_ROW])
+    repositories = build_repositories(database=db)
+
+    app = FastAPI()
+    app.include_router(router)
+    app.dependency_overrides[get_verified_token] = lambda: {"org_id": "org-1"}
+    app.state.draftly = SimpleNamespace(
+        dependencies=SimpleNamespace(repositories=repositories)
+    )
+
+    resp = TestClient(app).get("/runs")
+
+    assert resp.status_code == 200
+    assert resp.json()["items"][0]["run_id"] == "evt-1"

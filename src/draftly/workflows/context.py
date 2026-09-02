@@ -38,6 +38,9 @@ class WorkflowContext:
     #: Streaming publisher (spec 2026-08-23-event-streaming); None ⇒ flag off.
     #: Set by composition so per-surface workflow functions can stream too.
     publisher: Any = None
+    #: Org-scoped dashboard broadcaster (SSE push); None disables pushes.
+    #: Set by composition when Redis + streaming are enabled.
+    broadcaster: Any = None
 
     @property
     def events(self) -> Any:

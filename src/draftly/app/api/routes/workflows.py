@@ -288,8 +288,12 @@ async def stream_dashboard_events(
         )
     )
 
+    last_event_id = request.headers.get("last-event-id", "")
+
     async def _dashboard_source():
-        gen = broadcaster.subscribe(org_id)
+        gen = broadcaster.subscribe(
+            org_id, last_id=str(last_event_id) if last_event_id else "0"
+        )
         while True:
             try:
                 event = await asyncio.wait_for(gen.__anext__(), timeout=heartbeat_seconds)
@@ -299,8 +303,9 @@ async def stream_dashboard_events(
                 await asyncio.sleep(0.1)
                 continue
             yield JSONServerSentEvent(
-                data=event,
+                data={"type": event.get("type", "message"), "payload": event.get("payload", {})},
                 event=event.get("type", "message"),
+                id=str(event.get("id", "")),
             )
 
     return EventSourceResponse(

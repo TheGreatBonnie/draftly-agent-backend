@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC
 from typing import Any, cast
 
 from draftly.integrations.database.client import DatabaseClient
@@ -471,7 +472,7 @@ async def list_github_workflows_record(
                 if isinstance(end, str):
                     end = datetime.fromisoformat(end.replace("Z", "+00:00"))
             else:
-                end = datetime.now(start.tzinfo) if start.tzinfo else datetime.utcnow()
+                end = datetime.now(start.tzinfo or UTC)
             delta = end - start
             if delta.total_seconds() < 60:
                 time_str = f"{int(delta.total_seconds())}s"
