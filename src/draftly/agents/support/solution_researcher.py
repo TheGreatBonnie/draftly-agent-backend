@@ -5,8 +5,9 @@ from __future__ import annotations
 from typing import Any
 
 from strands import Agent
+from strands.vended_plugins.skills import AgentSkills
 
-from draftly.agents.prompts import RESEARCH_PROMPT, build_prompt
+from draftly.agents.prompts import RESEARCH_PROMPT, build_prompt, load_skills
 from draftly.agents.schemas import EvidenceBundle
 
 
@@ -26,5 +27,13 @@ def build_solution_researcher(
         ),
         model=model,
         tools=tools,
+        plugins=[
+            AgentSkills(
+                skills=load_skills(
+                    "repository-analysis",
+                    "support-answering",
+                )
+            )
+        ],
         description="Researches solutions for support questions.",
     )

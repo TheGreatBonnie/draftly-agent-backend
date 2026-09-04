@@ -19,7 +19,10 @@ from strands import Agent
 from strands.multiagent import Swarm
 from strands.vended_plugins.skills import AgentSkills
 
-from draftly.agents.prompts import load_skills
+from draftly.agents.prompts import (
+    ISSUE_LOCAL_RESEARCHER_PROMPT,
+    load_skills,
+)
 from draftly.agents.shared.research import (
     build_discord_researcher,
     build_docs_researcher,
@@ -46,15 +49,7 @@ def build_issue_research_swarm(
     """
     local_agent = Agent(
         name="local_repo_researcher",
-        system_prompt=(
-            "You research the LOCAL repository checkout for evidence relevant "
-            "to the GitHub issue. The issue body and relevant repo file paths "
-            "are provided in the task context. Inspect code and docs with the "
-            "local repository tools (code_search, semantic_search, "
-            "keyword_search) using repo_dir=<local checkout path>. Do NOT call "
-            "get_issue or GitHub web tools: the network API is unavailable for "
-            "this task. Collect concrete source ids (file paths + line numbers)."
-        ),
+        system_prompt=ISSUE_LOCAL_RESEARCHER_PROMPT,
         model=model,
         tools=local_tools,
         plugins=[

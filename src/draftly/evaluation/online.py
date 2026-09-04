@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 import uuid
+from pathlib import Path
 from typing import Any
 
 import structlog
@@ -32,6 +33,101 @@ DEFAULT_ACTOR = "eval-bot"
 
 def _slug(name: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
+
+
+def _load_evidence_content(repo_dir: str, evidence: list[Any]) -> list[dict[str, str]]:
+    """Read declared evidence file contents from the local checkout.
+
+    Returns ``[{path, content}]`` for evidence whose files exist under
+    ``repo_dir``. Evidence urls may be repo-relative (``authly/docs/...`` or
+    ``docs/...``); a leading repo-dir basename is tolerated. Unreadable/missing
+    files are skipped so a broken path never fails the whole run.
+    """
+    if not repo_dir or not evidence:
+        return []
+    base = Path(repo_dir)
+    repo_name = base.name
+    out: list[dict[str, str]] = []
+    for entry in evidence:
+        url = entry.get("url") if isinstance(entry, dict) else str(entry)
+        if not url:
+            continue
+        rel = url
+        if rel.startswith(f"{repo_name}/"):
+            rel = rel[len(repo_name) + 1 :]
+        path = base / rel
+        try:
+            content = path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        out.append({"path": rel, "content": content})
+    return out
+
+
+def _strip_repo_prefix(raw: str, repo_name: str) -> str:
+    """Normalize a cited path by removing a leading ``<repo_name>/`` segment."""
+    raw = raw.strip()
+    if repo_name and raw.startswith(f"{repo_name}/"):
+        return raw[len(repo_name) + 1 :]
+    return raw
+
+
+def _collect_rel_paths(graph_result: Any, repo_name: str = "") -> list[str]:
+    """Collect repo-relative evidence/source paths the agent cited.
+
+    Pulls from ``EvidenceBundle.items`` (context/research nodes),
+    ``ImpactAnalysis.evidence``, and ``AnswerDraft.sources`` across every
+    executed node's structured output, normalizes a leading ``<repo_name>/``
+    prefix, and dedupes preserving order. The online task uses this to surface
+    the actual files the agent reasoned over as evidence content for the LLM
+    judges (so real APIs like ``authly.roles.assign()`` are verifiable).
+    """
+    seen: set[str] = set()
+    out: list[str] = []
+
+    def _add(value: Any) -> None:
+        if not value:
+            return
+        rel = _strip_repo_prefix(str(value), repo_name)
+        if not rel or rel in seen:
+            return
+        seen.add(rel)
+        out.append(rel)
+
+    for node in getattr(graph_result, "execution_order", []) or []:
+        for agent_result in node_agent_results(node):
+            payload = _model_dump(getattr(agent_result, "structured_output", None))
+            if payload is None:
+                payload = _model_dump(str(agent_result))
+            if payload is None:
+                continue
+            items = payload.get("items")
+            if isinstance(items, list):
+                for item in items:
+                    if not isinstance(item, dict):
+                        continue
+                    for key in ("path", "url", "source_id", "id"):
+                        if item.get(key):
+                            _add(item[key])
+            for key in ("evidence", "sources"):
+                values = payload.get(key)
+                if isinstance(values, list):
+                    for value in values:
+                        _add(value)
+    return out
+
+
+def _dedupe_evidence_paths(entries: list[dict[str, str]]) -> list[dict[str, str]]:
+    """Drop duplicate ``{path, content}`` entries, preserving first occurrence."""
+    seen: set[str] = set()
+    out: list[dict[str, str]] = []
+    for entry in entries:
+        path = entry.get("path", "")
+        if path in seen:
+            continue
+        seen.add(path)
+        out.append(entry)
+    return out
 
 
 def build_event(case: Any, surface: str) -> dict[str, Any]:
@@ -146,14 +242,42 @@ def build_event(case: Any, surface: str) -> dict[str, Any]:
             )
         base["issue"] = issue
     elif surface == "support":
+        # Preserve the top-level support event contract (source / question /
+        # source_message_id) consumed by graph tests and the support graph.
         base.update(
             {
                 "source": "slack",
                 "source_message_id": str(uuid.uuid4()),
-                "repository": None,
                 "question": question,
             }
         )
+        # Ground the support surface like the issue path: surface repo context,
+        # evidence, and its declared doc paths under a ``support`` payload so
+        # the online task can feed these to the context/research/search tools
+        # and the LLM judges on live runs.
+        support = {}
+        repo_dir = metadata.get("repo_dir")
+        if repo_dir:
+            support["repo_dir"] = repo_dir
+        evidence = metadata.get("evidence") or []
+        if evidence:
+            support["evidence"] = list(evidence)
+            support["related_docs"] = [
+                e.get("url") if isinstance(e, dict) else str(e) for e in evidence
+            ]
+        changed_paths = metadata.get("changed_files") or [
+            (e.get("url") if isinstance(e, dict) else str(e)) for e in evidence
+        ]
+        if changed_paths:
+            support["changed_files"] = [
+                p if isinstance(p, str) else str(p) for p in changed_paths
+            ]
+            support["changed_file_details"] = list(
+                metadata.get("changed_files")
+                or [{"path": p, "url": p} for p in changed_paths]
+            )
+        if support:
+            base["support"] = support
     pull_request = base.get("pull_request")
     merged = False
     changed_files_count = 0
@@ -414,6 +538,7 @@ def build_online_task(client: StrandsClient):
 
         pr = (event.get("pull_request") or {})
         issue = (event.get("issue") or {})
+        support = (event.get("support") or {})
         env_state: list[Any] = [
             EnvironmentState(
                 name="context",
@@ -424,18 +549,48 @@ def build_online_task(client: StrandsClient):
                 },
             )
         ]
-        if surface == "issue":
-            # Mirror the PR path's judge grounding for the issue surface: carry
-            # the repo scope + relevant authly doc evidence into
+        if surface in ("issue", "support"):
+            # Carry repo scope + relevant authly doc evidence into
             # <ActualEnvironmentState> so groundedness/correctness/completeness
-            # verify claims against real source instead of an empty env.
-            repo_dir = issue.get("repo_dir")
+            # verify claims against real source instead of an empty env. Issue
+            # and support surfaces both back their cases with a local authly
+            # checkout (repo_dir) and declared evidence docs.
+            surface_payload = issue if surface == "issue" else support
+            repo_dir = surface_payload.get("repo_dir")
             if repo_dir:
                 env_state.append(EnvironmentState(name="repo_dir", state=repo_dir))
-            evidence = issue.get("evidence") or issue.get("related_docs") or []
+            evidence = surface_payload.get("evidence") or surface_payload.get(
+                "related_docs"
+            ) or []
             if evidence:
                 env_state.append(EnvironmentState(name="evidence", state=evidence))
-            changed_files = issue.get("changed_file_details") or issue.get(
+                # Surface the actual doc file contents so the LLM judges can
+                # verify API/behavior claims (e.g. permissions.list_for_user)
+                # against real source on answer/support surfaces — mirroring
+                # how the PR path feeds the diff to the same judges.
+                if repo_dir:
+                    evidence_content = _load_evidence_content(repo_dir, evidence)
+                    # Also read the files the agent actually cited during the
+                    # run (EvidenceBundle items / ImpactAnalysis.evidence /
+                    # AnswerDraft.sources), so groundedness can verify APIs the
+                    # agent surfaced that are not in the seeded evidence docs
+                    # (e.g. authly.roles.assign() lives in src/authly/roles.py).
+                    cited = _collect_rel_paths(
+                        graph_result, repo_name=Path(repo_dir).name
+                    )
+                    if cited:
+                        evidence_content += _load_evidence_content(
+                            repo_dir, [{"url": p} for p in cited]
+                        )
+                    evidence_content = _dedupe_evidence_paths(evidence_content)
+                    if evidence_content:
+                        env_state.append(
+                            EnvironmentState(
+                                name="evidence_content",
+                                state=evidence_content,
+                            )
+                        )
+            changed_files = surface_payload.get("changed_file_details") or surface_payload.get(
                 "changed_files"
             )
             if changed_files:

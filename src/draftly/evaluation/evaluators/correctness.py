@@ -17,11 +17,13 @@ from strands_evals.evaluators import OutputEvaluator
 CORRECTNESS_RUBRIC = (
     "Assess whether the documentation is factually and technically correct with "
     "respect to the requested scope, any provided evidence, and the actual source "
-    "change described under <ActualEnvironmentState> (the real PR diff and changed "
-    "files). Flag inaccuracies, wrong code, incorrect API references, or misleading "
-    "guidance. Verify that any named APIs, methods, parameters, and behavior in the "
-    "documentation exist in the provided diff before calling them inaccurate. Score "
-    "0-1 based on correctness."
+    "context described under <ActualEnvironmentState> — the real PR diff and changed "
+    "files for PR runs, or the documentation and evidence content supplied for "
+    "issue/support runs. Flag inaccuracies, wrong code, incorrect API references, or "
+    "misleading guidance. Verify that any named APIs, methods, parameters, and behavior "
+    "in the documentation exist in the provided diff or evidence content before calling "
+    "them inaccurate. Do not require a diff when the run is an issue/support surface "
+    "with no diff. Score 0-1 based on correctness."
 )
 
 

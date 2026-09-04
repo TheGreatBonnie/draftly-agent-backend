@@ -15,9 +15,11 @@ from draftly.agents.prompts import (
     DELIVERY_PROMPT,
     IMPACT_PROMPT,
     ISSUE_ANALYZER_PROMPT,
+    ISSUE_LOCAL_RESEARCHER_PROMPT,
     ISSUE_RESPONDER_PROMPT,
     RESEARCH_PROMPT,
     REVIEWER_PROMPT,
+    SUPPORT_LOCAL_RESEARCHER_PROMPT,
     WRITER_PROMPT,
     build_prompt,
 )
@@ -166,6 +168,32 @@ class TestGuardrailsPresent:
         assert "permissions.list_for_user()" in flat  # explicit anti-renaming example
         assert "roles.list_for_user" in flat
         assert "if they appear verbatim" in flat
+
+
+class TestIssueLocalResearcherPrompt:
+    def test_local_researcher_requires_grounding_search(self) -> None:
+        """The issue research node's local researcher must demand at least one
+        retrieval/code-search before returning evidence, so the ``research``
+        node satisfies the dataset's required-tools contract instead of
+        skipping tool-grounding when context already gathered."""
+        flat = " ".join(ISSUE_LOCAL_RESEARCHER_PROMPT.split())
+
+        assert "at least one" in flat
+        assert "semantic or keyword" in flat
+        assert "semantic_search" in flat
+        assert "keyword_search" in flat
+        assert "code_search" in flat
+
+
+class TestSupportLocalResearcherPrompt:
+    def test_support_local_researcher_requires_grounding_search(self) -> None:
+        flat = " ".join(SUPPORT_LOCAL_RESEARCHER_PROMPT.split())
+
+        assert "at least one" in flat
+        assert "semantic or keyword" in flat
+        assert "semantic_search" in flat
+        assert "keyword_search" in flat
+        assert "code_search" in flat
 
 
 class TestBuildPromptHardening:

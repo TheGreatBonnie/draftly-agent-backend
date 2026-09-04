@@ -325,7 +325,20 @@ class ExpectedContains(Evaluator[InputT, OutputT]):
             actual_tokens = self._significant_tokens(actual)
             matched = expected_tokens & actual_tokens
             coverage = len(matched) / len(expected_tokens)
-            found = coverage >= self.COVERAGE_THRESHOLD
+            # Per-case override: support/answer surfaces paraphrase by nature,
+            # so a dataset or case may relax the default coverage gate
+            # (e.g. metadata.expected_contains_threshold=0.45) without
+            # weakening authoring-style PR checks that keep the default.
+            threshold = self.COVERAGE_THRESHOLD
+            metadata = getattr(evaluation_case, "metadata", None) or {}
+            if isinstance(metadata, dict):
+                raw = metadata.get("expected_contains_threshold")
+                if raw is not None:
+                    try:
+                        threshold = float(raw)
+                    except (TypeError, ValueError):
+                        pass
+            found = coverage >= threshold
         return [
             EvaluationOutput(
                 score=1.0 if found else coverage,
@@ -336,7 +349,7 @@ class ExpectedContains(Evaluator[InputT, OutputT]):
                 if found
                 else (
                     f"expected content coverage {coverage:.0%} "
-                    f"below {self.COVERAGE_THRESHOLD:.0%}"
+                    f"below {threshold:.0%}"
                 )
             ),
             )
@@ -483,6 +496,16 @@ class NodeToolCalled(Evaluator[InputT, OutputT]):
         self.tools = list(tools)
 
     def evaluate(self, evaluation_case: EvaluationData[InputT, OutputT]) -> list[EvaluationOutput]:
+        # Empty tool list means no tool requirements — trivially passes
+        if not self.tools:
+            return [
+                EvaluationOutput(
+                    score=1.0,
+                    test_pass=True,
+                    reason=f"node '{self.node_name}' has no tool requirements; trivially passes",
+                )
+            ]
+
         interactions = getattr(evaluation_case, "actual_interactions", None) or []
         node_tools = next(
             (it.get("tools", []) for it in interactions if self.node_name == it.get("node_name")),

@@ -149,6 +149,8 @@ def test_issue_surface_agents_register_skills(stub_model: StubModel) -> None:
     from draftly.agents.github.issue_responder import build_issue_responder
     from draftly.agents.github.research_swarm import build_issue_research_swarm
     from draftly.agents.support.answer_writer import build_answer_writer
+    from draftly.agents.support.question_analyzer import build_question_analyzer
+    from draftly.agents.support.solution_researcher import build_solution_researcher
 
     tools = build_tools()
 
@@ -168,6 +170,14 @@ def test_issue_surface_agents_register_skills(stub_model: StubModel) -> None:
 
     answer = build_answer_writer(stub_model, tools.support_engineer)
     assert {"support-answering"} <= skill_names(answer)
+
+    support_analyzer = build_question_analyzer(stub_model)
+    assert {"support-triage", "documentation-gap-detection"} <= skill_names(
+        support_analyzer
+    )
+
+    solution = build_solution_researcher(stub_model, tools.support_engineer)
+    assert {"repository-analysis", "support-answering"} <= skill_names(solution)
 
     swarm = build_issue_research_swarm(
         stub_model,

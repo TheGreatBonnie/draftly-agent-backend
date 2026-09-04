@@ -57,15 +57,16 @@ def build_support_graph(
     from draftly.agents.shared.classifier import build_classifier
     from draftly.agents.shared.context import build_context_agent
     from draftly.agents.shared.delivery import build_delivery_agent
-    from draftly.agents.subagents import build_research_swarm
     from draftly.agents.support.answer_writer import build_answer_writer
     from draftly.agents.support.question_analyzer import (
         build_question_analyzer,
     )
+    from draftly.agents.support.research_swarm import build_support_research_swarm
     from draftly.agents.support.solution_researcher import (
         build_solution_researcher,
     )
     from draftly.integrations.strands.models import resolve_model_for_role
+    from draftly.tools.repository.code_search import code_search
 
     reg = tools_registry
 
@@ -88,17 +89,25 @@ def build_support_graph(
             reg.discord_get_thread,
         ),
     )
-    research_swarm = build_research_swarm(research_model, reg)
+    research_swarm = build_support_research_swarm(
+        research_model,
+        reg,
+        local_tools=_dedupe(
+            reg.semantic_search,
+            reg.keyword_search,
+            [code_search],
+        ),
+    )
     question_analyzer = build_question_analyzer(
         support_model,
-        _dedupe(reg.semantic_search),
+        _dedupe(reg.semantic_search, reg.keyword_search),
     )
     solution_researcher = build_solution_researcher(
         support_model,
         _dedupe(
             reg.semantic_search,
             reg.keyword_search,
-            reg.github_intelligence,
+            [code_search],
         ),
     )
     answer_agent = build_answer_writer(

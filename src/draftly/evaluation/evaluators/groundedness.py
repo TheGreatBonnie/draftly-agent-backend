@@ -17,12 +17,15 @@ from strands_evals.evaluators import OutputEvaluator
 
 GROUNDEDNESS_RUBRIC = (
     "Assess whether the documentation is grounded in the given evidence, scope, and "
-    "the actual source change described under <ActualEnvironmentState> (the real PR "
-    "diff and changed files), without inventing APIs, endpoints, or behavior that are "
-    "not supported. Treat every API, method, parameter, and behavior named in the "
-    "documentation as traceable if it appears anywhere in the provided diff. Any claim "
-    "must be traceable to the evidence, the change being documented, or the actual "
-    "diff. Score 0-1 based on groundedness."
+    "the actual source context described under <ActualEnvironmentState> — the real PR "
+    "diff and changed files for PR runs, or the documentation and evidence content "
+    "supplied for issue/support runs — without inventing APIs, endpoints, or behavior "
+    "that are not supported. Treat every API, method, parameter, and behavior named in "
+    "the documentation as traceable if it appears anywhere in the provided evidence "
+    "content, diff, changed files, or referenced source. Any claim must be traceable to "
+    "the evidence, the change being documented, the actual diff, or the provided "
+    "evidence/content files. Do not require a diff when the run is an issue/support "
+    "surface with no diff. Score 0-1 based on groundedness."
 )
 
 

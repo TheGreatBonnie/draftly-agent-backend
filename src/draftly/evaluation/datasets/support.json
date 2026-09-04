@@ -1,64 +1,48 @@
-{
-  "name": "support",
-  "description": "Golden support-question cases derived from the authly codebase (docs/how-to + docs/reference ground truth)",
-  "surface": "support",
-  "required_tools": {
-    "context": ["semantic_search", "keyword_search", "hybrid_search"],
-    "research": ["semantic_search", "code_search", "file_exists"],
-    "triage": ["semantic_search", "keyword_search"],
-    "impact": ["semantic_search", "keyword_search"]
-  },
-  "cases": [
-    {
-      "name": "invalid-email-or-password",
-      "input": "Login fails with AuthenticationError: invalid email or password. Which one is wrong?",
-      "expected_output": "The error never reveals which part failed: either no registered user matches the email or the password is wrong. Confirm the email exists via authly.users.list() and retry; remember only the first user created with a given email can match a login.",
-      "metadata": {
-        "surface": "support",
-        "evidence": [
-          {"id": "docs/how-to/troubleshoot-errors", "topic": "authentication", "url": "authly/docs/how-to/troubleshoot-errors.md"},
-          {"id": "docs/how-to/authenticate-user", "topic": "authentication", "url": "authly/docs/how-to/authenticate-user.md"}
-        ],
-        "expected_tools": ["semantic_search"]
-      }
+[
+  {
+    "name": "support",
+    "description": "Golden support-question cases derived from the authly codebase. Tests error diagnosis, API usage, and version-specific limitations across different documentation sources.",
+    "surface": "support",
+    "required_tools": {
+      "context": ["semantic_search", "keyword_search", "hybrid_search"],
+      "research": ["keyword_search", "code_search"],
+      "triage": [],
+      "impact": ["semantic_search", "keyword_search", "code_search"]
     },
-    {
-      "name": "client-valueerror-init",
-      "input": "Initializing the Authly client raises ValueError. Is that an AuthlyError?",
-      "expected_output": "No. ValueError from client construction is not an AuthlyError: it is a plain Python error meaning project_id or api_key was omitted or empty.",
-      "metadata": {
-        "surface": "support",
-        "evidence": [
-          {"id": "docs/reference/errors", "topic": "errors", "url": "authly/docs/reference/errors.md"},
-          {"id": "docs/how-to/troubleshoot-errors", "topic": "errors", "url": "authly/docs/how-to/troubleshoot-errors.md"}
-        ],
-        "expected_tools": ["semantic_search"]
+    "cases": [
+      {
+        "name": "permission-denied-authorization-error",
+        "input": "I'm calling permissions.check() and getting AuthorizationError: user 'usr_123' lacks permission 'documents:write'. The user exists and has roles assigned. What's wrong?",
+        "expected_output": "The error means none of the roles assigned to the user contain the exact permission string 'documents:write'. Permission names are case-sensitive ('documents:write' ≠ 'documents:Write'). To diagnose: 1) Inspect held permissions via authly.permissions.list_for_user(user_id=user.id), 2) Compare the actual permission strings against 'documents:write', 3) Assign a missing role or extend an existing one with the correct permission. Note: this error also appears for unknown user IDs because they have no assigned roles.",
+        "metadata": {
+          "surface": "support",
+          "expected_contains_threshold": 0.45,
+          "evidence": [
+            {
+              "id": "docs/how-to/troubleshoot-errors",
+              "topic": "authorization",
+              "url": "authly/docs/how-to/troubleshoot-errors.md",
+              "excerpt": "Cause: none of the roles assigned to the user contains the requested permission string. Permission names must match exactly (documents:write ≠ documents:Write). Fix: inspect what the user actually holds via authly.permissions.list_for_user(user_id=user.id). Note: this error also appears for unknown user IDs because an unknown user has no assigned roles."
+            },
+            {
+              "id": "docs/how-to/check-permissions",
+              "topic": "permissions",
+              "url": "authly/docs/how-to/check-permissions.md",
+              "excerpt": "authly.permissions.check(user_id=user.id, permission='documents:write') raises AuthorizationError if not allowed."
+            },
+            {
+              "id": "docs/reference/errors",
+              "topic": "errors",
+              "url": "authly/docs/reference/errors.md",
+              "excerpt": "AuthorizationError raised by permissions.check() when no assigned role contains the requested permission. Error format: user 'usr_...' lacks permission 'documents:write'."
+            }
+          ],
+          "expected_tools": ["keyword_search"],
+          "repo_dir": "/Applications/Projects/hackathon/draftly-docs-engineer/authly",
+          "repository": "TheGreatBonnie/authly",
+          "org_id": "org_3IfMDevV4Tg8DLD8Ljc0GG6c2GJ"
+        }
       }
-    },
-    {
-      "name": "list-for-user-never-raises",
-      "input": "Does permissions.list_for_user() raise for an unknown user ID?",
-      "expected_output": "No. permissions.list_for_user() never raises, even for unknown users; an unknown user simply has no assigned roles.",
-      "metadata": {
-        "surface": "support",
-        "evidence": [
-          {"id": "docs/reference/errors", "topic": "permissions", "url": "authly/docs/reference/errors.md"},
-          {"id": "docs/how-to/troubleshoot-errors", "topic": "permissions", "url": "authly/docs/how-to/troubleshoot-errors.md"}
-        ],
-        "expected_tools": ["semantic_search"]
-      }
-    },
-    {
-      "name": "revoke-idempotency",
-      "input": "If I revoke the same session twice, will the second call fail?",
-      "expected_output": "Revoking is idempotent in effect, but calling revoke() on a session that does not exist raises NotFoundError because revoke() performs a get() first.",
-      "metadata": {
-        "surface": "support",
-        "evidence": [
-          {"id": "docs/how-to/manage-sessions", "topic": "sessions", "url": "authly/docs/how-to/manage-sessions.md"}
-        ],
-        "expected_tools": ["semantic_search"]
-      }
-    }
-  ]
-}
+    ]
+  }
+]

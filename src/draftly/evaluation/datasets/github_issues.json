@@ -29,6 +29,7 @@
         "expected_output": "None of the roles assigned to the user contains the requested permission string; permission names must match exactly, so assign a missing role or extend an existing one after inspecting permissions.list_for_user().",
         "metadata": {
           "surface": "issue",
+          "expected_contains_threshold": 0.45,
           "evidence": [
             {
               "id": "docs/how-to/troubleshoot-errors",

@@ -18,6 +18,7 @@ import pytest
 from strands_evals import Case
 
 from draftly.evaluation.online import (
+    _collect_rel_paths,
     build_event,
     build_online_task,
     extract_authored_content,
@@ -517,6 +518,9 @@ def test_dataset_required_tools_drive_node_metrics() -> None:
         / "documentation.json"
     )
     dataset = json.loads(dataset_path.read_text())
+    # Datasets are list-wrapped (one file may hold multiple cases); surface-level
+    # config like required_tools lives on the first case.
+    dataset = dataset[0] if isinstance(dataset, list) else dataset
     required_tools = dataset["required_tools"]
 
     case = _case(
@@ -642,6 +646,292 @@ async def test_build_online_task_env_state_carries_real_diff() -> None:
     # The real diff from the authly worktree must be present for the judges.
     assert isinstance(by_name.get("diff"), str) and "oauth" in by_name["diff"]
     assert by_name.get("changed_files")
+async def test_build_online_task_env_state_carries_issue_evidence() -> None:
+    """The online task must surface the declared doc evidence *content* on the
+    issue surface so correctness/groundedness judges can verify API claims
+    against real docs instead of an empty environment."""
+
+    client = FakeClient()
+    task = build_online_task(client)
+
+    case = _case(
+        "authorization-error-permission-check",
+        "Calling permissions.check() raises AuthorizationError",
+        "None of the roles assigned to the user contains the requested permission",
+        {
+            "surface": "issue",
+            "repo_dir": str(Path(__file__).resolve().parents[3] / "authly"),
+            "evidence": [
+                {
+                    "id": "docs/how-to/troubleshoot-errors",
+                    "url": "authly/docs/how-to/troubleshoot-errors.md",
+                },
+                {
+                    "id": "docs/how-to/check-permissions",
+                    "url": "authly/docs/how-to/check-permissions.md",
+                },
+            ],
+        },
+    )
+
+    result = await task(case)
+    env = result["environment_state"]
+
+    assert isinstance(env, list) and len(env) >= 2
+    by_name = {
+        (e["name"] if isinstance(e, dict) else e.name): (
+            e.get("state") if isinstance(e, dict) else e.state
+        )
+        for e in env
+    }
+    assert "context" in by_name
+    assert "repo_dir" in by_name
+    # The declared evidence docs must be read into the judge's environment so
+    # API claims (e.g. permissions.list_for_user) are verifiable.
+    ev = by_name.get("evidence_content")
+    assert isinstance(ev, list) and len(ev) >= 2
+    joined = " ".join(str(chunk) for chunk in ev)
+    assert "list_for_user" in joined
+
+
+def test_collect_rel_paths_dedupes_published_sources() -> None:
+    """Cited evidence/source paths must be collected from the graph result's
+    structured outputs (EvidenceBundle items, ImpactAnalysis.evidence,
+    AnswerDraft.sources), normalized to repo-relative paths, and deduped."""
+    from draftly.agents.schemas import AnswerDraft, EvidenceBundle, ImpactAnalysis
+
+    graph = StubGraphResult(
+        [
+            StubNode(
+                "context",
+                [
+                    StubAgentResult(
+                        ["semantic_search"],
+                        structured_output=EvidenceBundle(
+                            items=[
+                                {"path": "authly/docs/how-to/check-permissions.md"},
+                                {"id": "docs/how-to/troubleshoot-errors"},
+                            ]
+                        ),
+                    )
+                ],
+            ),
+            StubNode(
+                "impact",
+                [
+                    StubAgentResult(
+                        ["ImpactAnalysis"],
+                        structured_output=ImpactAnalysis(
+                            action="answer",
+                            evidence=[
+                                "authly/src/authly/roles.py",
+                                "docs/how-to/troubleshoot-errors.md",
+                            ],
+                        ),
+                    )
+                ],
+            ),
+            StubNode(
+                "answer",
+                [
+                    StubAgentResult(
+                        ["AnswerDraft"],
+                        structured_output=AnswerDraft(
+                            content="ok", sources=["authly/src/authly/roles.py"]
+                        ),
+                    )
+                ],
+            ),
+        ]
+    )
+
+    paths = _collect_rel_paths(graph, repo_name="authly")
+
+    assert "docs/how-to/check-permissions.md" in paths
+    assert "docs/how-to/troubleshoot-errors.md" in paths
+    assert "src/authly/roles.py" in paths
+    # The same source appears in both impact and answer nodes; deduped.
+    assert paths.count("src/authly/roles.py") == 1
+
+
+def test_collect_rel_paths_returns_empty_without_citations() -> None:
+    graph = StubGraphResult([])
+    assert _collect_rel_paths(graph) == []
+
+
+async def test_build_online_task_env_state_includes_cited_sources() -> None:
+    """The online task must read cited source files (not just the seeded
+    evidence docs) into evidence_content so groundedness can verify APIs the
+    agent surfaced during research (e.g. authly.roles.assign())."""
+
+    class Client:
+        async def invoke(self, **kwargs):
+            from draftly.agents.schemas import ImpactAnalysis
+
+            return StubGraphResult(
+                [
+                    StubNode(
+                        "impact",
+                        [
+                            StubAgentResult(
+                                ["ImpactAnalysis"],
+                                structured_output=ImpactAnalysis(
+                                    action="answer",
+                                    evidence=["authly/src/authly/roles.py"],
+                                ),
+                            )
+                        ],
+                    )
+                ]
+            )
+
+    task = build_online_task(Client())
+    case = _case(
+        "authorization-error-permission-check",
+        "Calling permissions.check() raises AuthorizationError",
+        "expected",
+        {
+            "surface": "issue",
+            "repo_dir": str(Path(__file__).resolve().parents[3] / "authly"),
+            "evidence": [
+                {
+                    "id": "docs/how-to/troubleshoot-errors",
+                    "url": "authly/docs/how-to/troubleshoot-errors.md",
+                }
+            ],
+        },
+    )
+
+    result = await task(case)
+    env = result["environment_state"]
+    by_name = {
+        (e["name"] if isinstance(e, dict) else e.name): (
+            e.get("state") if isinstance(e, dict) else e.state
+        )
+        for e in env
+    }
+    ev = by_name.get("evidence_content")
+    assert isinstance(ev, list) and len(ev) >= 2
+    joined = " ".join(str(chunk) for chunk in ev)
+    assert "def assign" in joined  # from roles.py, a cited source not in seed evidence
+    assert any("roles.py" in chunk.get("path", "") for chunk in ev if isinstance(chunk, dict))
+
+
+def test_build_event_support_carries_repo_grounding() -> None:
+    """The support event must surface repo_dir + evidence (like the issue
+    surface) so the support graph and the judges get concrete grounding."""
+
+    case = _case(
+        "invalid-email-or-password",
+        "Login fails when email/password wrong",
+        "The message condition is bad",
+        {
+            "surface": "support",
+            "repository": "TheGreatBonnie/authly",
+            "repo_dir": str(Path(__file__).resolve().parents[3] / "authly"),
+            "evidence": [
+                {
+                    "id": "docs/how-to/troubleshoot-errors",
+                    "url": "authly/docs/how-to/troubleshoot-errors.md",
+                }
+            ],
+        },
+    )
+
+    ev = build_event(case, "support")
+    support_payload = ev.get("support") or {}
+    assert support_payload.get("repo_dir")
+    assert support_payload.get("evidence")
+    assert any(
+        "troubleshoot-errors" in str(d)
+        for d in support_payload.get("related_docs", [])
+    )
+    # The repository value from metadata must be preserved (not forced to None).
+    assert ev.get("repository") == "TheGreatBonnie/authly"
+
+
+async def test_build_online_task_env_state_grounds_support_surface() -> None:
+    """The online task must feed evidence + cited-source content into
+    <ActualEnvironmentState> for the support surface, mirroring the issue path,
+    so groundedness/correctness can verify a support answer."""
+
+    from draftly.agents.schemas import ImpactAnalysis
+
+    class Client:
+        async def invoke(self, **kwargs):
+            return StubGraphResult(
+                [
+                    StubNode(
+                        "impact",
+                        [
+                            StubAgentResult(
+                                ["ImpactAnalysis"],
+                                structured_output=ImpactAnalysis(
+                                    action="answer",
+                                    evidence=["authly/docs/reference/errors.md"],
+                                ),
+                            )
+                        ],
+                    )
+                ]
+            )
+
+    task = build_online_task(Client())
+    case = _case(
+        "invalid-email-or-password",
+        "Login fails with AuthenticationError: invalid email or password",
+        "Which account is wrong?",
+        {
+            "surface": "support",
+            "repo_dir": str(Path(__file__).resolve().parents[3] / "authly"),
+            "evidence": [
+                {
+                    "id": "docs/how-to/troubleshoot-errors",
+                    "topic": "authentication",
+                    "url": "authly/docs/how-to/troubleshoot-errors.md",
+                }
+            ],
+        },
+    )
+
+    result = await task(case)
+    env = result["environment_state"]
+    by_name = {
+        (e["name"] if isinstance(e, dict) else e.name): (
+            e.get("state") if isinstance(e, dict) else e.state
+        )
+        for e in env
+    }
+    assert "repo_dir" in by_name
+    ev = by_name.get("evidence_content")
+    assert isinstance(ev, list) and len(ev) >= 2  # seed doc + cited errors.md
+    joined = " ".join(str(chunk) for chunk in ev)
+    assert "AuthorizationError" in joined
+
+
+def test_support_dataset_matches_live_shape() -> None:
+    """The live CLI iterates datasets as a list; each entry must be a dict with
+    a single case carrying repo metadata + a relaxed threshold like the
+    github_issues dataset the support run must mirror."""
+    path = (
+        Path(__file__).resolve().parents[2]
+        / "src"
+        / "draftly"
+        / "evaluation"
+        / "datasets"
+        / "support.json"
+    )
+    data = json.loads(path.read_text())
+    assert isinstance(data, list) and len(data) == 1, "support.json must be a 1-element list"
+    ds = data[0]
+    assert ds["surface"] == "support"
+    assert "required_tools" in ds
+    cases = ds["cases"]
+    assert len(cases) == 1, "support.json must cover exactly one case"
+    meta = cases[0]["metadata"]
+    assert meta.get("expected_contains_threshold") == 0.45
+    assert str(meta.get("repo_dir", "")).endswith("authly")
+    assert meta.get("repository")
 
 
 def test_expected_contains_checks_each_case_own_output() -> None:
@@ -660,6 +950,30 @@ def test_expected_contains_checks_each_case_own_output() -> None:
     )[0]
     assert miss.test_pass is False
     assert miss.score == 0.0
+
+
+def test_expected_contains_respects_case_threshold() -> None:
+    evaluator = ExpectedContains()
+
+    # 3-of-6 significant-token overlap = 0.50 coverage: below the 0.60 default.
+    expected = "one two three four five six"
+    actual = "one two three one two three"
+
+    default = evaluator.evaluate(
+        SimpleNamespace(expected_output=expected, actual_output=actual)
+    )[0]
+    assert default.test_pass is False
+    assert default.score == 0.5
+
+    # A case-level threshold lets a paraphrased support/answer surface pass.
+    relaxed = evaluator.evaluate(
+        SimpleNamespace(
+            expected_output=expected,
+            actual_output=actual,
+            metadata={"expected_contains_threshold": 0.5},
+        )
+    )[0]
+    assert relaxed.test_pass is True
 
 
 def test_expected_tool_called_flags_missing_tools() -> None:
