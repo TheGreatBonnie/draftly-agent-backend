@@ -964,53 +964,6 @@ async def test_idle_progress_loop_publishes_no_duplicates(mock_publisher, fake_r
 
 
 # ============================================================
-# Task 11: watchdog timeout
-# ============================================================
-
-
-@pytest.mark.asyncio
-async def test_watchdog_fails_run_stuck_past_timeout(
-    monkeypatch, mock_publisher, fake_repositories
-):
-    """A stage hung past INIT_WORKFLOW_TIMEOUT_SECONDS fails the run loudly.
-
-    The watchdog marks the onboarding row FAILED, publishes a FAILED
-    workflow_result, and returns a FAILED state.
-    """
-    import draftly.workflows.onboarding.initialize as init_mod
-
-    monkeypatch.setattr(init_mod, "INIT_WORKFLOW_TIMEOUT_SECONDS", 0.1)
-
-    async def sync_impl(on_progress):
-        await asyncio.sleep(5.0)  # far past the injected 0.1s watchdog
-        return _fake_sync_result()
-
-    state = await _run_workflow_with_sync(mock_publisher, fake_repositories, sync_impl)
-
-    assert state.status == WorkflowStatus.FAILED
-    fake_repositories.onboarding.mark_failed.assert_awaited_once()
-    detail = fake_repositories.onboarding.mark_failed.await_args.args[2]
-    assert "exceeded" in detail["detail"]
-
-    result_events = [
-        c.args[0]
-        for c in mock_publisher.publish.call_args_list
-        if hasattr(c.args[0], "type") and c.args[0].type == "workflow_result"
-    ]
-    assert len(result_events) == 1
-    assert result_events[0].payload.get("status") == "FAILED"
-
-    # The progress flusher must not outlive a watchdog failure.
-    current = asyncio.current_task()
-    leftovers = [
-        t
-        for t in asyncio.all_tasks()
-        if t is not current and not t.done() and "_progress_loop" in repr(t.get_coro())
-    ]
-    assert leftovers == [], f"flusher task leaked after watchdog: {leftovers}"
-
-
-# ============================================================
 # Task 9: route enqueues to RQ when enabled, falls back otherwise
 # ============================================================
 

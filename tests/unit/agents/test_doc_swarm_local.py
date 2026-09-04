@@ -16,11 +16,12 @@ from tests.stub_model import StubModel
 _GITHUB_API_NAMES = {"get_pull_request", "get_files", "get_diff", "get_issue"}
 
 
-def _tool_names(agent: object) -> set[str]:
-    return {
-        t.tool_name if hasattr(t, "tool_name") else str(t)
-        for t in agent.tools
-    }
+def _agent_tool_names(agent: object) -> set[str]:
+    """Return a Strands Agent's registered tool names (current SDK)."""
+    names = getattr(agent, "tool_names", None)
+    if isinstance(names, list):
+        return set(names)
+    raise AttributeError(f"Agent has no list-valued tool_names: {type(agent)}")
 
 
 def _build_swarm():
@@ -34,13 +35,15 @@ def _build_swarm():
 
 def test_doc_research_swarm_has_local_agent_and_no_github_api() -> None:
     swarm = _build_swarm()
-    names = {w.name for w in swarm.workers}
+    names = set(swarm.nodes)
 
     assert "local_repo_researcher" in names
     assert "github_researcher" not in names  # the 401-looping agent is gone
 
-    local = next(w for w in swarm.workers if w.name == "local_repo_researcher")
-    local_tools = _tool_names(local)
+    # The local-repo researcher is the swarm entry point.
+    local = swarm.entry_point
+    assert local.name == "local_repo_researcher"
+    local_tools = _agent_tool_names(local)
 
     assert _GITHUB_API_NAMES.isdisjoint(local_tools)
     # local browsing + git + search tools are present
@@ -50,7 +53,7 @@ def test_doc_research_swarm_has_local_agent_and_no_github_api() -> None:
 def test_doc_context_agent_excludes_github_api_tools() -> None:
     tools = build_tools()
     agent = build_doc_context_agent(StubModel(), tools.documentation_engineer)
-    context_tools = _tool_names(agent)
+    context_tools = _agent_tool_names(agent)
 
     assert _GITHUB_API_NAMES.isdisjoint(context_tools)
     assert {"read_file", "list_directory", "git_diff", "git_status"} <= context_tools

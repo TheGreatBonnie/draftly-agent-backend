@@ -59,186 +59,15 @@ Events arrive via webhook routes under `/api/*`, are normalized by the dispatche
 
 ## Tech stack
 
-| Layer         | Technology                                                 |
-| ------------- | ---------------------------------------------------------- |
-| Language      | Python 3.11, managed with [uv](https://docs.astral.sh/uv/) |
-| API           | FastAPI + Uvicorn                                          |
-| Agents        | [Strands Agents](https://github.com/strands-agents) SDK    |
-| Database      | PostgreSQL (asyncpg / psycopg), NeonDB-compatible          |
+| Layer         | Technology                                                                                         |
+| ------------- | -------------------------------------------------------------------------------------------------- |
+| Language      | Python 3.11, managed with [uv](https://docs.astral.sh/uv/)                                         |
+| API           | FastAPI + Uvicorn                                                                                  |
+| Agents        | [Strands Agents](https://github.com/strands-agents) SDK                                            |
+| Database      | PostgreSQL (asyncpg / psycopg), NeonDB-compatible                                                  |
 | Cache/Stream  | Redis (semantic cache, event streams, rate limiting, distributed state, API cache, dashboard push) |
-| Auth          | Clerk (JWT), Slack/Discord/GitHub app auth                 |
-| Observability | structlog, tracing, metrics, audit logging                 |
-
-## Project structure
-
-```
-draftly-agent-backend/
-├── main.py                           # API entrypoint (uvicorn)
-├── pyproject.toml                    # Dependencies and tooling configuration
-├── uv.lock
-├── .env.example                      # Environment variable template
-├── Makefile
-├── config/                           # Per-environment settings
-│   ├── development.yaml
-│   ├── staging.yaml
-│   └── production.yaml
-├── context/                          # Platform-wide policies and rules
-│   ├── project_context.md
-│   ├── architecture.md
-│   ├── documentation_policy.md
-│   ├── writing_style.md
-│   ├── evaluation_rules.md
-│   ├── human_review_policy.md
-│   ├── support_policy.md
-│   ├── security_rules.md
-│   ├── repository_rules.md
-│   └── diagram_rules.md
-├── docker/                           # Container definitions (API + workers)
-│   ├── Dockerfile
-│   ├── Dockerfile.api
-│   └── Dockerfile.worker
-├── docs/
-│   ├── architecture/                 # overview, system-design, event-driven,
-│   │                                 # multi-agent, memory, feedback-loop,
-│   │                                 # orchestration, documentation-pipeline,
-│   │                                 # persistence, integrations, security,
-│   │                                 # delivery, evaluation, review,
-│   │                                 # observability, support, tools,
-│   │                                 # redis, models-router
-│   ├── agents/                       # agent-overview, subagents, skills
-│   ├── api/                          # routes, webhooks
-│   ├── workflows/                    # overview, documentation-sync, github-pr,
-│   │                                 # github-issue, support, feedback-loop
-│   └── deployment/                   # aws, cockroachdb, production, redis
-├── infra/
-│   └── aws/diagrams/architecture.md
-├── scripts/                          # bootstrap, seed_demo, run_workflow,
-│                                     # reindex, run_evaluation
-├── simulation/
-│   ├── README.md
-│   ├── roadmap.md
-│   └── scenarios/                    # oauth, pkce, api-key deprecation, rbac,
-│                                     # token rotation, sdk breaking change
-├── src/draftly/
-│   ├── agents/
-│   │   ├── documentation/            # analyzer, researcher, writer, reviewer, auditor
-│   │   ├── github/                   # issue_analyzer, issue_researcher, issue_responder
-│   │   ├── support/                  # question_analyzer, solution_researcher,
-│   │   │                             # answer_writer, support_reviewer
-│   │   ├── shared/                   # classifier, context, research, delivery,
-│   │   │                             # github_delivery, memory_curator, memory_grounding
-│   │   ├── draftly_agent.py          # Base agent
-│   │   ├── subagents.py
-│   │   ├── prompts.py
-│   │   └── schemas.py
-│   ├── app/
-│   │   ├── api/
-│   │   │   ├── app.py                # FastAPI application factory
-│   │   │   ├── auth.py
-│   │   │   ├── middleware/           # auth, errors, logging
-│   │   │   └── routes/               # github, slack, discord, clerk, documentation,
-│   │   │                             # support, evaluations, jobs, reviewers, health
-│   │   ├── composition/              # Dependency wiring: agents, events, tools,
-│   │   │                             # workers, workflows
-│   │   ├── workers/                  # scheduler, task_runner, worker runtime
-│   │   ├── config.py
-│   │   ├── dependencies.py
-│   │   └── lifecycle.py
-│   ├── delivery/                     # Outbound: github, slack, discord, documentation
-│   ├── documentation/                # indexer, generator, updater, validator,
-│   │                                 # analyzer, repositories
-│   ├── evaluation/
-│   │   ├── evaluators/               # groundedness, correctness, completeness,
-│   │   │                             # relevance, documentation_quality, deterministic
-│   │   ├── datasets/
-│   │   ├── runner.py
-│   │   ├── failure_analyzer.py
-│   │   ├── service.py
-│   │   └── store.py
-│   ├── events/
-│   │   ├── dispatcher.py             # Event routing
-│   │   ├── envelope.py · base.py · types.py
-│   │   ├── github/                   # pull_request, issue, release, push
-│   │   ├── support/                  # slack, discord
-│   │   └── documentation/            # document_changed, review_completed,
-│   │                                 # publish_completed
-│   ├── feedback/                     # classifier, gap_detector, prioritization,
-│   │                                 # deduplication, knowledge_updater
-│   ├── integrations/
-│   │   ├── github/                   # client, webhooks, app_auth
-│   │   ├── slack/                    # client, socket, installation_store, conversation
-│   │   ├── discord/                  # client, gateway, interactions, blocks
-│   │   ├── clerk/                    # client
-│   │   ├── database/                 # client, vector_search, document/jobs/evaluations/
-│   │   │                             # and memory_* stores
-│   │   └── strands/                  # client, graph, models, tools
-│   ├── memory/
-│   │   ├── models/                   # knowledge, document, conversation, question,
-│   │   │                             # solution, issue, feedback, project
-│   │   ├── embeddings.py
-│   │   ├── retrieval.py
-│   │   ├── ranking.py
-│   │   ├── repository.py
-│   │   └── service.py
-│   ├── models/
-│   │   ├── providers/                # bedrock, mantle, openrouter, nvidia,
-│   │   │                             # requesty, orcarouter
-│   │   ├── registry.py · router.py · factory.py
-│   │   └── capabilities · policies · health · embeddings · config
-│   ├── observability/                # tracing, metrics, audit, events
-│   ├── orchestration/
-│   │   ├── graphs/                   # documentation, support, issue, feedback,
-│   │   │                             # evaluation
-│   │   ├── nodes/                    # base, evaluate
-│   │   ├── hooks/                    # review_gate, audit
-│   │   ├── routing/                  # classifiers, conditions, policies
-│   │   └── state/                    # Per-domain graph state
-│   ├── persistence/
-│   │   ├── repositories/             # events, jobs, documents, evaluations, reviews,
-│   │   │                             # reviewers, memory, organizations, github,
-│   │   │                             # slack, discord, support, delivery, agent_runs
-│   │   └── migrations/
-│   ├── review/                       # queue, approvals, policies, rejection
-│   ├── security/                     # webhook_verification, redaction, secrets,
-│   │                                 # permissions, audit
-│   ├── skills/                       # 20 packaged skills (SKILL.md + references/,
-│   │                                 # some with assets/ templates)
-│   ├── support/                      # classifier, answer, escalation, resolver
-│   ├── tools/
-│   │   ├── search/                   # semantic, keyword, hybrid
-│   │   ├── github/                   # get_diff/files/issue/pr, create_branch/
-│   │   │                             # commit/comment/pull_request
-│   │   ├── slack/ · discord/         # get_thread, post_message, search_messages
-│   │   ├── repository/               # git, filesystem, code_search
-│   │   └── documentation/            # markdown, frontmatter, links, structure
-│   ├── workflows/
-│   │   ├── documentation/            # sync, audit, github_pr, github_release
-│   │   ├── github/                   # issue_resolution, issue_feedback
-│   │   ├── support/                  # slack/discord support, resolution
-│   │   ├── feedback/                 # feedback loop, prioritization, knowledge update
-│   │   ├── evaluation/               # documentation/support evaluation
-│   │   └── registry.py · runner.py · state.py · context.py
-│   ├── config.py · constants.py · errors.py
-│   ├── logging.py · telemetry.py · version.py
-├── tests/
-│   ├── unit/                         # agents, model providers, routing/hooks
-│   ├── graph/                        # Orchestration graphs, review gate
-│   ├── workflow/ · workflows/        # PR, issue, support, feedback loop, audit hook
-│   ├── domain/                       # evaluation, feedback, memory, review, security
-│   ├── evaluation/                   # groundedness, quality, accuracy, runner
-│   ├── tools/                        # search, github, repository, documentation
-│   ├── nodes/ · conditions/ · agents/ · api/
-│   ├── integration/                  # Live DB + evaluator tests (DRAFTLY_LIVE=1)
-│   └── fakes/ · stub_model.py · conftest.py
-└── workers/
-    ├── event_worker.py
-    ├── workflow_worker.py
-    ├── indexing_worker.py
-    └── evaluation_worker.py
-```
-
-> [!NOTE]
-> `__init__.py` package files are omitted from the tree for readability.
+| Auth          | Clerk (JWT), Slack/Discord/GitHub app auth                                                         |
+| Observability | structlog, tracing, metrics, audit logging                                                         |
 
 ## Getting started
 
@@ -273,6 +102,27 @@ python main.py
 
 This starts the FastAPI app on the configured host and port. Interactive API docs are available at `/docs`.
 
+> [!TIP]
+> Verify the server is running by visiting `http://localhost:8000/docs` in your browser. You should see the FastAPI Swagger UI with all available endpoints.
+
+## Project structure
+
+```
+draftly-agent-backend/
+├── src/draftly/
+│   ├── agents/          # Agent definitions and prompts
+│   ├── evaluation/      # Evaluation framework and datasets
+│   ├── integrations/    # Slack, Discord, GitHub, database
+│   ├── models/          # Model router and providers
+│   ├── orchestration/   # Graphs, nodes, routing
+│   ├── skills/          # Self-contained agent skill definitions
+│   └── workflows/       # Workflow definitions
+├── scripts/             # CLI scripts (evaluation runner, etc.)
+├── workers/             # Background worker processes
+├── config/              # Environment-specific configuration
+└── simulation/          # End-to-end test scenarios
+```
+
 ## Background workers
 
 Draftly splits long-running work into dedicated worker processes:
@@ -290,36 +140,66 @@ Environment-specific defaults live in [`config/`](config) (`development.yaml`, `
 
 Key environment variables (see [`.env.example`](.env.example) for the full list):
 
-| Variable                                                                         | Description                                 |
-| -------------------------------------------------------------------------------- | ------------------------------------------- |
-| `DATABASE_URL`                                                                   | PostgreSQL connection string                |
+| Variable                                                                         | Description                                                   |
+| -------------------------------------------------------------------------------- | ------------------------------------------------------------- |
+| `DATABASE_URL`                                                                   | PostgreSQL connection string                                  |
 | `REDIS_URL`                                                                      | Redis connection string (default: `redis://localhost:6379/0`) |
-| `SEMANTIC_CACHE_ENABLED`                                                         | Enable LLM semantic cache (default: `True`) |
-| `VECTOR_SEARCH_BACKEND`                                                          | `redis`, `pgvector`, or `dual` (default: `dual`) |
-| `EVENT_BUS_BACKEND`                                                              | `pubsub`, `stream`, or `dual` (default: `dual`) |
-| `AWS_REGION`                                                                     | Region for Amazon Bedrock                   |
-| `BEDROCK_CLAUDE_REASONING_MODEL` / `BEDROCK_CLAUDE_FAST_MODEL`                   | Claude model overrides                      |
-| `EMBEDDING_MODEL_ID`                                                             | Embedding model for semantic search         |
-| `MANTLE_API_KEY` / `MANTLE_ENDPOINT_URL`                                         | Bedrock Mantle (OpenAI-compatible) endpoint |
-| `OPENROUTER_API_KEY`, `NVIDIA_API_KEY`, `REQUESTY_API_KEY`, `ORCAROUTER_API_KEY` | Optional additional providers               |
+| `SEMANTIC_CACHE_ENABLED`                                                         | Enable LLM semantic cache (default: `True`)                   |
+| `VECTOR_SEARCH_BACKEND`                                                          | `redis`, `pgvector`, or `dual` (default: `dual`)              |
+| `EVENT_BUS_BACKEND`                                                              | `pubsub`, `stream`, or `dual` (default: `dual`)               |
+| `AWS_REGION`                                                                     | Region for Amazon Bedrock                                     |
+| `BEDROCK_CLAUDE_REASONING_MODEL` / `BEDROCK_CLAUDE_FAST_MODEL`                   | Claude model overrides                                        |
+| `EMBEDDING_MODEL_ID`                                                             | Embedding model for semantic search                           |
+| `MANTLE_API_KEY` / `MANTLE_ENDPOINT_URL`                                         | Bedrock Mantle (OpenAI-compatible) endpoint                   |
+| `OPENROUTER_API_KEY`, `NVIDIA_API_KEY`, `REQUESTY_API_KEY`, `ORCAROUTER_API_KEY` | Optional additional providers                                 |
 
-## Testing
+## Development
+
+### Code quality
 
 ```bash
-uv run pytest                # unit + workflow tests
-uv run pytest -m integration # live integration tests
+uv run ruff check .              # lint
+uv run ruff format --check .     # format check
+uv run mypy src                  # type check
+```
+
+### Testing
+
+```bash
+uv run pytest                    # unit + workflow tests
+uv run pytest -m integration     # live integration tests
 ```
 
 > [!IMPORTANT]
 > Integration tests hit a live database and real model endpoints. Set `DRAFTLY_LIVE=1` and provide valid credentials before running them.
 
-### Code quality
+### Evaluation
+
+Run live evaluation of agent outputs against golden datasets for each surface type:
 
 ```bash
-uv run ruff check .
-uv run ruff format --check .
-uv run mypy src
+# Documentation (PR event) evaluation
+uv run python scripts/run_evaluation.py --live --datasets src/draftly/evaluation/datasets/documentation.json
+
+# GitHub issue evaluation
+uv run python scripts/run_evaluation.py --live --datasets src/draftly/evaluation/datasets/github_issues.json
+
+# Support question evaluation
+uv run python scripts/run_evaluation.py --live --datasets src/draftly/evaluation/datasets/support.json
 ```
+
+> [!NOTE]
+> Live runs invoke real agent graphs and LLM judges. Each dataset runs with a ~600s inner budget. Use `--datasets` with a single-case file for smoke runs to stay within timeouts.
+
+**Evaluation metrics:**
+
+| Metric | Description |
+|--------|-------------|
+| `groundedness` | All claims traceable to provided evidence |
+| `correctness` | Factually accurate, no hallucinations |
+| `completeness` | Covers all essential information |
+| `relevance` | Directly addresses the user's question |
+| `documentation_quality` | Citation coverage, topic coverage, adequate detail |
 
 ## Documentation
 
