@@ -5,8 +5,9 @@ from __future__ import annotations
 from typing import Any
 
 from strands import Agent
+from strands.vended_plugins.skills import AgentSkills
 
-from draftly.agents.prompts import WRITER_PROMPT, build_prompt
+from draftly.agents.prompts import WRITER_PROMPT, build_prompt, load_skills
 from draftly.agents.schemas import DocChangePlan
 
 
@@ -29,5 +30,13 @@ def build_writer_agent(
         model=model,
         tools=tools,
         structured_output_model=DocChangePlan,
+        plugins=[
+            AgentSkills(
+                skills=load_skills(
+                    "documentation-update",
+                    "documentation-generation",
+                )
+            )
+        ],
         description="Writes documentation change plans (create/update).",
     )

@@ -160,6 +160,12 @@ def build_workflows(
         publisher = _TeePublisher(event_bus, fallback_repo)
         context.publisher = publisher  # per-surface workflows stream as well
 
+        if redis_client is not None:
+            from draftly.events.dashboard_stream_bus import DashboardStreamBus
+
+            if getattr(context, "broadcaster", None) is None:
+                context.broadcaster = DashboardStreamBus(redis_client.native)
+
     runner = WorkflowRunner(context, publisher=publisher)
 
     logger.info(

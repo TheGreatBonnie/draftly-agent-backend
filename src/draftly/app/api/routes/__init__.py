@@ -1,12 +1,14 @@
 # app/api/routes/__init__.py
 
 from . import (
+    agents,
     discord,
     documentation,
     evaluations,
     github,
     health,
     jobs,
+    knowledge,
     metrics,
     observability,
     onboarding,
@@ -19,12 +21,14 @@ from . import (
 )
 
 __all__ = [
+    "agents",
     "discord",
     "documentation",
     "evaluations",
     "github",
     "health",
     "jobs",
+    "knowledge",
     "metrics",
     "observability",
     "onboarding",

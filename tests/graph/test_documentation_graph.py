@@ -103,3 +103,32 @@ async def test_graph_builds_with_distinct_writer_instances(model, tools, tmp_ses
         storage_dir=tmp_sessions,
     )
     assert graph.nodes["update"].executor is not graph.nodes["create"].executor
+
+
+def test_writer_tools_exclude_mutation_and_delivery(tools) -> None:
+    """The doc writer authoring node must NOT expose write/git-delivery tools;
+    it produces a DocChangePlan and delivery applies it. Exposing them made the
+    writer thrash the worktree (write_file loop) and burn the live-run budget."""
+    from draftly.orchestration.graphs.documentation_graph import _scope_writer_tools
+
+    scoped = _scope_writer_tools(tools.documentation_engineer, tools.documentation)
+    names = {
+        str(
+            getattr(t, "name", None)
+            or getattr(getattr(t, "fn", None), "__name__", None)
+            or getattr(t, "__name__", None)
+        )
+        for t in scoped
+    }
+    forbidden = {
+        "write_file",
+        "update_frontmatter",
+        "create_branch",
+        "create_commit",
+        "create_pull_request",
+    }
+    assert not (names & forbidden), (
+        f"writer must not get mutation/delivery tools: {names & forbidden}"
+    )
+    # it still keeps read + git-inspect tools it needs to author accurately
+    assert {"read_file", "git_diff", "git_status"} <= names

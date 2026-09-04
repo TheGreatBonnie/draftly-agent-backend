@@ -43,8 +43,14 @@ from draftly.orchestration.routing.conditions import (
     route_to_create,
     route_to_update,
 )
+from draftly.tools.repository.code_search import code_search
 
 logger = structlog.get_logger(__name__)
+
+# Selected repository tools for the docs graph's local-first researcher. Avoids
+# the GitHub API tools (get_pull_request/get_files/get_diff) that would 401 in
+# the offline evaluation harness; the workspace is a local authly worktree.
+_LOCAL_CODE_SEARCH = [code_search]
 
 DEFAULT_GRAPH_ID = "draftly-main-graph"
 DEFAULT_MAX_NODE_EXECUTIONS = 10
@@ -66,6 +72,38 @@ def _dedupe(*groups: list[Any]) -> list[Any]:
     return tools
 
 
+# Tool names the doc writer must NOT have. The writer only authors a
+# ``DocChangePlan``; the delivery node applies it. Giving the writer
+# mutation/delivery tools (``write_file``, ``create_branch``/``commit``/``pr``)
+# makes it thrash the worktree and loop rereading files, burning the live-run
+# time budget and risking truncated oversized plan emissions for zero benefit.
+_WRITER_EXCLUDED_TOOLS = frozenset(
+    {
+        "write_file",
+        "update_frontmatter",
+        "create_branch",
+        "create_commit",
+        "create_pull_request",
+    }
+)
+
+
+def _scope_writer_tools(*groups: list[Any]) -> list[Any]:
+    """Restrict writer tools to read/analyze only (drop mutation/delivery)."""
+    out: list[Any] = []
+    for t in _dedupe(*groups):
+        name = (
+            getattr(t, "name", None)
+            or getattr(getattr(t, "fn", None), "__name__", None)
+            or getattr(t, "__name__", None)
+        )
+        if name in _WRITER_EXCLUDED_TOOLS:
+            continue
+        out.append(t)
+    return out
+
+
+
 def build_documentation_graph(
     session_manager: SessionManager | None,
     tools_registry: Any,
@@ -75,6 +113,8 @@ def build_documentation_graph(
     graph_id: str = DEFAULT_GRAPH_ID,
     audit_repo: Any = None,
     memory: Any = None,
+    publisher: Any = None,
+    jobs_repo: Any = None,
     max_node_executions: int = DEFAULT_MAX_NODE_EXECUTIONS,
     execution_timeout: float = DEFAULT_EXECUTION_TIMEOUT,
     node_timeout: float = DEFAULT_NODE_TIMEOUT,
@@ -83,11 +123,11 @@ def build_documentation_graph(
     """Build the unified Draftly Graph for documentation workflows."""
     # Import agents (factories — one instance per graph node)
     from draftly.agents.documentation.analyzer import build_impact_agent
+    from draftly.agents.documentation.context import build_doc_context_agent
+    from draftly.agents.documentation.research_swarm import build_doc_research_swarm
     from draftly.agents.documentation.writer import build_writer_agent
     from draftly.agents.shared.classifier import build_classifier
-    from draftly.agents.shared.context import build_context_agent
     from draftly.agents.shared.delivery import build_delivery_agent
-    from draftly.agents.subagents import build_research_swarm
     from draftly.agents.support.answer_writer import build_answer_writer
 
     reg = tools_registry
@@ -100,10 +140,10 @@ def build_documentation_graph(
     delivery_model = resolve_model_for_role(model, "github_delivery")
 
     classifier = build_classifier(classifier_model)
-    context_agent = build_context_agent(
+    context_agent = build_doc_context_agent(
         context_model,
         _dedupe(
-            reg.github_intelligence,
+            reg.documentation_engineer,
             reg.semantic_search,
             reg.keyword_search,
             reg.hybrid_search,
@@ -113,7 +153,17 @@ def build_documentation_graph(
             reg.discord_get_thread,
         ),
     )
-    research_swarm = build_research_swarm(research_model, reg)
+    research_swarm = build_doc_research_swarm(
+        research_model,
+        reg,
+        local_tools=_dedupe(
+            reg.documentation_engineer,
+            reg.semantic_search,
+            reg.keyword_search,
+            reg.hybrid_search,
+            _LOCAL_CODE_SEARCH,
+        ),
+    )
     impact_agent = build_impact_agent(
         intelligence_model,
         _dedupe(
@@ -131,14 +181,9 @@ def build_documentation_graph(
     # Per-task routing: writer nodes resolve their own model when a
     # resolver is wired in; concrete/shared models pass through verbatim.
     writer_model = resolve_model_for_role(model, "documentation_engineer")
-    update_writer = build_writer_agent(
-        writer_model,
-        _dedupe(reg.documentation_engineer, reg.documentation),
-    )
-    create_writer = build_writer_agent(
-        writer_model,
-        _dedupe(reg.documentation_engineer, reg.documentation),
-    )
+    writer_tools = _scope_writer_tools(reg.documentation_engineer, reg.documentation)
+    update_writer = build_writer_agent(writer_model, writer_tools)
+    create_writer = build_writer_agent(writer_model, writer_tools)
     delivery_agent = build_delivery_agent(
         delivery_model,
         _dedupe(reg.github_delivery, reg.slack_post_message, reg.discord_post_message),
@@ -185,6 +230,7 @@ def build_documentation_graph(
     builder.add_edge("create", "evaluate", condition=generated)
 
     # Revise loop — scoped to whichever generation node actually ran
+    builder.add_edge("evaluate", "answer", condition=needs_revision_of("answer"))
     builder.add_edge("evaluate", "update", condition=needs_revision_of("update"))
     builder.add_edge("evaluate", "create", condition=needs_revision_of("create"))
 
@@ -202,8 +248,8 @@ def build_documentation_graph(
     if session_manager is not None:
         builder.set_session_manager(session_manager)
     providers: list[Any] = [ReviewGate()]
-    if audit_repo is not None:
-        providers.append(RunAuditLogger(audit_repo))
+    if audit_repo is not None or publisher is not None or jobs_repo is not None:
+        providers.append(RunAuditLogger(audit_repo, publisher=publisher, jobs_repo=jobs_repo))
     if hooks:
         providers.extend(hooks)
     builder.set_hook_providers(providers)

@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 
 def _pr_event(event_type: str) -> dict:
-    return {"event_type": event_type, "repository": "acme/api"}
+    return {"event_type": event_type, "repository": "acme/api", "event_id": "ev-5"}
 
 
 async def test_non_merged_pr_not_enqueued() -> None:
@@ -15,16 +15,23 @@ async def test_non_merged_pr_not_enqueued() -> None:
     request = MagicMock()
     events = MagicMock()
     events.normalize_github = AsyncMock(return_value=_pr_event("pull_request.opened"))
-    runner = MagicMock()
-    runner.run = AsyncMock()
-    workflows = MagicMock()
-    workflows.runner = runner
-    request.app.state.draftly = MagicMock(events=events, workflows=workflows)
+    # full mock setup for new dispatch path (even though skip leaves no job)
+    jobs = MagicMock()
+    jobs.upsert_on_conflict = AsyncMock()
+    context = MagicMock()
+    context.repositories = MagicMock(jobs=jobs)
+    workflows = MagicMock(context=context)
+    worker = MagicMock()
+    worker.run_task = AsyncMock()
+    request.app.state.draftly = MagicMock(
+        events=events,
+        workflows=workflows,
+        worker=worker,
+        rq_queues={"webhooks": MagicMock()},
+        task_handlers={"github_pr.enqueue": MagicMock()},
+        settings=MagicMock(rq_enabled=False),
+    )
 
-    # Bypass signature/body parsing: monkeypatch the header + parse path is
-    # heavy, so drive the gate via the normalize step. Use the standalone
-    # route body contract: pass a fabricated request whose body/headers are
-    # satisfied by signing (see Step 4 for the full HTTP-level path).
     body = b"{}"
     request.body = AsyncMock(return_value=body)
     request.headers = {
@@ -33,17 +40,21 @@ async def test_non_merged_pr_not_enqueued() -> None:
         "X-GitHub-Delivery": "d-1",
     }
 
-    # Patch signature verification to accept (avoids needing the real secret).
-    with pytest.MonkeyPatch.context() as mp:
+    bt = MagicMock()
+    with patch("draftly.app.api.routes.github._tickets") as mock_tickets, \
+         pytest.MonkeyPatch.context() as mp:
         import draftly.app.api.routes.github as routes_mod
 
         mp.setattr(
             routes_mod, "verify_webhook_signature", lambda body, sig: True
         )
-        result = await github_webhook(request=request, background_tasks=MagicMock())
+        mock_tickets.return_value.issue = AsyncMock(return_value="ticket-abc")
+        result = await github_webhook(request=request, background_tasks=bt)
 
     assert "skipped" in str(result)
-    runner.run.assert_not_awaited()
+    jobs.upsert_on_conflict.assert_not_awaited()
+    bt.add_task.assert_not_called()
+    mock_tickets.return_value.issue.assert_not_awaited()
 
 
 async def test_merged_pr_enqueued() -> None:
@@ -52,11 +63,21 @@ async def test_merged_pr_enqueued() -> None:
     request = MagicMock()
     events = MagicMock()
     events.normalize_github = AsyncMock(return_value=_pr_event("pull_request.merged"))
-    runner = MagicMock()
-    runner.run = AsyncMock()
-    workflows = MagicMock()
-    workflows.runner = runner
-    request.app.state.draftly = MagicMock(events=events, workflows=workflows)
+    jobs = MagicMock()
+    jobs.upsert_on_conflict = AsyncMock()
+    context = MagicMock()
+    context.repositories = MagicMock(jobs=jobs)
+    workflows = MagicMock(context=context)
+    worker = MagicMock()
+    worker.run_task = AsyncMock()
+    request.app.state.draftly = MagicMock(
+        events=events,
+        workflows=workflows,
+        worker=worker,
+        rq_queues={"webhooks": MagicMock()},
+        task_handlers={"github_pr.enqueue": MagicMock()},
+        settings=MagicMock(rq_enabled=False),
+    )
     request.body = AsyncMock(return_value=b"{}")
     request.headers = {
         "X-Hub-Signature-256": "sha256=0000",
@@ -65,14 +86,22 @@ async def test_merged_pr_enqueued() -> None:
     }
 
     bt = MagicMock()
-    with pytest.MonkeyPatch.context() as mp:
+    with patch("draftly.app.api.routes.github._tickets") as mock_tickets, \
+         pytest.MonkeyPatch.context() as mp:
         import draftly.app.api.routes.github as routes_mod
 
         mp.setattr(routes_mod, "verify_webhook_signature", lambda body, sig: True)
+        mock_tickets.return_value.issue = AsyncMock(return_value="ticket-abc")
         result = await github_webhook(request=request, background_tasks=bt)
 
-    assert result["accepted"] is True
-    bt.add_task.assert_called_once()
+    assert result.status.startswith("pull_request.merged")
+    drafts = request.app.state.draftly
+    bt.add_task.assert_called_once_with(
+        drafts.worker.run_task,
+        "github_pr.enqueue",
+        event=events.normalize_github.return_value,
+        run_id="ev-5",
+    )
 
 
 async def test_push_and_release_not_blocked() -> None:
@@ -80,13 +109,25 @@ async def test_push_and_release_not_blocked() -> None:
 
     for event_type in ("push.pushed", "release.published"):
         request = MagicMock()
+        # push/release events also need event_id
+        event_data = {"event_type": event_type, "repository": "acme/api", "event_id": "ev-5"}
         events = MagicMock()
-        events.normalize_github = AsyncMock(return_value=_pr_event(event_type))
-        runner = MagicMock()
-        runner.run = AsyncMock()
-        workflows = MagicMock()
-        workflows.runner = runner
-        request.app.state.draftly = MagicMock(events=events, workflows=workflows)
+        events.normalize_github = AsyncMock(return_value=event_data)
+        jobs = MagicMock()
+        jobs.upsert_on_conflict = AsyncMock()
+        context = MagicMock()
+        context.repositories = MagicMock(jobs=jobs)
+        workflows = MagicMock(context=context)
+        worker = MagicMock()
+        worker.run_task = AsyncMock()
+        request.app.state.draftly = MagicMock(
+            events=events,
+            workflows=workflows,
+            worker=worker,
+            rq_queues={"webhooks": MagicMock()},
+            task_handlers={"github_pr.enqueue": MagicMock()},
+            settings=MagicMock(rq_enabled=False),
+        )
         request.body = AsyncMock(return_value=b"{}")
         request.headers = {
             "X-Hub-Signature-256": "sha256=0000",
@@ -95,10 +136,12 @@ async def test_push_and_release_not_blocked() -> None:
         }
 
         bt = MagicMock()
-        with pytest.MonkeyPatch.context() as mp:
+        with patch("draftly.app.api.routes.github._tickets") as mock_tickets, \
+             pytest.MonkeyPatch.context() as mp:
             import draftly.app.api.routes.github as routes_mod
 
             mp.setattr(routes_mod, "verify_webhook_signature", lambda body, sig: True)
+            mock_tickets.return_value.issue = AsyncMock(return_value="ticket-abc")
             await github_webhook(request=request, background_tasks=bt)
 
         bt.add_task.assert_called_once(), event_type

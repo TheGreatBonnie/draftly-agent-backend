@@ -31,6 +31,7 @@ QUEUE_MAP: dict[str, str] = {
     "memory.curation": "scheduled",
     "memory.maintenance": "scheduled",
     "onboarding.initialize": "default",
+    "github_pr.enqueue": "webhooks",
     "github_pr": "webhooks",
     "github_release": "webhooks",
     "github_issue": "webhooks",

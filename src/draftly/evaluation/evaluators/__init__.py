@@ -3,7 +3,10 @@
 from .completeness import COMPLETENESS_RUBRIC, build_completeness_evaluator
 from .correctness import build_correctness_evaluator
 from .deterministic import Contains, Equals, StartsWith, ToolCalled
-from .documentation_quality import DocumentationQualityEvaluator
+from .documentation_quality import (
+    DocumentationQualityEvaluator,
+    build_documentation_quality_evaluator,
+)
 from .groundedness import build_groundedness_evaluator
 from .relevance import build_relevance_evaluator
 
@@ -16,6 +19,7 @@ __all__ = [
     "ToolCalled",
     "build_completeness_evaluator",
     "build_correctness_evaluator",
+    "build_documentation_quality_evaluator",
     "build_groundedness_evaluator",
     "build_relevance_evaluator",
 ]

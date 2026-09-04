@@ -19,4 +19,4 @@ COMPLETENESS_RUBRIC = (
 
 
 def build_completeness_evaluator(model: Any = None) -> OutputEvaluator:
-    return OutputEvaluator(rubric=COMPLETENESS_RUBRIC, model=model)
+    return OutputEvaluator(name="completeness", rubric=COMPLETENESS_RUBRIC, model=model)

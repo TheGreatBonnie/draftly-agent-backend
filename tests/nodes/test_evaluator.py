@@ -55,6 +55,36 @@ class TestComputeQuality:
         )
         assert score < 0.5
 
+    def test_full_path_evidence_matches_when_draft_links_basename(self) -> None:
+        """A draft that references a source doc by its file name (not the
+        exact full-id byte string) must still count as citing that evidence."""
+        evidence = [
+            {
+                "id": "docs/how-to/oauth-authorization-url",
+                "topic": "authentication",
+                "url": "authly/docs/how-to/oauth-authorization-url.md",
+            }
+        ]
+        draft = (
+            "OAuth authentication: build an authorization URL, then link the "
+            "reader to docs/how-to/oauth-authorization-url.\n"
+        ) * 8
+        score, reasons = compute_quality(evidence, draft)
+        assert score >= 0.9
+        assert any("Grounded in" in r for r in reasons)
+
+    def test_evidence_without_extension_still_matches(self) -> None:
+        """id without .md suffix is matched when the draft contains the basename."""
+        evidence = [
+            {
+                "id": "docs/topics/authentication",
+                "topic": "authentication",
+            }
+        ]
+        draft = ("Documenting authentication for the SDK. authentication " * 10)
+        score, _ = compute_quality(evidence, draft)
+        assert score >= 0.6
+
 
 class TestEvaluatorNode:
     @pytest.mark.asyncio

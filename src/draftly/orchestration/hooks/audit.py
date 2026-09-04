@@ -30,19 +30,22 @@ from draftly.observability.metrics import metrics as _default_metrics
 
 logger = structlog.get_logger(__name__)
 
-# Injectable registry (tests swap this for an isolated instance).
 _metrics: Metrics = _default_metrics
 
 
 class RunAuditLogger(HookProvider):
     """Persist per-step telemetry and audit rows for a run."""
 
-    def __init__(self, audit_repo: Any = None) -> None:
+    def __init__(self, audit_repo: Any = None, publisher: Any = None, jobs_repo: Any = None) -> None:
         self.audit_repo = audit_repo
+        self.publisher = publisher
+        self.jobs_repo = jobs_repo
         self._node_started_at: dict[str, float] = {}
         self._steps: list[dict[str, Any]] = []
+        self._stream_pending: list[dict[str, Any]] = []
         self._run_meta: dict[str, Any] = {}
         self._seq = 0
+        self._stream_seq = 0
 
     def register_hooks(self, registry: HookRegistry, **kwargs: Any) -> None:
         registry.add_callback(BeforeInvocationEvent, self.run_start)
@@ -50,10 +53,6 @@ class RunAuditLogger(HookProvider):
         registry.add_callback(AfterNodeCallEvent, self.node_end)
         registry.add_callback(AfterToolCallEvent, self.tool_end)
         registry.add_callback(AfterInvocationEvent, self.run_end)
-
-    # --------------------------------------------------------------
-    # Synchronous hook callbacks — buffer only, no I/O.
-    # --------------------------------------------------------------
 
     def run_start(self, event: BeforeInvocationEvent) -> None:
         state = event.invocation_state or {}
@@ -66,12 +65,35 @@ class RunAuditLogger(HookProvider):
             "event_type": str(state.get("event_type", "unknown")),
             "org_id": str(state.get("project_id", "")),
         }
+        if self.jobs_repo is not None:
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                loop = None
+            if loop is not None:
+                loop.create_task(
+                    _upsert_job_row(
+                        self.jobs_repo,
+                        job_id=str(run_id),
+                        org_id=str(state.get("project_id", "")),
+                        surface=str(state.get("source", "github")),
+                        event_type=str(state.get("event_type", "unknown")),
+                    )
+                )
         logger.info("audit.run.start run_id=%s", run_id)
 
     def node_start(self, event: BeforeNodeCallEvent) -> None:
-        run_id = (event.invocation_state or {}).get("run_id")
         self._node_started_at[event.node_id] = time.monotonic()
+        state = event.invocation_state or {}
+        run_id = state.get("run_id")
         if run_id:
+            self._stream_seq += 1
+            self._stream_pending.append({
+                "type": "node_start",
+                "node_id": str(event.node_id),
+                "payload": {"node_type": "agent"},
+                "seq": self._stream_seq,
+            })
             logger.info("audit.step.start run_id=%s node_id=%s", run_id, event.node_id)
 
     def node_end(self, event: AfterNodeCallEvent) -> None:
@@ -80,14 +102,23 @@ class RunAuditLogger(HookProvider):
         started = self._node_started_at.pop(event.node_id, None)
         duration_ms = round((time.monotonic() - started) * 1000) if started else None
         status = _status_of(event)
+        detail = {"agent_name": str(event.node_id), "capabilities": [str(event.node_id)]}
         self._buffer_step(
             run_id=run_id,
             kind="node",
             name=str(event.node_id),
             status=status,
             duration_ms=duration_ms,
+            detail=detail,
         )
         if run_id:
+            self._stream_seq += 1
+            self._stream_pending.append({
+                "type": "node_stop",
+                "node_id": str(event.node_id),
+                "payload": {**detail, "status": status, "duration_ms": duration_ms},
+                "seq": self._stream_seq,
+            })
             logger.info(
                 "audit.step.end run_id=%s node_id=%s duration_ms=%s",
                 run_id,
@@ -99,38 +130,72 @@ class RunAuditLogger(HookProvider):
         state = event.invocation_state or {}
         run_id = state.get("run_id")
         tool_name = getattr(event.tool_use, "get", lambda *_: None)("name")
+        status = _tool_status_of(event)
         self._buffer_step(
             run_id=run_id,
             kind="tool",
             name=str(tool_name or "unknown"),
-            status=_tool_status_of(event),
+            status=status,
+            detail={"tool_name": str(tool_name or "unknown"), "status": status},
         )
         if run_id:
+            self._stream_seq += 1
+            self._stream_pending.append({
+                "type": "tool_progress",
+                "node_id": None,
+                "payload": {
+                    "name": str(tool_name or "unknown"),
+                    "status": status,
+                    "node_id": None,
+                },
+                "seq": self._stream_seq,
+            })
             logger.info("audit.tool run_id=%s tool=%s", run_id, tool_name)
-
-    # --------------------------------------------------------------
-    # Async flush at invocation end.
-    # --------------------------------------------------------------
 
     def run_end(self, event: AfterInvocationEvent) -> None:
         state = event.invocation_state or {}
         run_id = state.get("run_id")
-        if not run_id or self.audit_repo is None:
+        if not run_id:
             return
         meta = dict(self._run_meta)
         steps = list(self._steps)
+        stream_pending = list(self._stream_pending)
         self._steps.clear()
+        self._stream_pending.clear()
         self._run_meta.clear()
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
             logger.warning("audit_flush_skipped_no_loop run_id=%s", run_id)
             return
-        loop.create_task(_flush_run(self.audit_repo, str(run_id), meta, steps))
+        if self.audit_repo is not None and steps:
+            loop.create_task(_flush_run(self.audit_repo, str(run_id), meta, steps))
+        if self.publisher is not None and stream_pending:
+            loop.create_task(
+                _flush_stream(
+                    self.publisher, str(run_id),
+                    meta.get("surface", ""), stream_pending,
+                )
+            )
 
-    # --------------------------------------------------------------
-    # Internals
-    # --------------------------------------------------------------
+    async def run_end_async(self, event: AfterInvocationEvent) -> None:
+        state = event.invocation_state or {}
+        run_id = state.get("run_id")
+        if not run_id:
+            return
+        if self.publisher is not None:
+            from draftly.events.stream_envelope import StreamEnvelope
+            for spec in self._stream_pending:
+                await self.publisher.publish(
+                    StreamEnvelope(
+                        type=str(spec["type"]),
+                        run_id=run_id,
+                        surface=self._run_meta.get("surface", ""),
+                        seq=int(spec.get("seq", 0)),
+                        node_id=spec.get("node_id"),
+                        payload=dict(spec.get("payload") or {}),
+                    )
+                )
 
     def _buffer_step(
         self,
@@ -140,6 +205,7 @@ class RunAuditLogger(HookProvider):
         name: str,
         status: str,
         duration_ms: int | None = None,
+        detail: dict[str, Any] | None = None,
     ) -> None:
         if not run_id:
             return
@@ -151,6 +217,7 @@ class RunAuditLogger(HookProvider):
                 "name": name,
                 "status": status,
                 "duration_ms": duration_ms,
+                "detail": detail or {},
             }
         )
 
@@ -161,7 +228,6 @@ async def _flush_run(
     meta: dict[str, Any],
     steps: list[dict[str, Any]],
 ) -> None:
-    """Write one agent_runs row plus its agent_steps rows."""
     try:
         await repo.start_run(
             run_id=run_id,
@@ -186,6 +252,42 @@ async def _flush_run(
         )
     except Exception:
         logger.exception("audit_flush_failed run_id=%s", run_id)
+
+
+async def _flush_stream(
+    publisher: Any, run_id: str, surface: str, pending: list[dict[str, Any]]
+) -> None:
+    from draftly.events.stream_envelope import StreamEnvelope
+
+    try:
+        for spec in pending:
+            await publisher.publish(
+                StreamEnvelope(
+                    type=str(spec["type"]),
+                    run_id=run_id,
+                    surface=surface,
+                    seq=int(spec.get("seq", 0)),
+                    node_id=spec.get("node_id"),
+                    payload=dict(spec.get("payload") or {}),
+                )
+            )
+    except Exception:
+        logger.warning("audit_stream_flush_failed run_id=%s", run_id, exc_info=True)
+
+
+async def _upsert_job_row(
+    jobs_repo: Any, *, job_id: str, org_id: str, surface: str, event_type: str
+) -> None:
+    try:
+        await jobs_repo.upsert_on_conflict(
+            job_id=job_id,
+            org_id=org_id,
+            name=surface or event_type or "agent",
+            job_type="agent",
+            status="running",
+        )
+    except Exception:
+        logger.warning("audit_job_row_upsert_failed run_id=%s", job_id, exc_info=True)
 
 
 def _status_of(event: AfterNodeCallEvent) -> str:

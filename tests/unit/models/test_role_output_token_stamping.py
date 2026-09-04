@@ -63,7 +63,7 @@ class TestRoleOutputTokenStamping:
     @pytest.mark.parametrize(
         ("role", "expected_tokens"),
         [
-            ("documentation_engineer", 4096),
+            ("documentation_engineer", 8192),
             ("memory_curator", 1024),
             ("classifier", 1024),
             ("context", 2048),

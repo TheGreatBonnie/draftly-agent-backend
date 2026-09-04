@@ -14,7 +14,7 @@ import asyncio
 
 import fakeredis
 
-from draftly.app.composition.rq_jobs import build_rq_queues, enqueue_job
+from draftly.app.composition.rq_jobs import JOB_TIMEOUT_NONE, build_rq_queues, enqueue_job
 from draftly.app.workers.rq_dispatch import (
     dispatch,
     register_handlers,
@@ -123,16 +123,14 @@ def test_enqueued_job_executes_through_dispatch():
     assert result == {"status": "executed", "org_id": "org-1", "run_id": "run-7"}
 
 
-def test_enqueued_job_timeout_exceeds_workflow_watchdog():
-    """Regression: RQ's 180s DEFAULT_TIMEOUT killed onboarding.initialize long
-    before the workflow's own 1200s watchdog (INIT_WORKFLOW_TIMEOUT_SECONDS)
-    could fire. The job must carry an explicit timeout greater than the
-    workflow watchdog so the workflow logic — not RQ's default — bounds the run.
-    """
-    from draftly.workflows.onboarding.initialize import (
-        INIT_WORKFLOW_TIMEOUT_SECONDS,
-    )
+def test_enqueued_job_never_times_out_at_rq_level():
+    """Regression: RQ's 180s DEFAULT_TIMEOUT killed onboarding.initialize.
 
+    Timeout enforcement moved out of the workflow watchdog (removed) and RQ
+    into per-batch timeouts inside the workflow (stages.py). RQ therefore must
+    not impose its own job deadline — long-running onboarding legitimately
+    exceeds 180s — so jobs are enqueued with RQ's never-timeout sentinel (-1).
+    """
     register_handlers({TASK: _fake_onboarding})
     queues = build_rq_queues(_raw_conn())
 
@@ -144,8 +142,7 @@ def test_enqueued_job_timeout_exceeds_workflow_watchdog():
         run_id="run-timeout",
     )
 
-    assert job.timeout is not None
-    assert job.timeout > INIT_WORKFLOW_TIMEOUT_SECONDS
+    assert job.timeout == JOB_TIMEOUT_NONE  # never enforced at the RQ layer
 
 
 def test_enqueued_job_timeout_for_short_tasks_stays_bounded():

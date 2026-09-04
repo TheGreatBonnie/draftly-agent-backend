@@ -7,6 +7,7 @@ import subprocess
 
 import pytest
 
+from draftly.tools._guard import EmptyToolInputError
 from draftly.tools.repository.code_search import code_search
 from draftly.tools.repository.filesystem import (
     file_exists,
@@ -101,3 +102,49 @@ async def test_git_tools(tmp_path) -> None:
     assert "file.txt" in status
     diff = await git_diff(str(tmp_path), base="HEAD")
     assert "v2" in diff
+
+
+class TestEmptyInputGuards:
+    """A Strands tool-input parse drop yields {}; tools must reject it loudly.
+
+    Otherwise code_search walks the current dir with an empty query, returns
+    garbage, and the model thrashes the tool until the node times out.
+    """
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "query",
+        ["", "   ", None],
+    )
+    async def test_code_search_rejects_empty_query(self, query) -> None:
+        with pytest.raises(EmptyToolInputError):
+            await code_search(query, "/some/repo")
+
+    @pytest.mark.asyncio
+    async def test_code_search_rejects_empty_repo_dir(self) -> None:
+        with pytest.raises(EmptyToolInputError):
+            await code_search("foo", "")
+
+    @pytest.mark.asyncio
+    async def test_read_file_rejects_empty_path(self) -> None:
+        with pytest.raises(EmptyToolInputError):
+            await read_file("")
+
+    @pytest.mark.asyncio
+    async def test_write_file_rejects_empty_path(self) -> None:
+        with pytest.raises(EmptyToolInputError):
+            await write_file("", "content")
+
+    @pytest.mark.asyncio
+    async def test_list_directory_rejects_empty_path(self) -> None:
+        with pytest.raises(EmptyToolInputError):
+            await list_directory("")
+
+    @pytest.mark.asyncio
+    async def test_git_tools_reject_empty_repo_dir(self) -> None:
+        with pytest.raises(EmptyToolInputError):
+            await git_diff("")
+        with pytest.raises(EmptyToolInputError):
+            await git_status("")
+        with pytest.raises(EmptyToolInputError):
+            await git_log("")

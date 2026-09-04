@@ -24,6 +24,13 @@ class DocumentationDelivery:
         org_id: str | None = None,
     ) -> PullRequestResult:
         """changes: [{path, content, action}] from the writer node."""
+        from draftly.agents.documentation.plan_guard import validate_plan_dict
+
+        # Fail loudly on truncated/empty writer output instead of opening
+        # an empty PR (previously surfaced as eval score 0.00).
+        validate_plan_dict(
+            {"repository": repository, "branch": base_branch, "files": changes}
+        )
         files = [
             {"path": change["path"], "content": change.get("content", "")}
             for change in changes

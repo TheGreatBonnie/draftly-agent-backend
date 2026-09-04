@@ -122,6 +122,100 @@ async def test_evaluation_graph_runs_deterministic_experiments() -> None:
     assert summary["passed_all"] is True
 
 
+async def test_merged_pr_with_review_policy_always_interrupts_before_delivery(
+    model, tools, tmp_sessions
+) -> None:
+    """ReviewGate: review_policy 'always' must interrupt the deliver node."""
+    merged_task = (
+        '{"event_id": "e-merged-1", "event_type": "pull_request.merged", '
+        '"project_id": "proj-1", "repository": "acme/api", "actor": "dev", '
+        '"pull_request": {"number": 9, "title": "Add PKCE", "sha": "def", '
+        '"merged": true, "changed_files": [{"path": "src/authly/oauth.py"}]}}'
+    )
+    graph = build_graph_for_run(
+        "pr-review-1",
+        surface="pull_request",
+        tools_registry=tools,
+        model=model,
+        storage_dir=tmp_sessions,
+    )
+    result = await graph.invoke_async(
+        merged_task,
+        invocation_state={"run_id": "pr-review-1", "review_policy": "always"},
+    )
+
+    assert result.status == Status.INTERRUPTED
+    order = [n.node_id for n in result.execution_order]
+    assert "deliver" not in order
+
+
+async def test_merged_pr_with_no_doc_impact_authors_nothing(
+    model, tools, tmp_sessions
+) -> None:
+    """Impact action 'none': no writer runs and nothing is delivered."""
+    merged_task = (
+        '{"event_id": "e-merged-2", "event_type": "pull_request.merged", '
+        '"project_id": "proj-1", "repository": "acme/api", "actor": "dev", '
+        '"pull_request": {"number": 10, "title": "Internal refactor", "sha": "aaa", '
+        '"merged": true}}'
+    )
+    graph = build_graph_for_run(
+        "pr-none-1",
+        surface="pull_request",
+        tools_registry=tools,
+        model=_none_action_model(),
+        storage_dir=tmp_sessions,
+    )
+    result = await graph.invoke_async(
+        merged_task,
+        invocation_state={"run_id": "pr-none-1", "review_policy": "never"},
+    )
+
+    assert result.status == Status.COMPLETED
+    order = [n.node_id for n in result.execution_order]
+    assert "update" not in order
+    assert "create" not in order
+    assert "deliver" not in order
+
+
+def _none_action_model():
+    """StubModel scripted so the impact node chooses action 'none'."""
+    from draftly.agents.schemas import (
+        AnswerDraft,
+        DeliveryReceipt,
+        DocChangePlan,
+        EventClassification,
+        EvidenceBundle,
+        ImpactAnalysis,
+    )
+    from tests.stub_model import StubModel
+
+    return StubModel(
+        structured_outputs={
+            EventClassification: {
+                "surface": "pull_request",
+                "change_type": "other",
+                "urgency": "low",
+                "reason": "internal refactor",
+            },
+            EvidenceBundle: {"items": [], "summary": "no doc impact"},
+            ImpactAnalysis: {
+                "action": "none",
+                "affected_documents": [],
+                "rationale": "no public surface changed",
+            },
+            DocChangePlan: {"repository": "", "branch": "", "files": []},
+            AnswerDraft: {"content": "", "sources": []},
+            DeliveryReceipt: {
+                "delivered_to": "",
+                "surface": "pull_request",
+                "reference": "",
+                "status": "skipped",
+            },
+        }
+    )
+
+
 async def test_evaluation_graph_isolates_runner_failures() -> None:
     def broken_runner(dataset):
         raise ValueError("boom")

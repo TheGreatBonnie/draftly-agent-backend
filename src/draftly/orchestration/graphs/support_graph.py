@@ -45,6 +45,8 @@ def build_support_graph(
     graph_id: str = SUPPORT_GRAPH_ID,
     audit_repo: Any = None,
     memory: Any = None,
+    publisher: Any = None,
+    jobs_repo: Any = None,
     max_node_executions: int = DEFAULT_MAX_NODE_EXECUTIONS,
     execution_timeout: float = DEFAULT_EXECUTION_TIMEOUT,
     node_timeout: float = DEFAULT_NODE_TIMEOUT,
@@ -55,15 +57,16 @@ def build_support_graph(
     from draftly.agents.shared.classifier import build_classifier
     from draftly.agents.shared.context import build_context_agent
     from draftly.agents.shared.delivery import build_delivery_agent
-    from draftly.agents.subagents import build_research_swarm
     from draftly.agents.support.answer_writer import build_answer_writer
     from draftly.agents.support.question_analyzer import (
         build_question_analyzer,
     )
+    from draftly.agents.support.research_swarm import build_support_research_swarm
     from draftly.agents.support.solution_researcher import (
         build_solution_researcher,
     )
     from draftly.integrations.strands.models import resolve_model_for_role
+    from draftly.tools.repository.code_search import code_search
 
     reg = tools_registry
 
@@ -86,17 +89,25 @@ def build_support_graph(
             reg.discord_get_thread,
         ),
     )
-    research_swarm = build_research_swarm(research_model, reg)
+    research_swarm = build_support_research_swarm(
+        research_model,
+        reg,
+        local_tools=_dedupe(
+            reg.semantic_search,
+            reg.keyword_search,
+            [code_search],
+        ),
+    )
     question_analyzer = build_question_analyzer(
         support_model,
-        _dedupe(reg.semantic_search),
+        _dedupe(reg.semantic_search, reg.keyword_search),
     )
     solution_researcher = build_solution_researcher(
         support_model,
         _dedupe(
             reg.semantic_search,
             reg.keyword_search,
-            reg.github_intelligence,
+            [code_search],
         ),
     )
     answer_agent = build_answer_writer(
@@ -155,6 +166,7 @@ def build_support_graph(
     builder.add_edge("update", "evaluate", condition=generated)
     builder.add_edge("create", "evaluate", condition=generated)
 
+    builder.add_edge("evaluate", "answer", condition=needs_revision_of("answer"))
     builder.add_edge("evaluate", "update", condition=needs_revision_of("update"))
     builder.add_edge("evaluate", "create", condition=needs_revision_of("create"))
 
@@ -169,10 +181,10 @@ def build_support_graph(
     if session_manager is not None:
         builder.set_session_manager(session_manager)
     providers: list[Any] = [ReviewGate()]
-    if audit_repo is not None:
+    if audit_repo is not None or publisher is not None or jobs_repo is not None:
         from draftly.orchestration.hooks.audit import RunAuditLogger
 
-        providers.append(RunAuditLogger(audit_repo))
+        providers.append(RunAuditLogger(audit_repo, publisher=publisher, jobs_repo=jobs_repo))
     if hooks:
         providers.extend(hooks)
     builder.set_hook_providers(providers)

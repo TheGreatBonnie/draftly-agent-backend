@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from draftly.tools._guard import EmptyToolInputError
 from draftly.tools.search.hybrid_search import hybrid_search
 from draftly.tools.search.keyword_search import keyword_search
 from draftly.tools.search.semantic_search import semantic_search
@@ -112,3 +113,27 @@ async def test_search_tools_render_schemas(fake_search) -> None:
         assert spec["name"] == tool.tool_name
         assert "inputSchema" in spec
         assert spec["inputSchema"]["json"]["properties"]
+
+
+class TestSearchEmptyInputGuards:
+    """Empty query/namespace must raise, not silently query the DB."""
+
+    @pytest.mark.asyncio
+    async def test_keyword_search_rejects_empty_query(self) -> None:
+        with pytest.raises(EmptyToolInputError):
+            await keyword_search(query="", namespace="docs")
+
+    @pytest.mark.asyncio
+    async def test_keyword_search_rejects_empty_namespace(self) -> None:
+        with pytest.raises(EmptyToolInputError):
+            await keyword_search(query="pool", namespace="")
+
+    @pytest.mark.asyncio
+    async def test_semantic_search_rejects_empty_query(self) -> None:
+        with pytest.raises(EmptyToolInputError):
+            await semantic_search(query="", namespace="docs", embedding=[0.1])
+
+    @pytest.mark.asyncio
+    async def test_semantic_search_rejects_empty_namespace(self) -> None:
+        with pytest.raises(EmptyToolInputError):
+            await semantic_search(query="pool", namespace="", embedding=[0.1])

@@ -1,4 +1,5 @@
 from typing import Any
+from uuid import uuid4
 
 import structlog
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, Response
@@ -6,6 +7,8 @@ from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 
 from draftly.app.api.auth import get_verified_token
+from draftly.app.api.routes.workflows import _tickets
+from draftly.app.composition.rq_jobs import enqueue_job
 from draftly.app.config import get_settings
 from draftly.integrations.github.app_auth import (
     get_installation_info,
@@ -23,6 +26,14 @@ router = APIRouter(
 )
 
 settings = get_settings()
+
+
+def _job_repos(request: Request) -> Any | None:
+    """Resolve the jobs repository off the composed workflow context."""
+    workflows = getattr(request.app.state.draftly, "workflows", None)
+    context = getattr(workflows, "context", None) if workflows is not None else None
+    repositories = getattr(context, "repositories", None) if context is not None else None
+    return getattr(repositories, "jobs", None)
 
 
 class WebhookResponse(BaseModel):
@@ -266,15 +277,92 @@ async def github_webhook(
         )
         return WebhookResponse(status=f"{event.get('event_type')} (skipped, not merged)")
 
-    background_tasks.add_task(app_state.workflows.runner.run, event)
+    run_id = str(event.get("event_id") or uuid4().hex)
+    org_repo = str(event.get("repository") or "")
+    # PR webhooks have no Clerk org_id; use empty string as the jobs row key.
+    # Note: POST /workflows/{run_id}/stream-ticket checks org_id against the jobs
+    # row and will 403 for empty-org PR runs; the webhook-issued ticket (via
+    # _tickets.issue) still allows GET /workflows/{run_id}/events?ticket=... since
+    # that path only validates ticket->run_id, not org ownership. Frontend re-ticket
+    # via POST will need a future org lookup if per-org isolation is required.
+    org_id = ""
 
-    logger.info(
-        "github_webhook_queued",
-        event_type=event_type,
-        delivery_id=delivery_id,
-    )
+    # Issue an SSE ticket + backing jobs row so /workflows/{run_id}/events
+    # stream-ticket lookup succeeds, mirroring onboarding. A jobs-row failure
+    # is fatal: without it the SSE stream would 404 forever.
+    try:
+        await _tickets(request).issue(run_id=run_id, org_id=org_id)
+    except Exception as exc:
+        logger.warning("github_webhook_ticket_failed", error=str(exc))
+    jobs_repo = _job_repos(request)
+    if jobs_repo is None:
+        logger.error("github_webhook_jobs_unavailable", run_id=run_id)
+        raise HTTPException(status_code=503, detail="Jobs store unavailable")
+    try:
+        await jobs_repo.upsert_on_conflict(
+            run_id=run_id,
+            org_id=org_id,
+            name="github_pr",
+            job_type="github",
+            schedule="webhook",
+            configuration={"repository": org_repo},
+        )
+    except Exception as exc:
+        logger.exception("github_webhook_jobs_failed", error=str(exc))
+        raise HTTPException(status_code=500, detail="Failed to register PR run") from exc
 
-    return {"accepted": True, "status": f"Processing {event_type} event"}
+    # Best-effort: register the PR identity in github_workflows for the list page.
+    # A failure here must not abort the run already queued to RQ/in-process.
+    try:
+        pr = event.get("pull_request") or {}
+        owner_repo = str(event.get("repository") or "")
+        owner, _, repo = owner_repo.partition("/")
+        from draftly.persistence.repositories.github import save_github_workflow
+        deps = getattr(app_state, "dependencies", None)
+        db = getattr(deps, "integrations", None).database if deps else None
+        await save_github_workflow(
+            org_id=org_id,
+            workflow_id=run_id,
+            run_id=run_id,
+            installation_id=0,  # noqa: E501
+            owner=owner,
+            repo=repo,
+            issue_number=int(pr.get("number") or 0),
+            title=str(pr.get("title") or ""),
+            actor=str(event.get("actor") or ""),
+            db=db,
+        )
+    except Exception as exc:
+        logger.warning("github_webhook_workflow_registration_failed", error=str(exc))
+
+    settings = getattr(app_state, "settings", None)
+    rq_enabled = bool(getattr(settings, "rq_enabled", False)) if settings else False
+    rq_queues = getattr(app_state, "rq_queues", None)
+    task_handlers = getattr(app_state, "task_handlers", None)
+
+    if rq_enabled and rq_queues is not None and task_handlers is not None:
+        job = enqueue_job(
+            queues=rq_queues,
+            task_handlers=task_handlers,
+            task_name="github_pr.enqueue",
+            event=event,
+            run_id=run_id,
+        )
+        logger.info("github_pr_enqueued", run_id=run_id, rq_job_id=getattr(job, "id", ""))
+    else:
+        # In-process fallback: run via the registered task so the path is
+        # identical to RQ. Schedule on FastAPI BackgroundTasks so the webhook
+        # returns to GitHub immediately (GitHub expects a fast 2xx) while the
+        # worker executes the run after the response is sent.
+        worker = getattr(app_state, "worker", None)
+        if worker is None or getattr(worker, "run_task", None) is None:
+            raise HTTPException(status_code=503, detail="Background worker is disabled")
+        background_tasks.add_task(
+            worker.run_task, "github_pr.enqueue", event=event, run_id=run_id
+        )
+        logger.info("github_pr_dispatch_inprocess", run_id=run_id)
+
+    return WebhookResponse(status=f"{event.get('event_type')} (run_id={run_id})")
 
 
 async def _handle_installation_event(payload: dict) -> WebhookResponse:

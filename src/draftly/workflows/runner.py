@@ -80,6 +80,7 @@ def _default_graph_factory(context: WorkflowContext) -> GraphFactory:
     def factory(run_id: str, surface: str) -> Any:
         from draftly.integrations.strands.graph import build_graph_for_run
 
+        jobs_repo = getattr(getattr(context, "repositories", None), "jobs", None)
         return build_graph_for_run(
             run_id,
             surface=surface,
@@ -89,6 +90,8 @@ def _default_graph_factory(context: WorkflowContext) -> GraphFactory:
             storage_dir=context.storage_dir,
             audit_repo=context.audit_repo,
             memory=getattr(context, "memory", None),
+            publisher=getattr(context, "publisher", None),
+            jobs_repo=jobs_repo,
             **context.graph_limits(),
         )
 
@@ -147,6 +150,12 @@ class WorkflowRunner:
 
         # 2. One session + one graph for this run's surface.
         graph = self._graph_factory(run_id, surface)
+        await self._broadcast_lifecycle(
+            org_id=str(event.get("project_id") or ""),
+            run_id=run_id,
+            status="running",
+            surface=surface,
+        )
 
         # 3. Invoke; runtime context rides in invocation_state, never in
         #    the prompt. ReviewGate reads review_policy before delivering.
@@ -186,16 +195,34 @@ class WorkflowRunner:
         if result.status == Status.INTERRUPTED:
             await self._store_interrupts(run_id, surface, result, state)
             await self._mark(event, "pending_review")
+            await self._broadcast_lifecycle(
+                org_id=str(event.get("project_id") or ""),
+                run_id=run_id,
+                status="pending_review",
+                surface=surface,
+            )
             return state.finish(WorkflowStatus.PENDING_REVIEW)
 
         if result.status == Status.COMPLETED:
             await self._mark(event, "completed")
             await _post_run_memory(self.context, state, surface)
+            await self._broadcast_lifecycle(
+                org_id=str(event.get("project_id") or ""),
+                run_id=run_id,
+                status="completed",
+                surface=surface,
+            )
             return state.finish(WorkflowStatus.DELIVERED)
 
         failed = self._failed_node_ids(result)
         state.errors.extend(failed)
         await self._mark(event, "failed")
+        await self._broadcast_lifecycle(
+            org_id=str(event.get("project_id") or ""),
+            run_id=run_id,
+            status="failed",
+            surface=surface,
+        )
         return state.finish(WorkflowStatus.FAILED)
 
     async def _invoke_streaming(
@@ -258,6 +285,24 @@ class WorkflowRunner:
                 envelope.run_id,
                 envelope.seq,
                 exc_info=True,
+            )
+
+    async def _broadcast_lifecycle(
+        self, *, org_id: str, run_id: str, status: str, surface: str
+    ) -> None:
+        broadcaster = getattr(getattr(self.context, "broadcaster", None), "broadcast", None)
+        if broadcaster is None or not org_id:
+            return
+        try:
+            await broadcaster(
+                org_id,
+                "workflow:changed",
+                {"run_id": run_id, "status": status, "kind": surface},
+            )
+        except Exception:
+            logger.warning(
+                "runner_broadcast_failed run_id=%s status=%s",
+                run_id, status, exc_info=True,
             )
 
     async def _record_routing_outcome(

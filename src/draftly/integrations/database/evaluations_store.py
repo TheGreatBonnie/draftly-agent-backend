@@ -1,8 +1,37 @@
+import json
 from datetime import datetime
 from typing import Any
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from draftly.integrations.database.client import DatabaseClient
+
+
+def _normalize_uuid(value: str | UUID | None) -> UUID | None:
+    """Coerce an identifier to a valid UUID or None.
+
+    ``target_id`` is a ``UUID`` column, but callers thread the prefixed
+    run_id (e.g. ``evaluation-<uuid>``) into it. Strip any ``<prefix>-``
+    prefix so the raw UUID parses instead of raising a Postgres DataError.
+    Returns None for values that cannot be parsed as a UUID.
+    """
+    if value is None:
+        return None
+    if isinstance(value, UUID):
+        return value
+    text = str(value).strip()
+    candidates = [text]
+    if text.count("-") == 5:
+        candidates.append(text.split("-", 1)[-1])
+    try:
+        return UUID(text)
+    except (ValueError, AttributeError):
+        pass
+    for candidate in candidates:
+        try:
+            return UUID(candidate)
+        except (ValueError, AttributeError):
+            continue
+    return None
 
 
 class DatabaseEvaluationsStore:
@@ -17,6 +46,7 @@ class DatabaseEvaluationsStore:
         *,
         org_id: str,
         evaluation_type: str,
+        run_id: str | None = None,
         target_id: str | None,
         score: float,
         status: str,
@@ -28,12 +58,19 @@ class DatabaseEvaluationsStore:
 
         evaluation_id = uuid4()
 
+        # asyncpg's JSONB codec requires the parameter to be a JSON-encoded
+        # str (it errors with "expected str, got dict" on Python containers),
+        # so serialize before handing it to the $N::JSONB casts.
+        metrics_json = json.dumps(metrics, ensure_ascii=False)
+        failures_json = json.dumps(failures, ensure_ascii=False)
+
         row = await self.client.fetch_one(
             """
             INSERT INTO evaluations (
                 id,
                 org_id,
                 evaluation_type,
+                run_id,
                 target_id,
                 score,
                 status,
@@ -49,15 +86,17 @@ class DatabaseEvaluationsStore:
                 $4,
                 $5,
                 $6,
-                $7::JSONB,
+                $7,
                 $8::JSONB,
-                $9,
-                $10
+                $9::JSONB,
+                $10,
+                $11
             )
             RETURNING
                 id,
                 org_id,
                 evaluation_type,
+                run_id,
                 target_id,
                 score,
                 status,
@@ -69,11 +108,12 @@ class DatabaseEvaluationsStore:
             evaluation_id,
             org_id,
             evaluation_type,
-            target_id,
+            run_id,
+            _normalize_uuid(target_id),
             score,
             status,
-            metrics,
-            failures,
+            metrics_json,
+            failures_json,
             started_at,
             completed_at,
         )
@@ -92,6 +132,7 @@ class DatabaseEvaluationsStore:
                 id,
                 org_id,
                 evaluation_type,
+                run_id,
                 target_id,
                 score,
                 status,
@@ -122,6 +163,7 @@ class DatabaseEvaluationsStore:
                     id,
                     org_id,
                     evaluation_type,
+                    run_id,
                     target_id,
                     score,
                     status,
@@ -146,6 +188,7 @@ class DatabaseEvaluationsStore:
                     id,
                     org_id,
                     evaluation_type,
+                    run_id,
                     target_id,
                     score,
                     status,
@@ -173,11 +216,12 @@ class DatabaseEvaluationsStore:
             "id": str(row[0]),
             "org_id": str(row[1]),
             "evaluation_type": row[2],
-            "target_id": row[3],
-            "score": row[4],
-            "status": row[5],
-            "metrics": row[6],
-            "failures": row[7],
-            "started_at": row[8],
-            "completed_at": row[9],
+            "run_id": row[3],
+            "target_id": row[4],
+            "score": row[5],
+            "status": row[6],
+            "metrics": row[7],
+            "failures": row[8],
+            "started_at": row[9],
+            "completed_at": row[10],
         }

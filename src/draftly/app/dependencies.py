@@ -26,6 +26,7 @@ from draftly.integrations.slack.installation_store import SlackInstallationStore
 
 # from draftly.memory.embeddings import build_memory_embedder
 # from draftly.memory.manager import MemoryManager
+from draftly.persistence.repositories.agent_runs import AgentRunsRepository
 from draftly.persistence.repositories.delivery import DeliveryRepository
 from draftly.persistence.repositories.documents import DocumentRepository
 from draftly.persistence.repositories.evaluations import EvaluationRepository
@@ -241,6 +242,8 @@ class RepositoryDependencies:
     repository_config: RepositoryConfigRepository
     workflow_events: WorkflowEventRepositoryImpl
 
+    agent_runs: AgentRunsRepository
+
 
 def build_repositories(
     database: DatabaseClient,
@@ -312,6 +315,8 @@ def build_repositories(
 
     workflow_events = WorkflowEventRepositoryImpl()
 
+    agent_runs = AgentRunsRepository(database=database)
+
     return RepositoryDependencies(
         delivery=delivery,
         events=events,
@@ -328,6 +333,7 @@ def build_repositories(
         onboarding=onboarding,
         repository_config=repository_config,
         workflow_events=workflow_events,
+        agent_runs=agent_runs,
     )
 
 

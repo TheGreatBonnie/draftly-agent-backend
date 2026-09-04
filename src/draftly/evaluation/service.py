@@ -38,6 +38,12 @@ class EvaluationService:
     ) -> dict[str, Any]:
         """Load a named dataset, run it, analyze + persist the report."""
         cases = self.runner.load_dataset(dataset)
+        logger.info(
+            "eval_service_suite_start",
+            dataset=dataset,
+            cases=len(cases),
+            evaluators=len(evaluators),
+        )
         report, record = await self.runner.run_and_persist(
             cases, evaluators, get_response, target_id=dataset
         )
@@ -51,7 +57,7 @@ class EvaluationService:
         ]
         analysis = self.analyzer.analyze(failures)
 
-        return {
+        summary = {
             "dataset": dataset,
             "overall_score": float(getattr(report, "overall_score", 0.0) or 0.0),
             "cases": len(passes),
@@ -61,3 +67,11 @@ class EvaluationService:
             "dominant_failure": analysis.dominant_category(),
             "record": record,
         }
+        logger.info(
+            "eval_service_suite_complete",
+            dataset=dataset,
+            passed=summary["passed"],
+            failed=summary["failed"],
+            dominant_failure=summary["dominant_failure"],
+        )
+        return summary

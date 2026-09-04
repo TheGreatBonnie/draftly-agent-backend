@@ -29,10 +29,19 @@ from draftly.orchestration.routing.conditions import (
     route_to_create,
     route_to_update,
 )
+from draftly.tools.repository.code_search import code_search
 
 logger = structlog.get_logger(__name__)
 
 ISSUE_GRAPH_ID = "draftly-issue-graph"
+
+# Local-repo code search for the issue surface's context/research/impact nodes.
+# Mirrors the docs graph: online evaluation backs cases with a local authly
+# checkout and no usable GitHub API, so analysis nodes inspect the checkout
+# with code_search/semantic_search/keyword_search instead of 401-ing on
+# get_issue. Delivery (issue_responder) keeps github_intelligence so
+# production issue replies (create_comment) still work.
+_LOCAL_CODE_SEARCH = [code_search]
 
 
 def build_issue_graph(
@@ -44,6 +53,8 @@ def build_issue_graph(
     graph_id: str = ISSUE_GRAPH_ID,
     audit_repo: Any = None,
     memory: Any = None,
+    publisher: Any = None,
+    jobs_repo: Any = None,
     max_node_executions: int = DEFAULT_MAX_NODE_EXECUTIONS,
     execution_timeout: float = DEFAULT_EXECUTION_TIMEOUT,
     node_timeout: float = DEFAULT_NODE_TIMEOUT,
@@ -51,11 +62,11 @@ def build_issue_graph(
 ):
     """Build the GitHub issue surface graph."""
     from draftly.agents.documentation.writer import build_writer_agent
+    from draftly.agents.github.context import build_issue_context_agent
     from draftly.agents.github.issue_analyzer import build_issue_analyzer
     from draftly.agents.github.issue_responder import build_issue_responder
+    from draftly.agents.github.research_swarm import build_issue_research_swarm
     from draftly.agents.shared.classifier import build_classifier
-    from draftly.agents.shared.context import build_context_agent
-    from draftly.agents.subagents import build_research_swarm
     from draftly.agents.support.answer_writer import build_answer_writer
     from draftly.integrations.strands.models import resolve_model_for_role
 
@@ -69,18 +80,31 @@ def build_issue_graph(
     intelligence_model = resolve_model_for_role(model, "github_intelligence")
 
     classifier = build_classifier(classifier_model)
-    context_agent = build_context_agent(
+    context_agent = build_issue_context_agent(
         context_model,
         _dedupe(
-            reg.github_intelligence,
             reg.semantic_search,
             reg.keyword_search,
+            _LOCAL_CODE_SEARCH,
         ),
     )
-    research_swarm = build_research_swarm(research_model, reg)
+    research_swarm = build_issue_research_swarm(
+        research_model,
+        reg,
+        local_tools=_dedupe(
+            reg.semantic_search,
+            reg.keyword_search,
+            reg.hybrid_search,
+            _LOCAL_CODE_SEARCH,
+        ),
+    )
     issue_analyzer = build_issue_analyzer(
         intelligence_model,
-        _dedupe(reg.github_intelligence, reg.semantic_search),
+        _dedupe(
+            reg.semantic_search,
+            reg.keyword_search,
+            _LOCAL_CODE_SEARCH,
+        ),
     )
     answer_agent = build_answer_writer(
         support_model,
@@ -132,6 +156,7 @@ def build_issue_graph(
     builder.add_edge("update", "evaluate", condition=generated)
     builder.add_edge("create", "evaluate", condition=generated)
 
+    builder.add_edge("evaluate", "answer", condition=needs_revision_of("answer"))
     builder.add_edge("evaluate", "update", condition=needs_revision_of("update"))
     builder.add_edge("evaluate", "create", condition=needs_revision_of("create"))
 
@@ -146,10 +171,10 @@ def build_issue_graph(
     if session_manager is not None:
         builder.set_session_manager(session_manager)
     providers: list[Any] = [ReviewGate()]
-    if audit_repo is not None:
+    if audit_repo is not None or publisher is not None or jobs_repo is not None:
         from draftly.orchestration.hooks.audit import RunAuditLogger
 
-        providers.append(RunAuditLogger(audit_repo))
+        providers.append(RunAuditLogger(audit_repo, publisher=publisher, jobs_repo=jobs_repo))
     if hooks:
         providers.extend(hooks)
     builder.set_hook_providers(providers)

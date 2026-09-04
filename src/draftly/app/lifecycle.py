@@ -253,7 +253,18 @@ class DraftlyApplication:
             return None
 
     def _build_audit_repo(self) -> Any:
-        """Build the §10.2 agent-run audit repository over NeonDB."""
+        """Build the §10.2 agent-run audit repository over NeonDB.
+
+        Prefers the instance wired into the repositories container so the
+        API surface (routes/agents.py:190, routes/runs.py:19) and workflow
+        audit hooks share one repository. Falls back to a standalone
+        construction if the container lacks one.
+        """
+        wired = getattr(
+            getattr(self.dependencies, "repositories", None), "agent_runs", None
+        )
+        if wired is not None:
+            return wired
         try:
             from draftly.persistence.repositories.agent_runs import (
                 AgentRunsRepository,
@@ -455,11 +466,11 @@ async def lifespan(
     try:
         await application.startup()
 
-        # Wire dashboard broadcaster for SSE push updates.
+        # Wire dashboard stream bus for durable SSE push updates.
         if application.redis_client is not None:
-            from draftly.events.dashboard_broadcaster import DashboardBroadcaster
+            from draftly.events.dashboard_stream_bus import DashboardStreamBus
 
-            app.state.dashboard_broadcaster = DashboardBroadcaster(
+            app.state.dashboard_broadcaster = DashboardStreamBus(
                 application.redis_client.native,
             )
 
