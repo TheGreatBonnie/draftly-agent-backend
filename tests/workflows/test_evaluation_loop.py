@@ -107,7 +107,34 @@ async def test_loop_persists_summary_and_job_row():
     assert len(evals.saved) == 1
     assert evals.saved[0]["org_id"] == "org-9"
     assert evals.saved[0]["run_id"] == "run-1"
+    # Default type when no dataset surface metadata is present.
+    assert evals.saved[0]["evaluation_type"] == "documentation"
     assert jobs.statuses and jobs.statuses[-1][0] == "run-1"
+
+
+async def test_loop_persists_github_issue_type_from_dataset_surface():
+    pub = FakePublisher()
+    # FakeEvaluations.list_datasets feeds _load_datasets; give it an issue
+    # surface so _evaluation_types resolves to "github_issue".
+    ctx = build_context(
+        publisher=pub,
+        datasets=[
+            {"name": "github_issues", "surface": "issue", "cases": []},
+            {"name": "support", "surface": "support", "cases": []},
+        ],
+    )
+
+    await run_evaluation_loop(ctx, org_id="org-9", run_id="run-1")
+
+    evals = ctx.repositories.evaluations
+    assert len(evals.saved) == 1
+    # The primary type is the first dataset's surface ("issue" -> github_issue).
+    assert evals.saved[0]["evaluation_type"] == "github_issue"
+    # All surfaces are recorded on the summary for multi-dataset runs.
+    assert evals.saved[0]["summary"]["evaluation_types"] == [
+        "github_issue",
+        "support",
+    ]
 
 
 async def test_loop_publishes_terminal_job_status():

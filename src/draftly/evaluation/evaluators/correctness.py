@@ -1,12 +1,44 @@
-"""Correctness evaluator wrapper (plan §8.2)."""
+"""Correctness evaluator (plan §8.2) — OutputEvaluator with a rubric.
+
+The correctness LLM judge grades the authored documentation for factual
+and technical correctness against the case's evidence/scope. It uses a
+rubric-based ``OutputEvaluator`` (scoring ``actual_output``) rather than the
+trace-level ``CorrectnessEvaluator`` from strands_evals: our live
+documentation runs do not carry a ``Session`` trajectory, so the
+trace-parsing judge would always raise instead of scoring the content.
+"""
 
 from __future__ import annotations
 
 from typing import Any
 
-from strands_evals.evaluators import CorrectnessEvaluator
+from strands_evals.evaluators import OutputEvaluator
+
+CORRECTNESS_RUBRIC = (
+    "Assess whether the documentation is factually and technically correct with "
+    "respect to the requested scope, any provided evidence, and the actual source "
+    "change described under <ActualEnvironmentState> (the real PR diff and changed "
+    "files). Flag inaccuracies, wrong code, incorrect API references, or misleading "
+    "guidance. Verify that any named APIs, methods, parameters, and behavior in the "
+    "documentation exist in the provided diff before calling them inaccurate. Score "
+    "0-1 based on correctness."
+)
 
 
-def build_correctness_evaluator(model: Any = None) -> CorrectnessEvaluator:
-    """Factual correctness LLM judge; ``model=None`` uses SDK default."""
-    return CorrectnessEvaluator(model=model)
+def build_correctness_evaluator(
+    model: Any = None, uses_environment_state: bool = True
+) -> OutputEvaluator:
+    """Correctness LLM judge; ``model=None`` uses the SDK default.
+
+    ``uses_environment_state=True`` feeds the real PR diff (surfaced on
+    ``environment_state`` by the online task) into the judge prompt so it can
+    verify authored claims against the actual source rather than the thin PR
+    description alone (which earlier caused real APIs to be flagged as
+    invented).
+    """
+    return OutputEvaluator(
+        name="correctness",
+        rubric=CORRECTNESS_RUBRIC,
+        model=model,
+        uses_environment_state=uses_environment_state,
+    )

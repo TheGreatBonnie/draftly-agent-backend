@@ -87,3 +87,49 @@ async def test_runner_without_repo_skips_persist(mocked_experiment) -> None:
 
     assert record is None
     assert report.overall_score == pytest.approx(0.5)
+
+
+def test_report_rows_surfaces_swallowed_task_errors() -> None:
+    """Rows must appear even when the Strands worker records an empty detailed_results.
+
+    Regression: when a live task raises inside the Evals worker, the worker emits
+    one failing row per evaluator with ``detailed_results=[]`` and the error text
+    only in ``reason``. ``report_rows``/``_report_rows`` iterated ONLY
+    ``detailed_results``, producing 0 rows — a silent-zero that the graph then
+    reported as ``passed_all=true``.
+    """
+    from strands_evals.types.evaluation_report import EvaluationReport
+
+    report = EvaluationReport(
+        overall_score=0.0,
+        scores=[0, 0, 0],
+        test_passes=[False, False, False],
+        cases=[
+            {"name": "oauth-auth", "evaluator": "expected_contains"},
+            {"name": "oauth-auth", "evaluator": "expected_tools"},
+            {"name": "oauth-auth", "evaluator": "node:context:semantic_search"},
+        ],
+        reasons=[
+            "An error occurred: 'GraphNode' object has no attribute 'get_agent_results'",
+            "An error occurred: 'GraphNode' object has no attribute 'get_agent_results'",
+            "An error occurred: 'GraphNode' object has no attribute 'get_agent_results'",
+        ],
+        detailed_results=[[], [], []],
+        diagnoses=[None, None, None],
+        recommendations=[None, None, None],
+    )
+
+    from draftly.evaluation.online import _report_rows as online_report_rows
+    from draftly.evaluation.runner import _report_rows, report_rows
+
+    for fn in (report_rows, _report_rows, online_report_rows):
+        rows = fn("documentation_only", report)
+        assert len(rows) == 3, f"{fn.__name__} must emit a row per evaluator"
+        assert all(row["test_pass"] is False for row in rows)
+        assert "get_agent_results" in rows[0]["reason"]
+        assert [r["case"] for r in rows] == ["oauth-auth", "oauth-auth", "oauth-auth"]
+        assert [r["metric"] for r in rows] == [
+            "expected_contains",
+            "expected_tools",
+            "node:context:semantic_search",
+        ]

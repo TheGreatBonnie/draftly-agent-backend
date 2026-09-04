@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from strands.multiagent.base import (
@@ -12,6 +13,46 @@ from strands.multiagent.base import (
 )
 
 from draftly.orchestration.nodes.base import agent_result, parse_node_input
+
+_EXT_RE = re.compile(r"\.(md|rst|adoc)$", re.IGNORECASE)
+
+# Basenames too generic to count as a citation on their own (they would
+# match a draft even when the specific source doc was never referenced).
+_COMMON_BASENAMES = {
+    "readme",
+    "index",
+    "overview",
+    "introduction",
+    "getting-started",
+    "api",
+    "faq",
+    "guide",
+    "reference",
+    "docs",
+}
+
+
+def _evidence_match_tokens(entry: dict) -> set[str]:
+    """Normalized substrings that indicate the draft references ``entry``.
+
+    Accepts the full evidence id/path (with or without a trailing extension)
+    and the path's terminal basename, so a draft that links the source doc by
+    its file name is recognized as citing it — not just an exact whole-id
+    byte match the writer can never produce.
+    """
+    tokens: set[str] = set()
+    for field in ("id", "url"):
+        raw = (entry.get(field) or "").strip()
+        if not raw:
+            continue
+        no_ext = _EXT_RE.sub("", raw).rstrip("/")
+        tokens.add(no_ext)
+        base = no_ext.rsplit("/", 1)[-1]
+        if base and base.lower() in _COMMON_BASENAMES:
+            continue
+        if base and len(base) >= 3:
+            tokens.add(base)
+    return {t for t in tokens if len(t) >= 3}
 
 
 def compute_quality(
@@ -26,7 +67,9 @@ def compute_quality(
     score = 0.0
 
     # Citation coverage: does the draft reference available evidence?
-    cited = sum(1 for e in evidence if e.get("id", "") in draft)
+    cited = sum(
+        1 for e in evidence if any(t in draft for t in _evidence_match_tokens(e))
+    )
     coverage = cited / max(len(evidence), 1)
     score += coverage * 0.4
     if coverage > 0.8:

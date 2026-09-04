@@ -131,6 +131,54 @@ def test_surface_agents_construct(stub_model: StubModel) -> None:
     )
 
 
+def test_writer_agent_registers_authoring_skills(stub_model: StubModel) -> None:
+    from draftly.agents.documentation.writer import build_writer_agent
+
+    tools = build_tools()
+    agent = build_writer_agent(stub_model, tools.documentation_engineer)
+
+    plugin = agent._plugin_registry._plugins.get("agent_skills")
+    assert plugin is not None
+    names = {skill.name for skill in plugin.get_available_skills(agent)}
+    assert {"documentation-update", "documentation-generation"} <= names
+
+
+def test_issue_surface_agents_register_skills(stub_model: StubModel) -> None:
+    from draftly.agents.github.context import build_issue_context_agent
+    from draftly.agents.github.issue_analyzer import build_issue_analyzer
+    from draftly.agents.github.issue_responder import build_issue_responder
+    from draftly.agents.github.research_swarm import build_issue_research_swarm
+    from draftly.agents.support.answer_writer import build_answer_writer
+
+    tools = build_tools()
+
+    def skill_names(agent: Agent) -> set[str]:
+        plugin = agent._plugin_registry._plugins.get("agent_skills")
+        assert plugin is not None
+        return {skill.name for skill in plugin.get_available_skills(agent)}
+
+    context = build_issue_context_agent(stub_model, tools.documentation)
+    assert {"repository-analysis", "github-issue-analysis"} <= skill_names(context)
+
+    analyzer = build_issue_analyzer(stub_model)
+    assert {"github-issue-analysis", "documentation-gap-detection"} <= skill_names(analyzer)
+
+    responder = build_issue_responder(stub_model, tools.github_intelligence)
+    assert {"github-delivery"} <= skill_names(responder)
+
+    answer = build_answer_writer(stub_model, tools.support_engineer)
+    assert {"support-answering"} <= skill_names(answer)
+
+    swarm = build_issue_research_swarm(
+        stub_model,
+        tools,
+        local_tools=tools.documentation,
+    )
+    local_node = swarm.nodes["local_repo_researcher"]
+    assert {node.node_id for node in swarm.nodes.values()} >= {"local_repo_researcher"}
+    assert {"github-issue-analysis", "repository-analysis"} <= skill_names(local_node.executor)
+
+
 def test_research_swarm_construction(stub_model: StubModel) -> None:
     tools = build_tools()
     swarm = build_research_swarm(stub_model, tools)

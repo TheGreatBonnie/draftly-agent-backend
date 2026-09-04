@@ -64,8 +64,13 @@ async def get_evaluation(
 async def run_evaluations(
     request: Request,
     token: dict[str, str] = Depends(get_verified_token),
+    live: bool = False,
 ) -> dict[str, Any]:
-    """Trigger the evaluation loop workflow."""
+    """Trigger the evaluation loop workflow.
+
+    Query param ``live`` (default False) enables real agent invocation with
+    LLM-judge evaluators; otherwise the deterministic offline runner is used.
+    """
     from uuid import uuid4
 
     org_id = str(token.get("org_id") or "")
@@ -74,7 +79,7 @@ async def run_evaluations(
     worker = getattr(application, "worker", None)
     if worker is not None and worker.task_runner.has_task("evaluation.loop"):
         result = await worker.run_task(
-            "evaluation.loop", org_id=org_id, run_id=run_id
+            "evaluation.loop", org_id=org_id, run_id=run_id, live=live
         )
         return {"status": "completed", "result": result, "run_id": run_id}
 
@@ -84,7 +89,7 @@ async def run_evaluations(
     func = registry.get("evaluation_loop") if registry else None
     if workflows is None or func is None:
         raise HTTPException(status_code=503, detail="Runtime not started")
-    state = await func(workflows.context, org_id=org_id, run_id=run_id)
+    state = await func(workflows.context, org_id=org_id, run_id=run_id, live=live)
     return {
         "status": str(getattr(state, "status", "unknown")),
         "run_id": getattr(state, "run_id", None),

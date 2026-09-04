@@ -5,8 +5,9 @@ from __future__ import annotations
 from typing import Any
 
 from strands import Agent
+from strands.vended_plugins.skills import AgentSkills
 
-from draftly.agents.prompts import REVIEWER_PROMPT, build_prompt
+from draftly.agents.prompts import REVIEWER_PROMPT, build_prompt, load_skills
 from draftly.agents.schemas import EvaluationResult
 
 
@@ -27,5 +28,13 @@ def build_reviewer_agent(
         model=model,
         tools=tools,
         structured_output_model=EvaluationResult,
+        plugins=[
+            AgentSkills(
+                skills=load_skills(
+                    "documentation-evaluation",
+                    "documentation-audit",
+                )
+            )
+        ],
         description="Reviews documentation changes against policy.",
     )

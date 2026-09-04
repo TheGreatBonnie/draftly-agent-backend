@@ -632,7 +632,7 @@ PROVIDER_CLASSES = {
 }
 
 ROLE_OUTPUT_TOKENS: dict[str, int] = {
-    "documentation_engineer": 4096,
+    "documentation_engineer": 8192,
     "documentation_reviewer": 4096,
     "support_engineer": 2048,
     "support_reviewer": 2048,

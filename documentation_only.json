@@ -4,28 +4,9 @@
     "description": "Golden documentation-authoring cases: pull_request.opened events (built from authly simulation scenarios) whose merged changes require the workflow to update or create docs",
     "surface": "pull_request",
     "required_tools": {
-      "context": [
-        "read_file",
-        "list_directory",
-        "git_status",
-        "git_diff",
-        "file_exists"
-      ],
-      "research": [
-        "read_file",
-        "git_status",
-        "git_log",
-        "git_diff",
-        "code_search",
-        "file_exists"
-      ],
-      "impact": [
-        "semantic_search",
-        "keyword_search",
-        "hybrid_search",
-        "code_search",
-        "ImpactAnalysis"
-      ]
+      "context": ["read_file", "list_directory", "git_status", "git_diff", "file_exists"],
+      "research": ["read_file", "git_status", "git_log", "git_diff", "code_search", "file_exists"],
+      "impact": ["semantic_search", "keyword_search", "hybrid_search", "code_search", "ImpactAnalysis"]
     },
     "cases": [
       {

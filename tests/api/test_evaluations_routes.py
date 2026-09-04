@@ -122,6 +122,30 @@ def test_run_evaluations_uses_worker_with_org_and_run_id() -> None:
     assert captured["name"] == "evaluation.loop"
     assert captured["org_id"] == "org-42"
     assert captured["run_id"]
+    assert captured["live"] is False
+
+
+def test_run_evaluations_worker_forwards_live_flag() -> None:
+    captured: dict = {}
+
+    class FakeWorker:
+        @property
+        def task_runner(self) -> SimpleNamespace:
+            return SimpleNamespace(has_task=lambda name: True)
+
+        async def run_task(self, name: str, **kwargs: Any) -> dict:
+            captured.update(kwargs)
+            return {"status": "completed", "result": {}}
+
+    app = FastAPI()
+    app.include_router(router)
+    app.dependency_overrides[get_verified_token] = lambda: {"org_id": "org-42"}
+    app.state.draftly = SimpleNamespace(worker=FakeWorker())
+
+    resp = TestClient(app).post("/evaluations/run?live=true")
+
+    assert resp.status_code == 200
+    assert captured["live"] is True
 
 
 def test_run_evaluations_fallback_registry_uses_org_and_run_id() -> None:
@@ -146,3 +170,27 @@ def test_run_evaluations_fallback_registry_uses_org_and_run_id() -> None:
     assert resp.status_code == 200
     assert captured["org_id"] == "org-42"
     assert captured["run_id"]
+    assert captured["live"] is False
+
+
+def test_run_evaluations_fallback_forwards_live_flag() -> None:
+    captured: dict = {}
+
+    async def fake_loop(context, **kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(run_id=kwargs.get("run_id", ""), status="completed")
+
+    app = FastAPI()
+    app.include_router(router)
+    app.dependency_overrides[get_verified_token] = lambda: {"org_id": "org-42"}
+    app.state.draftly = SimpleNamespace(
+        worker=None,
+        workflows=SimpleNamespace(
+            registry=SimpleNamespace(get=lambda name: fake_loop),
+            context=None,
+        ),
+    )
+    resp = TestClient(app).post("/evaluations/run?live=true")
+
+    assert resp.status_code == 200
+    assert captured["live"] is True

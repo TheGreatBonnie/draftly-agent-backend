@@ -6,6 +6,8 @@ EvaluatorNode so CI and the runtime gate measure the same thing.
 
 from __future__ import annotations
 
+from typing import Any
+
 from strands_evals.evaluators.evaluator import Evaluator
 from strands_evals.types import EvaluationData, EvaluationOutput
 
@@ -21,7 +23,7 @@ class DocumentationQualityEvaluator(Evaluator):
     """
 
     def __init__(self, *, name: str | None = None) -> None:
-        self.name = name or "documentation_quality"
+        super().__init__(name=name or "documentation_quality")
 
     def evaluate(self, evaluation_case: EvaluationData) -> list[EvaluationOutput]:
         metadata = getattr(evaluation_case, "metadata", None) or {}
@@ -37,3 +39,18 @@ class DocumentationQualityEvaluator(Evaluator):
                 label=self.name,
             )
         ]
+
+
+def build_documentation_quality_evaluator(
+    model: Any = None,
+    *,
+    name: str | None = None,
+) -> DocumentationQualityEvaluator:
+    """Build a ``DocumentationQualityEvaluator``.
+
+    Accepts an optional ``model`` (ignored) so it conforms to the common
+    ``build_*_evaluator(model=...)`` signature shared by the other
+    evaluators. Doc quality is deterministic and does not require a model.
+    """
+    del model  # deterministic — no LLM judge needed
+    return DocumentationQualityEvaluator(name=name)

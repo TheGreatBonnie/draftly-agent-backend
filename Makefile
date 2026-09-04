@@ -4,7 +4,8 @@ help:
 	@echo "Draftly - Available targets:"
 	@echo "  sync         Install dependencies with uv"
 	@echo "  run          Run the API server (main.py)"
-	@echo "  worker-%     Run a worker (event, workflow, indexing, evaluation)"
+	@echo "  worker-rq    Run the unified RQ worker (workflow, indexing, evaluation queues)"
+	@echo "  worker-event Run the event worker (API under uvicorn)"
 	@echo "  test         Run offline tests"
 	@echo "  test-live    Run live integration tests (requires DRAFTLY_LIVE=1)"
 	@echo "  lint         Run ruff check"
@@ -24,14 +25,10 @@ run:
 worker-event:
 	python -m workers.event_worker
 
-worker-workflow:
-	python -m workers.workflow_worker
-
-worker-indexing:
-	python -m workers.indexing_worker
-
-worker-evaluation:
-	python -m workers.evaluation_worker
+# The unified RQ worker replaces the former workflow, indexing, and
+# evaluation worker entrypoints (see workers/rq_worker.py).
+worker-rq:
+	python -m workers.rq_worker
 
 test:
 	uv run pytest -q

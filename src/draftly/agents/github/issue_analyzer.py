@@ -5,8 +5,9 @@ from __future__ import annotations
 from typing import Any
 
 from strands import Agent
+from strands.vended_plugins.skills import AgentSkills
 
-from draftly.agents.prompts import ISSUE_ANALYZER_PROMPT, build_prompt
+from draftly.agents.prompts import ISSUE_ANALYZER_PROMPT, build_prompt, load_skills
 from draftly.agents.schemas import ImpactAnalysis
 
 
@@ -26,5 +27,13 @@ def build_issue_analyzer(
         model=model,
         tools=tools or [],
         structured_output_model=ImpactAnalysis,
+        plugins=[
+            AgentSkills(
+                skills=load_skills(
+                    "github-issue-analysis",
+                    "documentation-gap-detection",
+                )
+            )
+        ],
         description="Analyzes GitHub issues for documentation gaps.",
     )

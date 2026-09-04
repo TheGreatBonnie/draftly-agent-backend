@@ -11,6 +11,7 @@ from draftly.evaluation import FailureAnalyzer, StrandsEvalsRunner
 from draftly.evaluation.evaluators import (
     Contains,
     DocumentationQualityEvaluator,
+    build_documentation_quality_evaluator,
 )
 from draftly.evaluation.store import DatabaseEvaluationDataStore
 
@@ -85,6 +86,14 @@ class TestStrandsEvalsRunner:
         assert len(outputs) == 1
         assert outputs[0].test_pass is True
         assert outputs[0].score > 0.5
+
+    def test_documentation_quality_factory_matches_live_signature(self) -> None:
+        # Regression: build_live_evaluators imports
+        # build_documentation_quality_evaluator(model=judge_model). This would
+        # have thrown ImportError and aborted every live run.
+        evaluator = build_documentation_quality_evaluator(model=object())
+        assert isinstance(evaluator, DocumentationQualityEvaluator)
+        assert evaluator.name == "documentation_quality"
 
 
 class TestFailureAnalyzer:

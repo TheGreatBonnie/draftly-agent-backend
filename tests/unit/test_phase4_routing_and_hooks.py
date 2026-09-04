@@ -93,9 +93,20 @@ class TestNeedsRevisionOf:
         assert to_update(failed_update_state) is True
         assert to_create(failed_update_state) is False
 
-    def test_no_route_when_evaluation_passed(self) -> None:
-        check = needs_revision_of("update")
-        assert check(self._state(True, "update")) is False
+    def test_answer_revision_routes_only_when_answer_ran(self) -> None:
+        """A failed answer must be routed back to answer (not update/create),
+        so answer-type runs revise instead of dead-ending before delivery."""
+        to_answer = needs_revision_of("answer")
+
+        failed_answer_state = self._state(False, "answer")
+        assert to_answer(failed_answer_state) is True
+        # The scoped factory must not route to update/create for an answer run.
+        assert needs_revision_of("update")(failed_answer_state) is False
+        assert needs_revision_of("create")(failed_answer_state) is False
+
+    def test_answer_revision_not_triggered_when_evaluation_passed(self) -> None:
+        check = needs_revision_of("answer")
+        assert check(self._state(True, "answer")) is False
 
     def test_defensive_when_evaluate_absent(self) -> None:
         state = GraphState()

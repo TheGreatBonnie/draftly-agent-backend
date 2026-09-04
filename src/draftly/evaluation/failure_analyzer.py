@@ -9,6 +9,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+import structlog
+
+logger = structlog.get_logger(__name__)
+
 CATEGORY_KEYWORDS: dict[str, tuple[str, ...]] = {
     "grounding": ("evidence", "citation", "source", "grounded", "unsupported"),
     "completeness": ("incomplete", "missing", "omits", "omitted", "partial"),
@@ -56,4 +60,10 @@ class FailureAnalyzer:
                     "score": failure.get("score"),
                 }
             )
+        logger.debug(
+            "failure_analyzer_analyze",
+            total_failures=analysis.total_failures,
+            categories=analysis.categories,
+            dominant=analysis.dominant_category(),
+        )
         return analysis

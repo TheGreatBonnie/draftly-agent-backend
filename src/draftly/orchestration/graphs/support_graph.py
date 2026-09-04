@@ -157,6 +157,7 @@ def build_support_graph(
     builder.add_edge("update", "evaluate", condition=generated)
     builder.add_edge("create", "evaluate", condition=generated)
 
+    builder.add_edge("evaluate", "answer", condition=needs_revision_of("answer"))
     builder.add_edge("evaluate", "update", condition=needs_revision_of("update"))
     builder.add_edge("evaluate", "create", condition=needs_revision_of("create"))
 

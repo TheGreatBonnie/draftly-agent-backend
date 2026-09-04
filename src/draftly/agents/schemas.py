@@ -43,8 +43,8 @@ class DocChangePlan(BaseModel):
     repository: str = ""
     branch: str = ""
     files: list[dict[str, Any]] = Field(
-        default_factory=list,
-        description="[{path, content, action: create|update}]",
+        min_length=1,
+        description="[{path, content, action: create|update}] - at least one file is required",
     )
     commit_message: str = ""
     summary: str = ""

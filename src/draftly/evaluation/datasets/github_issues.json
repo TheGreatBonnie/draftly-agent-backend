@@ -1,26 +1,54 @@
-{
-  "name": "github_issues",
-  "description": "Golden cases for GitHub issue responses (plan §8.2)",
-  "cases": [
-    {
-      "name": "migration-lock-timeout",
-      "input": "Schema change hangs with a lock timeout on large tables.",
-      "expected_output": "Use the online schema change path; large backfills must set a higher statement timeout.",
-      "metadata": {
-        "evidence": [
-          {"id": "docs/schema-changes", "topic": "migrations", "url": "https://example.com/docs/schema-changes"}
-        ]
-      }
+[
+  {
+    "name": "github_issues",
+    "description": "Golden error-symptom cases derived from the authly codebase (docs/reference/errors.md + troubleshoot-errors.md)",
+    "surface": "issue",
+    "required_tools": {
+      "context": [
+        "semantic_search",
+        "keyword_search",
+        "hybrid_search"
+      ],
+      "research": [
+        "semantic_search",
+        "code_search",
+        "keyword_search",
+        "file_exists"
+      ],
+      "impact": [
+        "semantic_search",
+        "keyword_search",
+        "code_search",
+        "ImpactAnalysis"
+      ]
     },
-    {
-      "name": "pagination-blank-page",
-      "input": "Keyset pagination returns an empty page after the first fetch.",
-      "expected_output": "Order by the same unique key used for the cursor; mixed orderings break keyset pagination.",
-      "metadata": {
-        "evidence": [
-          {"id": "docs/pagination", "topic": "pagination", "url": "https://example.com/docs/pagination"}
-        ]
+    "cases": [
+      {
+        "name": "authorization-error-permission-check",
+        "input": "Calling permissions.check() raises AuthorizationError: user 'usr_123' lacks permission 'documents:write'.",
+        "expected_output": "None of the roles assigned to the user contains the requested permission string; permission names must match exactly, so assign a missing role or extend an existing one after inspecting permissions.list_for_user().",
+        "metadata": {
+          "surface": "issue",
+          "evidence": [
+            {
+              "id": "docs/how-to/troubleshoot-errors",
+              "topic": "permissions",
+              "url": "authly/docs/how-to/troubleshoot-errors.md"
+            },
+            {
+              "id": "docs/how-to/check-permissions",
+              "topic": "permissions",
+              "url": "authly/docs/how-to/check-permissions.md"
+            }
+          ],
+          "expected_tools": [
+            "keyword_search"
+          ],
+          "repo_dir": "/Applications/Projects/hackathon/draftly-docs-engineer/authly",
+          "repository": "TheGreatBonnie/authly",
+          "org_id": "org_3IfMDevV4Tg8DLD8Ljc0GG6c2GJ"
+        }
       }
-    }
-  ]
-}
+    ]
+  }
+]
