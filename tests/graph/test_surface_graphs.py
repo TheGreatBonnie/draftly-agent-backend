@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from strands.multiagent.base import Status
 
 from draftly.integrations.strands.graph import build_graph_for_run
@@ -120,6 +122,69 @@ async def test_evaluation_graph_runs_deterministic_experiments() -> None:
     assert summary["total"] >= 1
     assert summary["passed"] == summary["total"]
     assert summary["passed_all"] is True
+
+
+async def test_slack_surface_builds_support_graph(model, tools, tmp_sessions) -> None:
+    """Slack-sourced cases must route to the support graph, not the
+    documentation graph: the support graph has a ``triage`` node and NO
+    ``changelog`` node, so a support case never authors a changelog entry."""
+    graph = build_graph_for_run(
+        "slack-1",
+        surface="slack",
+        tools_registry=tools,
+        model=model,
+        storage_dir=tmp_sessions,
+    )
+
+    assert "triage" in graph.nodes
+    assert "changelog" not in graph.nodes
+
+
+async def test_discord_surface_builds_support_graph(model, tools, tmp_sessions) -> None:
+    graph = build_graph_for_run(
+        "discord-1",
+        surface="discord",
+        tools_registry=tools,
+        model=model,
+        storage_dir=tmp_sessions,
+    )
+
+    assert "triage" in graph.nodes
+    assert "changelog" not in graph.nodes
+
+
+@pytest.mark.parametrize(
+    ("surface", "present", "absent"),
+    [
+        ("pull_request", ["changelog"], ["triage"]),
+        ("release", ["changelog"], ["triage"]),
+        ("issue", [], ["changelog", "triage"]),
+        ("support", ["triage"], ["changelog"]),
+        ("slack", ["triage"], ["changelog"]),
+        ("discord", ["triage"], ["changelog"]),
+    ],
+    ids=lambda value: ",".join(value) if isinstance(value, list) else value,
+)
+async def test_evaluation_surface_routes_to_expected_graph(
+    surface, present, absent, model, tools, tmp_sessions
+) -> None:
+    """Lock in the evaluation routing table: every evaluation surface must
+    build the graph its cases actually claim. Doc surfaces (pull_request,
+    release) author a changelog and never run triage; the support surfaces
+    (support/slack/discord) run triage and never author a changelog; issue
+    runs neither. Mirrors _BUILDERS in draftly.integrations.strands.graph."""
+    graph = build_graph_for_run(
+        f"route-{surface}",
+        surface=surface,
+        tools_registry=tools,
+        model=model,
+        storage_dir=tmp_sessions,
+    )
+
+    for node in present:
+        assert node in graph.nodes, f"{surface} graph missing {node!r}"
+    for node in absent:
+        assert node not in graph.nodes, f"{surface} graph should not contain {node!r}"
 
 
 async def test_merged_pr_with_review_policy_always_interrupts_before_delivery(

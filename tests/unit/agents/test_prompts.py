@@ -170,6 +170,40 @@ class TestGuardrailsPresent:
         assert "if they appear verbatim" in flat
 
 
+class TestImpactPromptGrounding:
+    def test_doc_impact_prompt_requires_search_before_verdict(self) -> None:
+        """The documentation impact node must run at least one retrieval search
+        before choosing an action so it satisfies the required-tools contract
+        (node:impact evaluator) instead of reading/deciding straight away."""
+        flat = " ".join(IMPACT_PROMPT.split())
+
+        assert "at least one" in flat
+        assert "semantic or keyword" in flat
+        assert "semantic_search" in flat
+        assert "keyword_search" in flat
+
+    def test_issue_analyzer_prompt_requires_search_before_verdict(self) -> None:
+        flat = " ".join(ISSUE_ANALYZER_PROMPT.split())
+
+        assert "at least one" in flat
+        assert "semantic or keyword" in flat
+        assert "semantic_search" in flat
+        assert "keyword_search" in flat
+
+    def test_research_prompt_requires_grounding_search(self) -> None:
+        """RESEARCH_PROMPT is shared by the support impact node (solution
+        researcher) and the issue researcher; it must demand a search before
+        reporting so the impact node satisfies the required-tools contract
+        instead of skipping tool-grounding when context already gathered."""
+        flat = " ".join(RESEARCH_PROMPT.split())
+
+        assert "at least one" in flat
+        assert "semantic or keyword" in flat
+        assert "semantic_search" in flat
+        assert "keyword_search" in flat
+        assert "code_search" in flat
+
+
 class TestIssueLocalResearcherPrompt:
     def test_local_researcher_requires_grounding_search(self) -> None:
         """The issue research node's local researcher must demand at least one

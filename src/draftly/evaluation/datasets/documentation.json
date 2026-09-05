@@ -72,7 +72,9 @@
             }
           ],
           "expected_tools": ["read_file"],
-          "expected_action": "update"
+          "expected_action": "update",
+          "review_policy": "always",
+          "expected_gate": "interrupt"
         }
       }
     ]

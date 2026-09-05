@@ -133,3 +133,36 @@ def test_report_rows_surfaces_swallowed_task_errors() -> None:
             "expected_tools",
             "node:context:semantic_search",
         ]
+
+
+def test_report_rows_carries_threshold() -> None:
+    """Report rows expose the pass/fail threshold actually applied per case.
+
+    ``expected_contains`` thresholds come from the case's
+    ``metadata.expected_contains_threshold`` override, falling back to the
+    evaluator default (0.6). Binary/tool metrics have no numeric threshold.
+    """
+    from strands_evals.types.evaluation_report import EvaluationReport
+
+    report = EvaluationReport(
+        overall_score=0.0,
+        scores=[0.9, 0.4, 0.5],
+        test_passes=[True, False, True],
+        cases=[
+            {
+                "name": "support-q",
+                "evaluator": "expected_contains",
+                "metadata": {"expected_contains_threshold": 0.45},
+            },
+            {"name": "docs-pr", "evaluator": "expected_contains"},
+            {"name": "tool-check", "evaluator": "expected_tools"},
+        ],
+        reasons=["", "below", ""],
+    )
+
+    from draftly.evaluation.runner import report_rows
+
+    rows = report_rows("support", report)
+    assert rows[0]["threshold"] == 0.45
+    assert rows[1]["threshold"] == 0.6
+    assert rows[2]["threshold"] is None

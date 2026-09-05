@@ -170,7 +170,7 @@ def test_extract_trajectories_maps_nodes_to_tools() -> None:
 
     trajectories = extract_trajectories(graph)
 
-    assert list(trajectories) == ["context", "research"]
+    assert list(trajectories) == ["context", "research", "answer"]
     assert trajectories["context"] == [
         {
             "name": "semantic_search",
@@ -187,6 +187,7 @@ def test_extract_trajectories_maps_nodes_to_tools() -> None:
             "error_count": 0,
         },
     ]
+    assert trajectories["answer"] == []
     assert flatten_trajectory(trajectories) == [
         "semantic_search",
         "keyword_search",
@@ -194,9 +195,11 @@ def test_extract_trajectories_maps_nodes_to_tools() -> None:
     ]
 
 
-def test_extract_trajectories_skips_nodes_without_tools() -> None:
+def test_extract_trajectories_includes_nodes_without_tools() -> None:
     graph = StubGraphResult([StubNode("answer", [StubAgentResult([])])])
-    assert extract_trajectories(graph) == {}
+    trajectories = extract_trajectories(graph)
+    assert list(trajectories) == ["answer"]
+    assert trajectories["answer"] == []
 
 
 # ---------------------------------------------------------------------------
@@ -289,6 +292,53 @@ def test_extract_authored_content_reads_structured_output() -> None:
     )
 
     assert extract_authored_content(graph) == "PKCE is required."
+
+
+def test_extract_authored_content_includes_changelog() -> None:
+    """Release runs author BOTH docs and a changelog entry; the changelog node's
+    ChangelogEntry.raw_markdown must be part of the scored output so
+    expected_contains/correctness see the 'Changed (Breaking)'/'Added' artifacts
+    (the release run failed expected_contains at 33% because only the migration
+    docs were extracted)."""
+    from draftly.agents.schemas import ChangelogEntry, DocChangePlan
+
+    plan = DocChangePlan(
+        repository="TheGreatBonnie/authly",
+        branch="release-v2.0.0",
+        files=[
+            {
+                "path": "docs/how-to/rbac.md",
+                "content": "RBAC guide content.",
+                "action": "create",
+            }
+        ],
+        commit_message="docs: add RBAC guide",
+        summary="create rbac guide",
+    )
+    changelog = ChangelogEntry(
+        version="v2.0.0",
+        date="2026-09-05",
+        entries=[
+            {"category": "Changed", "text": "BREAKING: Removed API key authentication"},
+            {"category": "Added", "text": "RBAC with organization scoping"},
+        ],
+        raw_markdown=(
+            "## [v2.0.0] - 2026-09-05\n\n"
+            "### Changed (Breaking)\n- Removed API key authentication\n\n"
+            "### Added\n- RBAC with organization scoping"
+        ),
+    )
+    graph = StubGraphResult(
+        [
+            StubNode("create", [StubAgentResult([], structured_output=plan)]),
+            StubNode("changelog", [StubAgentResult([], structured_output=changelog)]),
+        ]
+    )
+
+    text = extract_authored_content(graph)
+    assert "RBAC guide content." in text
+    assert "Changed (Breaking)" in text
+    assert "### Added" in text
 
 
 def test_doc_change_plan_requires_at_least_one_file() -> None:
@@ -566,6 +616,50 @@ def test_dataset_required_tools_drive_node_metrics() -> None:
     assert miss.score == 0.0
 
 
+def test_node_tool_called_empty_requirements_still_require_node_to_run() -> None:
+    """Workflows that declare triage with NO required tools (support/slack/discord)
+    must still fail when the node never ran — a misrouted graph (e.g. a support
+    case running the docs graph) would otherwise pass node:triage trivially."""
+    ran = NodeToolCalled("triage", [], name="node:triage").evaluate(
+        SimpleNamespace(actual_interactions=[{"node_name": "triage", "tools": []}])
+    )[0]
+    assert ran.test_pass is True
+    assert ran.score == 1.0
+
+    never_ran = NodeToolCalled("triage", [], name="node:triage").evaluate(
+        SimpleNamespace(
+            actual_interactions=[
+                {"node_name": "context", "tools": ["semantic_search"]},
+                {"node_name": "impact", "tools": ["ImpactAnalysis"]},
+            ]
+        )
+    )[0]
+    assert never_ran.test_pass is False
+    assert never_ran.score == 0.0
+    assert "triage" in never_ran.reason
+
+
+def test_zero_tool_node_appears_in_actual_interactions() -> None:
+    """A node that executes without calling tools (answer, triage) must still
+    surface in actual_interactions with tools: [] so empty-requirement
+    NodeToolCalled checks can see it participated."""
+    graph = StubGraphResult(
+        [
+            StubNode("impact", [StubAgentResult(["ImpactAnalysis"])]),
+            StubNode("triage", [StubAgentResult([])]),
+        ]
+    )
+    trajectories = extract_trajectories(graph)
+    interactions = [
+        {"node_name": node_id, "tools": [call["name"] for call in calls]}
+        for node_id, calls in trajectories.items()
+    ]
+    assert interactions == [
+        {"node_name": "impact", "tools": ["ImpactAnalysis"]},
+        {"node_name": "triage", "tools": []},
+    ]
+
+
 # ---------------------------------------------------------------------------
 # build_online_task with a fake Strands client
 # ---------------------------------------------------------------------------
@@ -600,7 +694,10 @@ async def test_build_online_task_invokes_client_and_extracts() -> None:
 
     assert result["output"] == "expected answer"
     assert result["trajectory"] == ["semantic_search"]
-    assert result["interactions"] == [{"node_name": "context", "tools": ["semantic_search"]}]
+    assert result["interactions"] == [
+        {"node_name": "context", "tools": ["semantic_search"]},
+        {"node_name": "answer", "tools": []},
+    ]
     assert client.calls[0]["surface"] == "pull_request"
     # Evaluation must override the docs graph's 180s per-node default so live
     # worktree runs get a node ceiling matching the harness intent (600s).
@@ -909,6 +1006,263 @@ async def test_build_online_task_env_state_grounds_support_surface() -> None:
     assert "AuthorizationError" in joined
 
 
+def test_build_event_discord_carries_source_and_grounding() -> None:
+    """The discord event must surface source="discord", event_type="discord.message",
+    and the same repo grounding as the support surface."""
+
+    case = _case(
+        "discord-auth-error",
+        "How do I fix AuthorizationError on permissions.check()?",
+        "Permission names are case-sensitive",
+        {
+            "surface": "discord",
+            "source": "discord",
+            "repository": "TheGreatBonnie/authly",
+            "repo_dir": str(Path(__file__).resolve().parents[3] / "authly"),
+            "evidence": [
+                {
+                    "id": "docs/how-to/troubleshoot-errors",
+                    "url": "authly/docs/how-to/troubleshoot-errors.md",
+                }
+            ],
+        },
+    )
+
+    ev = build_event(case, "discord")
+    assert ev["event_type"] == "discord.message"
+    assert ev["source"] == "discord"
+    assert ev["question"] == "How do I fix AuthorizationError on permissions.check()?"
+    support_payload = ev.get("support") or {}
+    assert support_payload.get("repo_dir")
+    assert support_payload.get("evidence")
+    assert any(
+        "troubleshoot-errors" in str(d)
+        for d in support_payload.get("related_docs", [])
+    )
+    assert ev.get("repository") == "TheGreatBonnie/authly"
+
+
+def test_build_event_slack_carries_source_and_grounding() -> None:
+    """The slack event must surface source="slack", event_type="slack.message",
+    and the same repo grounding as the support surface."""
+
+    case = _case(
+        "slack-auth-error",
+        "How do I fix AuthorizationError on permissions.check()?",
+        "Permission names are case-sensitive",
+        {
+            "surface": "slack",
+            "source": "slack",
+            "repository": "TheGreatBonnie/authly",
+            "repo_dir": str(Path(__file__).resolve().parents[3] / "authly"),
+            "evidence": [
+                {
+                    "id": "docs/how-to/troubleshoot-errors",
+                    "url": "authly/docs/how-to/troubleshoot-errors.md",
+                }
+            ],
+        },
+    )
+
+    ev = build_event(case, "slack")
+    assert ev["event_type"] == "slack.message"
+    assert ev["source"] == "slack"
+    assert ev["question"] == "How do I fix AuthorizationError on permissions.check()?"
+    support_payload = ev.get("support") or {}
+    assert support_payload.get("repo_dir")
+    assert support_payload.get("evidence")
+    assert any(
+        "troubleshoot-errors" in str(d)
+        for d in support_payload.get("related_docs", [])
+    )
+    assert ev.get("repository") == "TheGreatBonnie/authly"
+
+
+def test_build_event_support_source_from_metadata() -> None:
+    """The support build_event branch must read source from metadata,
+    not hardcode it to 'slack'."""
+
+    discord_case = _case(
+        "q1",
+        "How does OAuth work?",
+        "OAuth uses PKCE",
+        {
+            "surface": "support",
+            "source": "discord",
+        },
+    )
+    slack_case = _case(
+        "q2",
+        "How does OAuth work?",
+        "OAuth uses PKCE",
+        {
+            "surface": "support",
+            "source": "slack",
+        },
+    )
+    default_case = _case(
+        "q3",
+        "How does OAuth work?",
+        "OAuth uses PKCE",
+        {"surface": "support"},
+    )
+
+    assert build_event(discord_case, "support")["source"] == "discord"
+    assert build_event(slack_case, "support")["source"] == "slack"
+    assert build_event(default_case, "support")["source"] == "slack"
+
+
+async def test_build_online_task_env_state_grounds_discord_surface() -> None:
+    """The online task must feed evidence + cited-source content into
+    <ActualEnvironmentState> for the discord surface, mirroring the support path."""
+
+    from draftly.agents.schemas import ImpactAnalysis
+
+    class Client:
+        async def invoke(self, **kwargs):
+            return StubGraphResult(
+                [
+                    StubNode(
+                        "impact",
+                        [
+                            StubAgentResult(
+                                ["ImpactAnalysis"],
+                                structured_output=ImpactAnalysis(
+                                    action="answer",
+                                    evidence=["authly/docs/reference/errors.md"],
+                                ),
+                            )
+                        ],
+                    )
+                ]
+            )
+
+    task = build_online_task(Client())
+    case = _case(
+        "discord-auth-error",
+        "AuthorizationError on permissions.check()",
+        "Permission names are case-sensitive",
+        {
+            "surface": "discord",
+            "source": "discord",
+            "repo_dir": str(Path(__file__).resolve().parents[3] / "authly"),
+            "evidence": [
+                {
+                    "id": "docs/how-to/troubleshoot-errors",
+                    "topic": "authentication",
+                    "url": "authly/docs/how-to/troubleshoot-errors.md",
+                }
+            ],
+        },
+    )
+
+    result = await task(case)
+    env = result["environment_state"]
+    by_name = {
+        (e["name"] if isinstance(e, dict) else e.name): (
+            e.get("state") if isinstance(e, dict) else e.state
+        )
+        for e in env
+    }
+    assert "repo_dir" in by_name
+    ev = by_name.get("evidence_content")
+    assert isinstance(ev, list) and len(ev) >= 2
+    joined = " ".join(str(chunk) for chunk in ev)
+    assert "AuthorizationError" in joined
+
+
+async def test_build_online_task_env_state_grounds_release_surface() -> None:
+    """Release runs must feed repo_dir/evidence/evidence_content/changed_files
+    into <ActualEnvironmentState> like the issue/support paths, so
+    groundedness/correctness can verify claims against the real source instead
+    of scoring 0.0 (the release run's judges reported no source material)."""
+    from draftly.agents.schemas import ImpactAnalysis
+
+    class Client:
+        async def invoke(self, **kwargs):
+            return StubGraphResult(
+                [
+                    StubNode(
+                        "impact",
+                        [
+                            StubAgentResult(
+                                ["ImpactAnalysis"],
+                                structured_output=ImpactAnalysis(
+                                    action="create",
+                                    evidence=["authly/docs/reference/errors.md"],
+                                ),
+                            )
+                        ],
+                    )
+                ]
+            )
+
+    task = build_online_task(Client())
+    case = _case(
+        "breaking-major-release",
+        "Release v2.0.0: BREAKING - Removed API key authentication",
+        "Changelog entry with Changed (Breaking) and Added sections",
+        {
+            "surface": "release",
+            "event_type": "release.published",
+            "repo_dir": str(Path(__file__).resolve().parents[3] / "authly"),
+            "evidence": [
+                {
+                    "id": "docs/reference/errors",
+                    "topic": "errors",
+                    "url": "authly/docs/reference/errors.md",
+                }
+            ],
+            "changed_files": [
+                {"path": "src/authly/client.py", "change": "deprecated api_key"},
+            ],
+            "tag_name": "v2.0.0",
+        },
+    )
+
+    result = await task(case)
+    env = result["environment_state"]
+    by_name = {
+        (e["name"] if isinstance(e, dict) else e.name): (
+            e.get("state") if isinstance(e, dict) else e.state
+        )
+        for e in env
+    }
+    assert "repo_dir" in by_name
+    assert "changed_files" in by_name
+    ev = by_name.get("evidence_content")
+    assert isinstance(ev, list) and len(ev) >= 1
+    joined = " ".join(str(chunk) for chunk in ev)
+    assert "AuthorizationError" in joined
+
+
+def test_discord_dataset_matches_live_shape() -> None:
+    """discord.json must be a list-wrapped dataset with surface=discord,
+    one case, and relaxed threshold matching the support surface."""
+    path = (
+        Path(__file__).resolve().parents[2]
+        / "src"
+        / "draftly"
+        / "evaluation"
+        / "datasets"
+        / "discord.json"
+    )
+    data = json.loads(path.read_text())
+    assert isinstance(data, list) and len(data) == 1, "discord.json must be a 1-element list"
+    ds = data[0]
+    assert ds["surface"] == "discord"
+    assert "required_tools" in ds
+    cases = ds["cases"]
+    assert len(cases) == 1, "discord.json must cover exactly one case"
+    for c in cases:
+        meta = c["metadata"]
+        assert meta.get("expected_contains_threshold") == 0.45
+        assert meta.get("surface") == "discord"
+        assert meta.get("source") == "discord"
+        assert str(meta.get("repo_dir", "")).endswith("authly")
+        assert meta.get("repository")
+
+
 def test_support_dataset_matches_live_shape() -> None:
     """The live CLI iterates datasets as a list; each entry must be a dict with
     a single case carrying repo metadata + a relaxed threshold like the
@@ -934,6 +1288,40 @@ def test_support_dataset_matches_live_shape() -> None:
     assert meta.get("repository")
 
 
+def test_release_scenario_ground_truth_matches_v2_0_0_release_notes() -> None:
+    """The breaking-major-release scenario must reflect the v2.0.0 state its
+    release notes describe so judges can verify authored claims against the
+    checkout: api_key removed (scoped_token required), OAuth authorization-code
+    exchange present, and RBAC organization scoping implemented."""
+    scenario = (
+        Path(__file__).resolve().parents[3]
+        / "authly-scenarios"
+        / "003-api-key-deprecation"
+    )
+    assert scenario.is_dir(), scenario
+
+    client_src = (scenario / "src" / "authly" / "client.py").read_text()
+    assert "api_key" not in client_src
+    assert "scoped_token is required" in client_src
+    assert "DeprecationWarning" not in client_src
+
+    init_src = (scenario / "src" / "authly" / "__init__.py").read_text()
+    assert '__version__ = "2.0.0"' in init_src
+
+    oauth_src = (scenario / "src" / "authly" / "oauth.py").read_text()
+    assert "def exchange_code" in oauth_src
+
+    for src in ("roles.py", "permissions.py"):
+        module = (scenario / "src" / "authly" / src).read_text()
+        assert "organization_id" in module, src
+
+    model_doc = (
+        scenario / "docs" / "explanation" / "authorization-model.md"
+    ).read_text()
+    assert "no effect on authorization" not in model_doc
+    assert "organization-scoped" in model_doc
+
+
 def test_expected_contains_checks_each_case_own_output() -> None:
     evaluator = ExpectedContains()
 
@@ -950,6 +1338,20 @@ def test_expected_contains_checks_each_case_own_output() -> None:
     )[0]
     assert miss.test_pass is False
     assert miss.score == 0.0
+
+
+def test_judge_rubrics_do_not_penalize_hitl_interrupt() -> None:
+    """Interrupted runs (ReviewGate review_policy=always) are a designed
+    suspension before final delivery; the groundedness/correctness judges must
+    not treat the STATUS.INTERRUPTED / deliver_ran=False signal as a tooling
+    failure (the release run scored both metrics 0.0 for a clean interrupt)."""
+    from draftly.evaluation.evaluators.correctness import CORRECTNESS_RUBRIC
+    from draftly.evaluation.evaluators.groundedness import GROUNDEDNESS_RUBRIC
+
+    for rubric in (GROUNDEDNESS_RUBRIC, CORRECTNESS_RUBRIC):
+        assert "INTERRUPTED" in rubric
+        assert "human review" in rubric
+        assert "deliver_ran" in rubric
 
 
 def test_expected_contains_respects_case_threshold() -> None:
@@ -1123,3 +1525,232 @@ async def test_build_online_task_reconciles_expected_action_from_worktree(
     await task(case)
 
     assert case.metadata["expected_action"] == "update"
+
+
+# ---------------------------------------------------------------------------
+# Feedback loop evaluators (P1)
+# ---------------------------------------------------------------------------
+
+
+def _feedback_env_state(
+    *,
+    gap_count: int = 0,
+    prioritized_gaps: list[dict] | None = None,
+) -> list[dict]:
+    return [
+        {
+            "name": "feedback",
+            "state": {
+                "gap_count": gap_count,
+                "prioritized_gaps": prioritized_gaps or [],
+            },
+        }
+    ]
+
+
+def _feedback_case(
+    name: str,
+    expected_gaps: list[dict] | None = None,
+    expected_gap_count: int | None = None,
+    expect_no_gaps: bool = False,
+    env_state: list[dict] | None = None,
+) -> SimpleNamespace:
+    metadata: dict = {"surface": "feedback"}
+    if expected_gaps is not None:
+        metadata["expected_gaps"] = expected_gaps
+    if expected_gap_count is not None:
+        metadata["expected_gap_count"] = expected_gap_count
+    if expect_no_gaps:
+        metadata["expect_no_gaps"] = True
+    return SimpleNamespace(
+        metadata=metadata,
+        actual_output="",
+        actual_environment_state=env_state or _feedback_env_state(),
+    )
+
+
+# -- ExpectedGapDetected --
+
+
+def test_expected_gap_detected_passes_when_all_topics_found() -> None:
+    from draftly.evaluation.runner import ExpectedGapDetected
+
+    case = _feedback_case(
+        "g1",
+        expected_gaps=[{"topic": "oauth"}, {"topic": "rbac"}],
+        env_state=_feedback_env_state(
+            gap_count=2,
+            prioritized_gaps=[{"topic": "oauth"}, {"topic": "rbac"}],
+        ),
+    )
+    case.actual_output = "gaps: oauth, rbac"
+    evaluator = ExpectedGapDetected()
+    result = evaluator.evaluate(case)[0]
+    assert result.test_pass is True
+    assert result.score == 1.0
+
+
+def test_expected_gap_detected_fails_when_topic_missing() -> None:
+    from draftly.evaluation.runner import ExpectedGapDetected
+
+    case = _feedback_case(
+        "g2",
+        expected_gaps=[{"topic": "oauth"}, {"topic": "rbac"}],
+        env_state=_feedback_env_state(
+            gap_count=1,
+            prioritized_gaps=[{"topic": "oauth"}],
+        ),
+    )
+    case.actual_output = "gaps: oauth"
+    evaluator = ExpectedGapDetected()
+    result = evaluator.evaluate(case)[0]
+    assert result.test_pass is False
+    assert result.score == 0.5
+
+
+def test_expected_gap_detected_skips_when_no_expected_gaps() -> None:
+    from draftly.evaluation.runner import ExpectedGapDetected
+
+    case = _feedback_case("g3")
+    evaluator = ExpectedGapDetected()
+    result = evaluator.evaluate(case)[0]
+    assert result.test_pass is True
+    assert result.score == 1.0
+
+
+# -- ExpectedGapCount --
+
+
+def test_expected_gap_count_passes_when_match() -> None:
+    from draftly.evaluation.runner import ExpectedGapCount
+
+    case = _feedback_case(
+        "c1",
+        expected_gap_count=2,
+        env_state=_feedback_env_state(gap_count=2),
+    )
+    evaluator = ExpectedGapCount()
+    result = evaluator.evaluate(case)[0]
+    assert result.test_pass is True
+
+
+def test_expected_gap_count_fails_when_mismatch() -> None:
+    from draftly.evaluation.runner import ExpectedGapCount
+
+    case = _feedback_case(
+        "c2",
+        expected_gap_count=3,
+        env_state=_feedback_env_state(gap_count=1),
+    )
+    evaluator = ExpectedGapCount()
+    result = evaluator.evaluate(case)[0]
+    assert result.test_pass is False
+    assert result.score == 0.0
+
+
+def test_expected_gap_count_skips_when_not_declared() -> None:
+    from draftly.evaluation.runner import ExpectedGapCount
+
+    case = _feedback_case("c3")
+    evaluator = ExpectedGapCount()
+    result = evaluator.evaluate(case)[0]
+    assert result.test_pass is True
+
+
+# -- NoFalsePositiveGap --
+
+
+def test_no_false_positive_gap_passes_when_zero_gaps() -> None:
+    from draftly.evaluation.runner import NoFalsePositiveGap
+
+    case = _feedback_case(
+        "fp1",
+        expect_no_gaps=True,
+        env_state=_feedback_env_state(gap_count=0),
+    )
+    evaluator = NoFalsePositiveGap()
+    result = evaluator.evaluate(case)[0]
+    assert result.test_pass is True
+
+
+def test_no_false_positive_gap_fails_when_gaps_detected() -> None:
+    from draftly.evaluation.runner import NoFalsePositiveGap
+
+    case = _feedback_case(
+        "fp2",
+        expect_no_gaps=True,
+        env_state=_feedback_env_state(gap_count=2),
+    )
+    evaluator = NoFalsePositiveGap()
+    result = evaluator.evaluate(case)[0]
+    assert result.test_pass is False
+    assert result.score == 0.0
+
+
+def test_no_false_positive_gap_skips_when_not_declared() -> None:
+    from draftly.evaluation.runner import NoFalsePositiveGap
+
+    case = _feedback_case("fp3")
+    evaluator = NoFalsePositiveGap()
+    result = evaluator.evaluate(case)[0]
+    assert result.test_pass is True
+
+
+# -- build_live_evaluators wiring for feedback --
+
+
+def test_build_live_evaluators_wires_feedback_evaluators() -> None:
+    from draftly.evaluation.runner import build_live_evaluators
+
+    cases = [
+        _feedback_case(
+            "fb1",
+            expected_gaps=[{"topic": "oauth"}],
+            expected_gap_count=1,
+            expect_no_gaps=False,
+        )
+    ]
+    evaluators = build_live_evaluators(cases)
+    names = [e.name for e in evaluators]
+    assert "expected_gap_detected" in names
+    assert "expected_gap_count" in names
+    assert "no_false_positive_gap" in names
+
+
+def test_build_live_evaluators_skips_feedback_when_not_present() -> None:
+    from draftly.evaluation.runner import build_live_evaluators
+
+    cases = [
+        SimpleNamespace(
+            metadata={"surface": "support"},
+        )
+    ]
+    evaluators = build_live_evaluators(cases)
+    names = [e.name for e in evaluators]
+    assert "expected_gap_detected" not in names
+    assert "expected_gap_count" not in names
+    assert "no_false_positive_gap" not in names
+
+
+# -- Feedback dataset shape --
+
+
+def test_feedback_dataset_matches_live_shape() -> None:
+    path = (
+        Path(__file__).resolve().parents[2]
+        / "src"
+        / "draftly"
+        / "evaluation"
+        / "datasets"
+        / "feedback.json"
+    )
+    data = json.loads(path.read_text())
+    assert isinstance(data, list) and len(data) == 1, "feedback.json must be a 1-element list"
+    ds = data[0]
+    assert ds["surface"] == "feedback"
+    cases = ds["cases"]
+    assert len(cases) == 3, "feedback.json must cover exactly three cases"
+    for c in cases:
+        meta = c["metadata"]
+        assert meta.get("surface") == "feedback"
+        assert "gap_threshold" in meta

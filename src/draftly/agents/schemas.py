@@ -50,6 +50,23 @@ class DocChangePlan(BaseModel):
     summary: str = ""
 
 
+class ChangelogEntry(BaseModel):
+    """A changelog entry for a single release version."""
+
+    version: str = Field(description="Version tag, e.g. v2.0.0")
+    date: str = Field(description="ISO 8601 date, e.g. 2026-09-04")
+    entries: list[dict[str, str]] = Field(
+        default_factory=list,
+        description=(
+            "[{category, text}] - category is "
+            "Added/Changed/Deprecated/Removed/Fixed/Security"
+        ),
+    )
+    raw_markdown: str = Field(
+        description="The complete markdown section to prepend to CHANGELOG.md",
+    )
+
+
 class AnswerDraft(BaseModel):
     """A candidate answer for the support/issue surface."""
 

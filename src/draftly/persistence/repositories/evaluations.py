@@ -26,11 +26,15 @@ class EvaluationRepository:
         org_id: str,
         evaluation_type: str,
         run_id: str | None = None,
+        case_id: str | None = None,
+        target_type: str | None = None,
         target_id: str | None = None,
         score: float,
+        passed: bool = False,
         status: str,
         metrics: dict[str, Any],
         failures: list[dict[str, Any]],
+        trace_id: str | None = None,
         started_at: datetime,
         completed_at: datetime,
     ) -> dict[str, Any]:
@@ -38,11 +42,15 @@ class EvaluationRepository:
             org_id=org_id,
             evaluation_type=evaluation_type,
             run_id=run_id,
+            case_id=case_id,
+            target_type=target_type,
             target_id=target_id,
             score=score,
+            passed=passed,
             status=status,
             metrics=metrics,
             failures=failures,
+            trace_id=trace_id,
             started_at=started_at,
             completed_at=completed_at,
         )
@@ -115,8 +123,9 @@ class EvaluationRepository:
             for index, error in enumerate(errors)
         ]
         # Granular per-(case, metric) rows so the evaluations row carries accurate
-        # evaluation detail (score/test_pass/reason) rather than only the coarse
-        # totals. Fall back to the coarse summary numbers when no detail is present.
+        # evaluation detail (score/test_pass/reason/threshold) rather than only the
+        # coarse totals. Fall back to the coarse summary numbers when no detail
+        # is present.
         granular = []
         for row in rows:
             granular.append(
@@ -124,6 +133,7 @@ class EvaluationRepository:
                     "dataset": row.get("dataset", ""),
                     "case": row.get("case", ""),
                     "metric": row.get("metric", ""),
+                    "threshold": row.get("threshold"),
                     "score": float(row.get("score") or 0.0),
                     "test_pass": bool(row.get("test_pass")),
                     "reason": str(row.get("reason") or ""),
@@ -136,16 +146,26 @@ class EvaluationRepository:
             "granular": granular,
         }
 
+        # Run-level summary row. Populate the columns the schema defines for a
+        # run: ``passed`` reflects whether every case passed (the old code never
+        # set it, so the NOT NULL DEFAULT false left every row — even 100%
+        # runs — looking failed), ``target_type`` carries the surface kind, and
+        # ``trace_id`` is the workflow's run id (no separate tracing system
+        # exists yet, so the run id is the correlation token).
+        record = None
         try:
-            return await self.create(
+            record = await self.create(
                 org_id=org_id,
                 evaluation_type=etype,
                 run_id=run_id,
                 target_id=None,
                 score=score,
+                passed=passed_all and total > 0,
                 status=status,
                 metrics=metrics,
                 failures=failures,
+                target_type=etype,
+                trace_id=run_id,
                 started_at=started_at,
                 completed_at=completed_at,
             )
@@ -154,6 +174,8 @@ class EvaluationRepository:
 
             get_logger(__name__).exception("evaluation_save_summary_failed")
             return None
+
+        return record
 
     async def get(
         self,

@@ -47,7 +47,9 @@
           ],
           "repo_dir": "/Applications/Projects/hackathon/draftly-docs-engineer/authly",
           "repository": "TheGreatBonnie/authly",
-          "org_id": "org_3IfMDevV4Tg8DLD8Ljc0GG6c2GJ"
+          "org_id": "org_3IfMDevV4Tg8DLD8Ljc0GG6c2GJ",
+          "review_policy": "always",
+          "expected_gate": "interrupt"
         }
       }
     ]

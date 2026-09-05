@@ -1,12 +1,37 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any, cast
 
 import asyncpg
+
+
+async def _register_json_codecs(conn: asyncpg.Connection) -> None:
+    """Register ``json``/``jsonb`` decoders for a connection.
+
+    asyncpg's default ``jsonb`` codec decodes the column to a raw JSON *string*
+    unless a decoder is registered via ``set_type_codec``. JSONB columns such
+    as ``evaluations.metrics``/``evaluations.failures`` would then surface to
+    consumers as JSON text instead of dict/list objects, which is why the
+    evaluation detail page saw empty metrics. Registering ``json.loads`` as the
+    decoder (``format="text"``) turns the wire value back into containers so
+    all JSONB consumers receive objects.
+
+    Passed to ``asyncpg.create_pool(init=...)`` so every pooled connection runs
+    it on acquire.
+    """
+    for typename in ("jsonb", "json"):
+        await conn.set_type_codec(
+            typename,
+            encoder=json.dumps,
+            decoder=json.loads,
+            schema="pg_catalog",
+            format="text",
+        )
 
 
 class DatabaseClient:
@@ -49,6 +74,7 @@ class DatabaseClient:
                 min_size=self.pool_min_size,
                 max_size=self.pool_max_size,
                 command_timeout=self.command_timeout,
+                init=_register_json_codecs,
             )
 
     async def close(self) -> None:

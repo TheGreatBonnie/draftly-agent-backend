@@ -18,6 +18,7 @@ RECOGNIZED_SURFACES = (
     "issues",
     "slack",
     "discord",
+    "release",
 )
 
 
@@ -131,3 +132,37 @@ def all_dependencies_complete(required: list[str]):
         )
 
     return check
+
+
+def none_and_release(state: GraphState) -> bool:
+    """Impact chose 'none' but the event is a release — still need a changelog."""
+    if "impact" not in state.results:
+        return False
+    data = safe_node_data(state, "impact")
+    if data is None or data.get("action") != "none":
+        return False
+    task_data = json.loads(state.task) if isinstance(state.task, str) else {}
+    return task_data.get("event_type", "").startswith("release")
+
+
+def generated_changelog(state: GraphState) -> bool:
+    """The changelog node has produced output."""
+    return "changelog" in state.results
+
+
+def changelog_needs_revision(state: GraphState) -> bool:
+    """Changelog evaluator ran and the output did not pass."""
+    if "changelog_evaluate" not in state.results:
+        return False
+    data = safe_node_data(state, "changelog_evaluate")
+    if data is None or data["passed"]:
+        return False
+    return "changelog" in state.results
+
+
+def changelog_eval_passed(state: GraphState) -> bool:
+    """Changelog evaluator ran and the output passed."""
+    if "changelog_evaluate" not in state.results:
+        return False
+    data = safe_node_data(state, "changelog_evaluate")
+    return data is not None and data["passed"]

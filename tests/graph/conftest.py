@@ -6,6 +6,7 @@ import pytest
 
 from draftly.agents.schemas import (
     AnswerDraft,
+    ChangelogEntry,
     DeliveryReceipt,
     DocChangePlan,
     EventClassification,
@@ -32,6 +33,13 @@ SUPPORT_TASK = (
     '"project_id": "proj-1", "source": "slack", '
     '"source_message_id": "m-1", "repository": null, '
     '"question": "How do I configure retries?"}'
+)
+
+RELEASE_TASK = (
+    '{"event_id": "r-123", "event_type": "release.published", '
+    '"project_id": "proj-1", "repository": "TheGreatBonnie/authly", "actor": "dev", '
+    '"release": {"tag_name": "v2.0.0", "name": "v2.0.0", "body": "Added OAuth support.", '
+    '"html_url": "https://github.com/TheGreatBonnie/authly/releases/tag/v2.0.0"}}'
 )
 
 
@@ -71,6 +79,12 @@ def stub_model() -> StubModel:
                 "surface": "pull_request",
                 "reference": "https://github/acme/api/pull/8",
                 "status": "completed",
+            },
+            ChangelogEntry: {
+                "version": "v2.0.0",
+                "date": "2026-09-04",
+                "entries": [{"category": "Added", "text": "OAuth support."}],
+                "raw_markdown": "## [v2.0.0] - 2026-09-04\n\n### Added\n- OAuth support.\n",
             },
         }
     )

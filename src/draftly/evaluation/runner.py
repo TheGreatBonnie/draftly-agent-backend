@@ -179,9 +179,11 @@ class StrandsEvalsRunner:
                 evaluation_type=self.evaluation_type,
                 target_id=target_id,
                 score=overall,
-                status="passed" if all(passes) else "failed",
+                passed=all(passes) and len(passes) > 0,
+                status="passed" if passes and all(passes) else "failed",
                 metrics=metrics,
                 failures=failures,
+                target_type=self.evaluation_type or None,
                 started_at=started_at,
                 completed_at=datetime.now(UTC),
             )
@@ -263,11 +265,23 @@ def report_rows(dataset_name: str, report: Any) -> list[dict[str, Any]]:
             if isinstance(case_data, dict)
             else ""
         )
+        threshold: float | None = None
+        if metric == "expected_contains":
+            threshold = ExpectedContains.COVERAGE_THRESHOLD
+            metadata = case_data.get("metadata", {}) if isinstance(case_data, dict) else {}
+            if isinstance(metadata, dict):
+                raw = metadata.get("expected_contains_threshold")
+                if raw is not None:
+                    try:
+                        threshold = float(raw)
+                    except (TypeError, ValueError):
+                        pass
         rows.append(
             {
                 "dataset": dataset_name,
                 "case": str(case_name or ""),
                 "metric": str(metric or ""),
+                "threshold": threshold,
                 "score": float(scores[i] or 0.0) if i < len(scores) else 0.0,
                 "test_pass": bool(passes[i]) if i < len(passes) else False,
                 "reason": str(reasons[i]) if i < len(reasons) else "",
@@ -428,7 +442,10 @@ class ExpectedDelivered(Evaluator[InputT, OutputT]):
     """Cross-case evaluator: authoring runs must produce a delivery receipt.
 
     Cases with ``metadata.expected_action`` of ``update``/``create`` must reach
-    the deliver node; others pass trivially.
+    the deliver node; others pass trivially. Exception: cases with
+    ``metadata.expected_gate == "interrupt"`` pass unconditionally, since the
+    review gate halts the graph before delivery and ``ExpectedInterrupt``
+    asserts that halt — requiring a receipt would contradict it.
     """
 
     def __init__(self, name: str | None = None):
@@ -443,6 +460,17 @@ class ExpectedDelivered(Evaluator[InputT, OutputT]):
                     score=1.0,
                     test_pass=True,
                     reason="case is not an authoring case; delivery not required",
+                )
+            ]
+        if metadata.get("expected_gate") == "interrupt":
+            # The review gate halts the graph before the deliver node, so no
+            # delivery receipt can exist by design; ExpectedInterrupt asserts
+            # the halt. Requiring one here would contradict that evaluator.
+            return [
+                EvaluationOutput(
+                    score=1.0,
+                    test_pass=True,
+                    reason="delivery suspended for human review; asserted by expected_interrupt",
                 )
             ]
         delivery = ""
@@ -496,17 +524,28 @@ class NodeToolCalled(Evaluator[InputT, OutputT]):
         self.tools = list(tools)
 
     def evaluate(self, evaluation_case: EvaluationData[InputT, OutputT]) -> list[EvaluationOutput]:
-        # Empty tool list means no tool requirements — trivially passes
+        interactions = getattr(evaluation_case, "actual_interactions", None) or []
+
+        # Empty tool list still asserts the node RAN. Support workflows declare
+        # ``triage: []`` (no required tools — triage may answer from context
+        # alone), but the check must not pass trivially: a misrouted case (e.g.
+        # a support case running the docs graph) has no triage node and should
+        # fail ``node:triage`` instead of hiding the routing bug.
         if not self.tools:
+            found = any(it.get("node_name") == self.node_name for it in interactions)
             return [
                 EvaluationOutput(
-                    score=1.0,
-                    test_pass=True,
-                    reason=f"node '{self.node_name}' has no tool requirements; trivially passes",
+                    score=1.0 if found else 0.0,
+                    test_pass=found,
+                    reason=(
+                        f"node '{self.node_name}' executed during the run"
+                        if found
+                        else f"node '{self.node_name}' has no tool requirements but never "
+                        "ran; expected it in actual_interactions"
+                    ),
                 )
             ]
 
-        interactions = getattr(evaluation_case, "actual_interactions", None) or []
         node_tools = next(
             (it.get("tools", []) for it in interactions if self.node_name == it.get("node_name")),
             [],
@@ -521,6 +560,270 @@ class NodeToolCalled(Evaluator[InputT, OutputT]):
                     f"node '{self.node_name}' used any of {self.tools}: "
                     f"called {called} ({'pass' if found else 'none found'})"
                 ),
+            )
+        ]
+
+
+class ExpectedInterrupt(Evaluator[InputT, OutputT]):
+    """Deterministic evaluator: the review gate must have interrupted before delivery.
+
+    For cases with ``metadata.expected_gate == "interrupt"`` (e.g.
+    ``review_policy="always"`` with an authoring change), the graph must halt
+    with ``Status.INTERRUPTED`` before the ``deliver`` node runs. The
+    evaluator reads the gate signals emitted by ``build_online_task`` via
+    ``actual_environment_state``.
+
+    Cases without ``expected_gate`` or with a non-``"interrupt"`` value pass
+    trivially.
+    """
+
+    def __init__(self, name: str | None = None):
+        super().__init__(name=name or "expected_interrupt")
+
+    def evaluate(self, evaluation_case: EvaluationData[InputT, OutputT]) -> list[EvaluationOutput]:
+        metadata = getattr(evaluation_case, "metadata", None) or {}
+        expected_gate = str(metadata.get("expected_gate", "") or "")
+        if expected_gate != "interrupt":
+            return [
+                EvaluationOutput(
+                    score=1.0,
+                    test_pass=True,
+                    reason="no expected_gate='interrupt' declared; skipped",
+                )
+            ]
+
+        gate = self._read_gate(evaluation_case)
+        if gate is None:
+            return [
+                EvaluationOutput(
+                    score=0.0,
+                    test_pass=False,
+                    reason="no 'gate' entry in environment_state",
+                )
+            ]
+
+        result_status = gate.get("result_status", "")
+        deliver_ran = gate.get("deliver_ran", False)
+        interrupt_ids = gate.get("interrupt_ids", [])
+
+        interrupted = "INTERRUPTED" in result_status
+        no_deliver = not deliver_ran
+        has_interrupt = bool(interrupt_ids)
+
+        passed = interrupted and no_deliver and has_interrupt
+        return [
+            EvaluationOutput(
+                score=1.0 if passed else 0.0,
+                test_pass=passed,
+                reason=(
+                    "graph halted before delivery with interrupt stored"
+                    if passed
+                    else (
+                        f"expected interrupt: status={result_status}, "
+                        f"deliver_ran={deliver_ran}, interrupt_ids={interrupt_ids}"
+                    )
+                ),
+            )
+        ]
+
+    @staticmethod
+    def _read_gate(evaluation_case: EvaluationData[InputT, OutputT]) -> dict | None:
+        env_state = getattr(evaluation_case, "actual_environment_state", None)
+        if env_state is None:
+            return None
+        entries = env_state if isinstance(env_state, list) else []
+        for entry in entries:
+            is_dict = isinstance(entry, dict)
+            name = entry.get("name") if is_dict else getattr(entry, "name", None)
+            if name != "gate":
+                continue
+            state = entry.get("state") if is_dict else getattr(entry, "state", None)
+            if isinstance(state, dict):
+                return state
+        return None
+
+
+class ExpectedPassthrough(Evaluator[InputT, OutputT]):
+    """Deterministic evaluator: the review gate must NOT have interrupted.
+
+    For cases with ``metadata.expected_gate == "passthrough"`` (e.g.
+    ``review_policy="never"`` or ``"risky"`` + low-risk change), the graph
+    must complete normally and reach the ``deliver`` node.
+
+    Cases without ``expected_gate`` or with a non-``"passthrough"`` value pass
+    trivially.
+    """
+
+    def __init__(self, name: str | None = None):
+        super().__init__(name=name or "expected_passthrough")
+
+    def evaluate(self, evaluation_case: EvaluationData[InputT, OutputT]) -> list[EvaluationOutput]:
+        metadata = getattr(evaluation_case, "metadata", None) or {}
+        expected_gate = str(metadata.get("expected_gate", "") or "")
+        if expected_gate != "passthrough":
+            return [
+                EvaluationOutput(
+                    score=1.0,
+                    test_pass=True,
+                    reason="no expected_gate='passthrough' declared; skipped",
+                )
+            ]
+
+        gate = self._read_gate(evaluation_case)
+        if gate is None:
+            return [
+                EvaluationOutput(
+                    score=0.0,
+                    test_pass=False,
+                    reason="no 'gate' entry in environment_state",
+                )
+            ]
+
+        result_status = gate.get("result_status", "")
+        deliver_ran = gate.get("deliver_ran", False)
+
+        completed = "COMPLETED" in result_status
+        passed = completed and deliver_ran
+        return [
+            EvaluationOutput(
+                score=1.0 if passed else 0.0,
+                test_pass=passed,
+                reason=(
+                    "graph completed with delivery receipt"
+                    if passed
+                    else (
+                        f"expected passthrough: status={result_status}, "
+                        f"deliver_ran={deliver_ran}"
+                    )
+                ),
+            )
+        ]
+
+    @staticmethod
+    def _read_gate(evaluation_case: EvaluationData[InputT, OutputT]) -> dict | None:
+        env_state = getattr(evaluation_case, "actual_environment_state", None)
+        if env_state is None:
+            return None
+        entries = env_state if isinstance(env_state, list) else []
+        for entry in entries:
+            is_dict = isinstance(entry, dict)
+            name = entry.get("name") if is_dict else getattr(entry, "name", None)
+            if name != "gate":
+                continue
+            state = entry.get("state") if is_dict else getattr(entry, "state", None)
+            if isinstance(state, dict):
+                return state
+        return None
+
+
+class ExpectedGapDetected(Evaluator[InputT, OutputT]):
+    """Cross-case evaluator: expected gap topics must appear in the output.
+
+    Reads ``metadata.expected_gaps`` (list of ``{topic}``) and checks whether
+    each topic string appears in the output text.  Cases without
+    ``expected_gaps`` pass trivially.
+    """
+
+    def __init__(self, name: str | None = None):
+        super().__init__(name=name or "expected_gap_detected")
+
+    def evaluate(self, evaluation_case: EvaluationData[InputT, OutputT]) -> list[EvaluationOutput]:
+        metadata = getattr(evaluation_case, "metadata", None) or {}
+        expected = metadata.get("expected_gaps") or []
+        if not expected:
+            return [EvaluationOutput(score=1.0, test_pass=True, reason="no expected_gaps")]
+
+        output = str(getattr(evaluation_case, "actual_output", "") or "").lower()
+        detected = [g for g in expected if g.get("topic", "").lower() in output]
+        score = len(detected) / len(expected) if expected else 1.0
+        passed = score == 1.0
+        return [
+            EvaluationOutput(
+                score=score,
+                test_pass=passed,
+                reason=f"{len(detected)}/{len(expected)} gap topics detected",
+            )
+        ]
+
+
+class ExpectedGapCount(Evaluator[InputT, OutputT]):
+    """Cross-case evaluator: number of detected gaps matches expected count.
+
+    Reads ``metadata.expected_gap_count`` and checks the ``feedback`` entry
+    in ``actual_environment_state`` for ``gap_count``.  Cases without
+    ``expected_gap_count`` pass trivially.
+    """
+
+    def __init__(self, name: str | None = None):
+        super().__init__(name=name or "expected_gap_count")
+
+    @staticmethod
+    def _read_feedback(evaluation_case: EvaluationData[InputT, OutputT]) -> dict | None:
+        env_state = getattr(evaluation_case, "actual_environment_state", None)
+        if env_state is None:
+            return None
+        entries = env_state if isinstance(env_state, list) else []
+        for entry in entries:
+            is_dict = isinstance(entry, dict)
+            name = entry.get("name") if is_dict else getattr(entry, "name", None)
+            if name != "feedback":
+                continue
+            state = entry.get("state") if is_dict else getattr(entry, "state", None)
+            if isinstance(state, dict):
+                return state
+        return None
+
+    def evaluate(self, evaluation_case: EvaluationData[InputT, OutputT]) -> list[EvaluationOutput]:
+        metadata = getattr(evaluation_case, "metadata", None) or {}
+        expected_count = metadata.get("expected_gap_count")
+        if expected_count is None:
+            return [EvaluationOutput(score=1.0, test_pass=True, reason="no expected_gap_count")]
+
+        gate = self._read_feedback(evaluation_case)
+        actual_count = gate.get("gap_count", 0) if gate else 0
+        passed = actual_count == expected_count
+        return [
+            EvaluationOutput(
+                score=1.0 if passed else 0.0,
+                test_pass=passed,
+                reason=f"expected {expected_count} gaps, got {actual_count}",
+            )
+        ]
+
+
+class NoFalsePositiveGap(Evaluator[InputT, OutputT]):
+    """Cross-case evaluator: when ``metadata.expect_no_gaps`` is true, output
+    must have zero gaps.
+
+    Used for scattered-unrelated-questions cases where the threshold should
+    prevent any gap from being detected.
+    """
+
+    def __init__(self, name: str | None = None):
+        super().__init__(name=name or "no_false_positive_gap")
+
+    def evaluate(self, evaluation_case: EvaluationData[InputT, OutputT]) -> list[EvaluationOutput]:
+        metadata = getattr(evaluation_case, "metadata", None) or {}
+        if not metadata.get("expect_no_gaps"):
+            return [EvaluationOutput(score=1.0, test_pass=True, reason="not a no-gaps case")]
+
+        env_state = getattr(evaluation_case, "actual_environment_state", None) or []
+        entries = env_state if isinstance(env_state, list) else []
+        gap_count = 0
+        for entry in entries:
+            is_dict = isinstance(entry, dict)
+            name = entry.get("name") if is_dict else getattr(entry, "name", None)
+            if name == "feedback":
+                state = entry.get("state") if is_dict else getattr(entry, "state", None)
+                if isinstance(state, dict):
+                    gap_count = state.get("gap_count", 0)
+                break
+        passed = gap_count == 0
+        return [
+            EvaluationOutput(
+                score=1.0 if passed else 0.0,
+                test_pass=passed,
+                reason=f"expected 0 gaps, got {gap_count}",
             )
         ]
 
@@ -561,6 +864,29 @@ def build_live_evaluators(
         evaluators.append(ExpectedAuthoringAction())
         evaluators.append(ExpectedDelivered())
             # Could add TrajectoryEvaluator for full ordered match when judge_model available
+
+    # HITL review gate evaluators: expected_gate interrupt/passthrough
+    if any(
+        isinstance(case.metadata, dict) and case.metadata.get("expected_gate")
+        for case in cases
+    ):
+        evaluators.append(ExpectedInterrupt())
+        evaluators.append(ExpectedPassthrough())
+
+    # Feedback loop gap evaluators: expected_gaps, expected_gap_count,
+    # expect_no_gaps — deterministic structural checks on gap detection.
+    if any(
+        isinstance(case.metadata, dict)
+        and (
+            case.metadata.get("expected_gaps")
+            or case.metadata.get("expected_gap_count") is not None
+            or case.metadata.get("expect_no_gaps")
+        )
+        for case in cases
+    ):
+        evaluators.append(ExpectedGapDetected())
+        evaluators.append(ExpectedGapCount())
+        evaluators.append(NoFalsePositiveGap())
 
     # Surface-level required tools per node (NodeToolCalled): one evaluator per
     # node asserting the node called at least one of its listed grounding tools.
@@ -710,7 +1036,12 @@ __all__ = [
     "ExpectedAuthoringAction",
     "ExpectedContains",
     "ExpectedDelivered",
+    "ExpectedGapCount",
+    "ExpectedGapDetected",
+    "ExpectedInterrupt",
+    "ExpectedPassthrough",
     "ExpectedToolCalled",
+    "NoFalsePositiveGap",
     "NodeToolCalled",
     "run_dataset_sync",
     "run_dataset_live",

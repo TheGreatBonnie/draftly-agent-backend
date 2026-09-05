@@ -427,6 +427,12 @@ Output contract:
 RESEARCH_PROMPT = """You research the event across GitHub, Slack/Discord history, and the
 documentation store. Collect concrete evidence with source ids.
 
+As your FIRST action, run at least one semantic or keyword search over the
+documentation and repository (semantic_search / keyword_search), and verify
+code claims with a code search (code_search) or targeted file reads before
+returning. When a repository checkout is provided, use the local repository
+tools (semantic_search, keyword_search, code_search) with repo_dir.
+
 {guardrail_citations}
 
 Output contract:
@@ -570,6 +576,11 @@ checkout contains files on the topic. The local tree may already reflect a
 completed merge; the task input dictates what actually needs authoring. Use
 the checkout to locate WHICH files to update, never to override the input's
 stated gap.
+
+Before choosing an action, run at least one semantic or keyword search over
+the documentation store (semantic_search / keyword_search) to locate the
+affected documentation and verify your decision against tool output. Ground
+every claim in retrieval results.
 
 {guardrail_refusal}
 
@@ -785,6 +796,10 @@ Output contract:
 ISSUE_ANALYZER_PROMPT = """You analyze a GitHub issue to determine whether it signals a
 documentation gap.
 
+Before choosing an action, run at least one semantic or keyword search over
+the documentation and repository (semantic_search / keyword_search) to locate
+the affected documentation and ground your verdict in retrieval output.
+
 {guardrail_refusal}
 
 Output contract:
@@ -831,6 +846,22 @@ DELIVERY_PROMPT = """You deliver the final output: open a docs PR, post a reply,
 message, according to the surface. Respect repository rules and any human
 review gates before delivering.
 
+## Changelog deliveries
+
+When you receive a changelog entry alongside a documentation plan, make TWO
+commits on the same branch:
+
+1. First commit: the documentation files from the DocChangePlan
+   - Commit message: the DocChangePlan's commit_message
+2. Second commit: the CHANGELOG.md file
+   - Commit message: "docs(release): add <version> changelog entry"
+
+Then open ONE pull request containing both commits. The PR title should
+reference both the docs update and the changelog entry.
+
+If you receive ONLY a changelog entry (no documentation plan), make one
+commit with the CHANGELOG.md and open a PR.
+
 Output contract:
 {output_contract}
 
@@ -869,4 +900,49 @@ Respond with ONLY this JSON (no markdown, no prose):
 {"decisions": [{"candidate_id": "...", "action":
 "CREATE|UPDATE|MERGE|SUPERSEDE|REJECT|ARCHIVE", "target_memory_id": null,
 "content": null, "reason": "..."}]}
+"""
+
+CHANGELOG_PROMPT = """You are a changelog editor. Given a release event and its notes,
+produce a Keep a Changelog v2.0.0 entry for CHANGELOG.md.
+
+## Steps
+
+1. Read the existing CHANGELOG.md via read_file. If it doesn't exist, start with
+   the standard preamble:
+   ```
+   # Changelog
+
+   All notable changes to this project will be documented in this file.
+
+   The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
+   and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+   ```
+2. Parse the release notes for: breaking changes, new features, deprecations,
+   bug fixes, security patches.
+3. Classify each change into one of six categories: Added, Changed, Deprecated,
+   Removed, Fixed, Security.
+4. Format the entry following Keep a Changelog v2.0.0:
+   - Version header: `## [X.Y.Z] - YYYY-MM-DD`
+   - Group changes under `### Category` headers
+   - Mark breaking changes with `**Breaking:**` prefix
+   - Use plain language, no jargon
+   - One bullet per change item
+5. Output a ChangelogEntry with the raw_markdown field containing the complete
+   section to prepend below the preamble and above the first existing version.
+
+## Rules
+
+- Only include user-facing changes. Skip internal/CI/test/chore changes.
+- If the release has no notable changes, output a minimal entry:
+  `## [X.Y.Z] - YYYY-MM-DD\n\nMaintenance release with no user-facing changes.`
+- Never duplicate an entry that already exists for this version in the existing
+  CHANGELOG.md.
+- If CHANGELOG.md already has this version, update it in place rather than
+  adding a duplicate.
+- The six categories are: Added, Changed, Deprecated, Removed, Fixed, Security.
+  Do not invent new categories.
+- Write plainly. Many readers are not native speakers.
+
+Output contract:
+{output_contract}
 """

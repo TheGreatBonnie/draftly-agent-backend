@@ -1,0 +1,45 @@
+[
+  {
+    "name": "discord",
+    "description": "Discord support parity: same graph as Slack, different event source. Tests that the evaluation harness correctly routes discord-sourced questions through the support surface.",
+    "surface": "discord",
+    "required_tools": {
+      "context": ["semantic_search", "keyword_search", "hybrid_search"],
+      "research": ["keyword_search", "code_search"],
+      "triage": [],
+      "impact": ["semantic_search", "keyword_search", "code_search"]
+    },
+    "cases": [
+      {
+        "name": "discord-mention-question",
+        "input": "What is the difference between authly.permissions.check() and authly.roles.assign()? When should I use each?",
+        "expected_output": "permissions.check() validates whether a user has a specific permission — it is a read-only assertion that raises AuthorizationError if denied. roles.assign() grants a role to a user, which changes their permission set. Use check() to gate access in your application logic; use assign() to manage role membership (e.g. during onboarding or admin actions).",
+        "metadata": {
+          "surface": "discord",
+          "source": "discord",
+          "event_type": "discord.message",
+          "expected_contains_threshold": 0.45,
+          "repo_dir": "/Applications/Projects/hackathon/draftly-docs-engineer/authly",
+          "repository": "TheGreatBonnie/authly",
+          "evidence": [
+            {
+              "id": "docs/how-to/check-permissions",
+              "topic": "permissions",
+              "url": "authly/docs/how-to/check-permissions.md",
+              "excerpt": "authly.permissions.check(user_id=user.id, permission='documents:write') raises AuthorizationError if not allowed."
+            },
+            {
+              "id": "docs/how-to/create-assign-roles",
+              "topic": "roles",
+              "url": "authly/docs/how-to/create-assign-roles.md",
+              "excerpt": "authly.roles.assign(user_id=user.id, role_id=role.id) assigns the role to a user so that permission checks pass; assignments are stored as a set of user IDs on the role."
+            }
+          ],
+          "expected_tools": ["keyword_search"],
+          "review_policy": "always",
+          "expected_gate": "interrupt"
+        }
+      }
+    ]
+  }
+]

@@ -141,6 +141,7 @@ async def test_save_run_summary_persists_granular_rows():
             "dataset": "documentation",
             "case": "oauth-auth",
             "metric": "expected_tools",
+            "threshold": None,
             "score": 1.0,
             "test_pass": True,
             "reason": "tools matched",
@@ -149,6 +150,7 @@ async def test_save_run_summary_persists_granular_rows():
             "dataset": "documentation",
             "case": "oauth-auth",
             "metric": "expected_contains",
+            "threshold": None,
             "score": 0.0,
             "test_pass": False,
             "reason": "not found",
@@ -194,6 +196,100 @@ async def test_save_run_summary_empty_run_failed_and_zero_score():
     inserted = store.inserted[0]
     assert inserted["status"] == "failed"
     assert inserted["score"] == 0.0
+
+
+async def test_save_run_summary_populates_passed_target_type_and_trace_id():
+    store = FakeStore()
+    repo = EvaluationRepository(store=store)
+
+    started = datetime(2026, 9, 2, 9, 0, tzinfo=UTC)
+    completed = datetime(2026, 9, 2, 9, 1, tzinfo=UTC)
+    await repo.save_run_summary(
+        summary={"total": 2, "passed": 2, "failed": 0, "passed_all": True, "errors": []},
+        org_id="org-9",
+        run_id="run-1",
+        started_at=started,
+        completed_at=completed,
+        evaluation_type="support",
+    )
+
+    inserted = store.inserted[0]
+    assert inserted["passed"] is True
+    assert inserted["target_type"] == "support"
+    assert inserted["trace_id"] == "run-1"
+
+
+async def test_save_run_summary_writes_summary_row_only():
+    store = FakeStore()
+    repo = EvaluationRepository(store=store)
+
+    started = datetime(2026, 9, 2, 9, 0, tzinfo=UTC)
+    completed = datetime(2026, 9, 2, 9, 1, tzinfo=UTC)
+    await repo.save_run_summary(
+        summary={
+            "total": 2,
+            "passed": 1,
+            "failed": 1,
+            "passed_all": False,
+            "errors": [],
+            "rows": [
+                {
+                    "dataset": "support",
+                    "case": "q1",
+                    "metric": "expected_contains",
+                    "score": 0.9,
+                    "test_pass": True,
+                    "reason": "covered",
+                    "threshold": 0.45,
+                },
+                {
+                    "dataset": "support",
+                    "case": "q2",
+                    "metric": "expected_contains",
+                    "score": 0.2,
+                    "test_pass": False,
+                    "reason": "low coverage",
+                    "threshold": 0.6,
+                },
+            ],
+        },
+        org_id="org-9",
+        run_id="run-1",
+        started_at=started,
+        completed_at=completed,
+        evaluation_type="support",
+    )
+
+    # Only the run-level summary row is stored; the per-(case, metric) detail
+    # is embedded in the summary's metrics.granular instead of fanning out into
+    # one row per result.
+    assert len(store.inserted) == 1
+    row = store.inserted[0]
+    assert row["status"] == "failed"
+    assert row["passed"] is False
+    assert row["target_type"] == "support"
+    assert row["trace_id"] == "run-1"
+    assert row["metrics"]["cases"] == 2
+    assert row["metrics"]["granular"] == [
+        {
+            "dataset": "support",
+            "case": "q1",
+            "metric": "expected_contains",
+            "threshold": 0.45,
+            "score": 0.9,
+            "test_pass": True,
+            "reason": "covered",
+        },
+        {
+            "dataset": "support",
+            "case": "q2",
+            "metric": "expected_contains",
+            "threshold": 0.6,
+            "score": 0.2,
+            "test_pass": False,
+            "reason": "low coverage",
+        },
+    ]
 
 
 async def test_save_run_summary_accepts_surface_evaluation_type():

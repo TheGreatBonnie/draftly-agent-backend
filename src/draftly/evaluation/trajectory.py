@@ -72,7 +72,11 @@ def extract_trajectories(graph_result: Any) -> dict[str, list[ToolCall]]:
     """Map node_id -> tool-usage records from a completed graph result.
 
     Preserves ``execution_order`` so tool calls align with the order nodes
-    actually ran in.
+    actually ran in. Nodes that executed without calling tools are still
+    recorded (with an empty call list) so evaluators can assert that a node
+    *participated* — e.g. support ``triage`` may produce a verdict from the
+    provided context alone, and an empty-requirements ``node:triage`` check
+    must still catch a misrouted graph where triage never ran.
     """
     trajectories: dict[str, list[ToolCall]] = {}
     for node in getattr(graph_result, "execution_order", []) or []:
@@ -80,8 +84,7 @@ def extract_trajectories(graph_result: Any) -> dict[str, list[ToolCall]]:
         if not node_id:
             continue
         calls = node_tool_usage(node)
-        if calls:
-            trajectories[node_id] = calls
+        trajectories[node_id] = calls
     logger.debug(
         "trajectory_extracted",
         nodes=list(trajectories.keys()),

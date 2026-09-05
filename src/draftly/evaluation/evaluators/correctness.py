@@ -19,11 +19,16 @@ CORRECTNESS_RUBRIC = (
     "respect to the requested scope, any provided evidence, and the actual source "
     "context described under <ActualEnvironmentState> — the real PR diff and changed "
     "files for PR runs, or the documentation and evidence content supplied for "
-    "issue/support runs. Flag inaccuracies, wrong code, incorrect API references, or "
-    "misleading guidance. Verify that any named APIs, methods, parameters, and behavior "
-    "in the documentation exist in the provided diff or evidence content before calling "
-    "them inaccurate. Do not require a diff when the run is an issue/support surface "
-    "with no diff. Score 0-1 based on correctness."
+    "issue/support/release runs. Flag inaccuracies, wrong code, incorrect API "
+    "references, or misleading guidance. Verify that any named APIs, methods, "
+    "parameters, and behavior in the documentation exist in the provided diff or "
+    "evidence content before calling them inaccurate. Do not require a diff when the "
+    "run is an issue/support/release surface with no diff. A run whose "
+    "<ActualEnvironmentState> gate reports result_status INTERRUPTED with deliver_ran "
+    "False was paused by the ReviewGate for human review before final delivery — the "
+    "authored documentation under evaluation is still complete, so grade the authored "
+    "documentation rather than the absence of a delivery act and do not penalize "
+    "correctness for the interrupt. Score 0-1 based on correctness."
 )
 
 

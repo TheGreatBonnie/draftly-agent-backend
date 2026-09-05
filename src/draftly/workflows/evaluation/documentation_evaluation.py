@@ -40,6 +40,10 @@ SURFACE_TO_EVALUATION_TYPE = {
     "documentation": "documentation",
     "issue": "github_issue",
     "support": "support",
+    "slack": "support",
+    "discord": "support",
+    "release": "documentation",
+    "feedback": "feedback",
 }
 
 

@@ -27,6 +27,13 @@ _BUILDERS = {
     "pull_request": build_documentation_graph,
     "issue": build_issue_graph,
     "support": build_support_graph,
+    # Slack/Discord are support sources; the eval harness passes the source
+    # surface directly, so resolve them here instead of falling through to the
+    # documentation graph (which would author changelog entries for support
+    # cases). Every other surface — including release — still defaults to the
+    # documentation graph below.
+    "slack": build_support_graph,
+    "discord": build_support_graph,
 }
 
 

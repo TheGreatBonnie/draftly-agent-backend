@@ -5,7 +5,7 @@ from __future__ import annotations
 from strands.multiagent.base import Status
 
 from draftly.integrations.strands.graph import build_graph_for_run
-from tests.graph.conftest import PR_TASK
+from tests.graph.conftest import PR_TASK, RELEASE_TASK
 
 
 async def test_full_pipeline_with_revise_loop(model, tools, tmp_sessions) -> None:
@@ -27,7 +27,8 @@ async def test_full_pipeline_with_revise_loop(model, tools, tmp_sessions) -> Non
     order = [n.node_id for n in result.execution_order]
     assert order[0] == "classify"
     assert order[-1] == "deliver"
-    # revise loop: update and evaluate each ran twice, in sequence
+    # revise loop: update and evaluate each ran twice, in sequence,
+    # then changelog + changelog_evaluate before delivery
     assert order.count("update") == 2
     assert order.count("evaluate") == 2
     assert order[4:] == [
@@ -35,6 +36,8 @@ async def test_full_pipeline_with_revise_loop(model, tools, tmp_sessions) -> Non
         "evaluate",
         "update",
         "evaluate",
+        "changelog",
+        "changelog_evaluate",
         "deliver",
     ]
     # the wrong generation paths never ran
@@ -132,3 +135,66 @@ def test_writer_tools_exclude_mutation_and_delivery(tools) -> None:
     )
     # it still keeps read + git-inspect tools it needs to author accurately
     assert {"read_file", "git_diff", "git_status"} <= names
+
+
+async def test_release_event_includes_changelog_in_order(model, tools, tmp_sessions) -> None:
+    """Release event: classify → context → research → impact → update → evaluate
+    → changelog → changelog_evaluate → deliver."""
+    graph = build_graph_for_run(
+        "e2e-release-1",
+        surface="pull_request",  # releases route to pull_request surface
+        tools_registry=tools,
+        model=model,
+        storage_dir=tmp_sessions,
+    )
+
+    result = await graph.invoke_async(
+        RELEASE_TASK,
+        invocation_state={"run_id": "e2e-release-1", "review_policy": "never"},
+    )
+
+    assert result.status == Status.COMPLETED
+    order = [n.node_id for n in result.execution_order]
+    # changelog and changelog_evaluate must appear after evaluate, before deliver
+    eval_idx = order.index("evaluate")
+    deliver_idx = order.index("deliver")
+    assert "changelog" in order
+    assert "changelog_evaluate" in order
+    changelog_idx = order.index("changelog")
+    changelog_eval_idx = order.index("changelog_evaluate")
+    assert eval_idx < changelog_idx < changelog_eval_idx < deliver_idx
+
+
+async def test_none_action_release_routes_to_changelog(model, tools, tmp_sessions) -> None:
+    """action='none' on a release event skips writer but still runs changelog."""
+    from draftly.agents.schemas import ImpactAnalysis
+
+    model._structured_outputs[ImpactAnalysis] = {
+        "action": "none",
+        "affected_documents": [],
+        "rationale": "maintenance release",
+    }
+
+    graph = build_graph_for_run(
+        "e2e-release-none",
+        surface="pull_request",
+        tools_registry=tools,
+        model=model,
+        storage_dir=tmp_sessions,
+    )
+
+    result = await graph.invoke_async(
+        RELEASE_TASK,
+        invocation_state={"run_id": "e2e-release-none", "review_policy": "never"},
+    )
+
+    assert result.status == Status.COMPLETED
+    order = [n.node_id for n in result.execution_order]
+    assert "impact" in order
+    # No writer nodes
+    for node in ("answer", "update", "create", "evaluate"):
+        assert node not in order
+    # Changelog still runs
+    assert "changelog" in order
+    assert "changelog_evaluate" in order
+    assert "deliver" in order

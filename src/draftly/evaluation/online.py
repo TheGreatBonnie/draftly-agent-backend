@@ -24,6 +24,10 @@ SURFACE_EVENT_TYPES = {
     "pull_request": "pull_request.opened",
     "issue": "issues.opened",
     "support": "slack.message",
+    "slack": "slack.message",
+    "discord": "discord.message",
+    "release": "release.published",
+    "feedback": "feedback",
 }
 
 DEFAULT_PROJECT_ID = "eval-project"
@@ -241,12 +245,14 @@ def build_event(case: Any, surface: str) -> dict[str, Any]:
                 ]
             )
         base["issue"] = issue
-    elif surface == "support":
+    elif surface in ("support", "slack", "discord"):
         # Preserve the top-level support event contract (source / question /
         # source_message_id) consumed by graph tests and the support graph.
+        # Discord cases pass source="discord" via metadata; Slack (default)
+        # passes source="slack".
         base.update(
             {
-                "source": "slack",
+                "source": metadata.get("source", "slack"),
                 "source_message_id": str(uuid.uuid4()),
                 "question": question,
             }
@@ -278,6 +284,32 @@ def build_event(case: Any, surface: str) -> dict[str, Any]:
             )
         if support:
             base["support"] = support
+    elif surface == "release":
+        release = {
+            "tag_name": metadata.get("tag_name", "v0.0.0"),
+            "name": question,
+            "body": question,
+        }
+        repo_dir = metadata.get("repo_dir")
+        if repo_dir:
+            release["repo_dir"] = repo_dir
+        evidence = metadata.get("evidence") or []
+        if evidence:
+            release["evidence"] = list(evidence)
+        changed_paths = metadata.get("changed_files") or []
+        if changed_paths:
+            release["changed_files"] = [
+                f["path"] if isinstance(f, dict) else str(f) for f in changed_paths
+            ]
+        base["release"] = release
+    elif surface == "feedback":
+        # Feedback surface: pass the question list directly as the event
+        # input.  The feedback graph consumes a JSON-encoded question list,
+        # so the online task will re-serialize this for graph invocation.
+        base["questions"] = question
+        gap_threshold = metadata.get("gap_threshold")
+        if gap_threshold is not None:
+            base["gap_threshold"] = gap_threshold
     pull_request = base.get("pull_request")
     merged = False
     changed_files_count = 0
@@ -365,12 +397,15 @@ def _model_dump(value: Any) -> dict | None:
 
 
 def extract_authored_content(graph_result: Any) -> str:
-    """Extract documentation content authored by the ``update``/``create`` writers.
+    """Extract documentation content authored by the ``update``/``create``
+    writers and the release ``changelog`` node.
 
     Writer nodes emit a ``DocChangePlan`` ``structured_output``
-    (``files: [{path, content, action}]``). This returns the joined file
-    contents so evaluation scores the authored documentation rather than an
-    answer message. Returns "" when no writer produced a plan.
+    (``files: [{path, content, action}]``); the changelog node emits a
+    ``ChangelogEntry`` with a ``raw_markdown`` rendering. This returns the
+    joined content so evaluation scores the authored documentation (docs +
+    changelog) rather than an answer message. Returns "" when no authoring
+    node produced content.
     """
     chunks: list[str] = []
     for node_id in ("update", "create"):
@@ -402,6 +437,25 @@ def extract_authored_content(graph_result: Any) -> str:
                 text = str(plan).strip()
                 if text:
                     chunks.append(text)
+    changelog_node = next(
+        (
+            n
+            for n in getattr(graph_result, "execution_order", [])
+            if getattr(n, "node_id", "") == "changelog"
+        ),
+        None,
+    )
+    if changelog_node:
+        for agent_result in node_agent_results(changelog_node):
+            entry = _model_dump(getattr(agent_result, "structured_output", None))
+            if isinstance(entry, dict):
+                md = entry.get("raw_markdown")
+                if isinstance(md, str) and md.strip():
+                    chunks.append(md.strip())
+                    continue
+            text = _structured_text(agent_result) or str(agent_result)
+            if text.strip():
+                chunks.append(text.strip())
     return "\n\n".join(chunks).strip()
 
 
@@ -460,6 +514,60 @@ def build_online_task(client: StrandsClient):
             surface=surface,
         )
 
+        # --- Feedback surface: invoke the deterministic feedback graph
+        # directly (no Strands client, no model, no tools).  The feedback
+        # graph is a pure JSON-in/JSON-out pipeline, so we short-circuit
+        # the normal client.invoke path.
+        if surface == "feedback":
+            from strands_evals.types.evaluation import EnvironmentState
+
+            from draftly.orchestration.graphs.feedback_graph import build_feedback_graph
+
+            questions_input = event.get("questions", "[]")
+            gap_threshold = event.get("gap_threshold", 2)
+            fb_graph = build_feedback_graph(gap_threshold=gap_threshold)
+            if isinstance(questions_input, str):
+                questions_payload = json.dumps({"questions": questions_input})
+            else:
+                questions_payload = json.dumps(questions_input)
+            fb_result = await fb_graph.invoke_async(
+                questions_payload,
+                invocation_state={"run_id": run_id},
+            )
+
+            output_text = extract_output_text(fb_result)
+            prioritized = {}
+            for node in getattr(fb_result, "execution_order", []):
+                if getattr(node, "node_id", "") == "prioritize":
+                    for ar in node_agent_results(node):
+                        prioritized = _model_dump(getattr(ar, "structured_output", None)) or {}
+
+            env_state = [
+                EnvironmentState(
+                    name="feedback",
+                    state={
+                        "gap_count": prioritized.get("total", 0),
+                        "prioritized_gaps": prioritized.get("prioritized_gaps", []),
+                        "output": output_text,
+                    },
+                ),
+            ]
+
+            logger.info(
+                "online_task_complete",
+                case=getattr(case, "name", None),
+                run_id=run_id,
+                surface=surface,
+                output_length=len(output_text),
+                gap_count=prioritized.get("total", 0),
+            )
+            return {
+                "output": output_text,
+                "trajectory": [],
+                "interactions": [],
+                "environment_state": env_state,
+            }
+
         metadata = getattr(case, "metadata", {}) or {}
         invocation_state = {
             "run_id": run_id,
@@ -485,6 +593,18 @@ def build_online_task(client: StrandsClient):
             # exceed that, so raise the node ceiling to match the evaluation
             # harness's intent (600s) instead of silently timing out at 180s.
             node_timeout=600.0,
+        )
+
+        # Extract HITL gate signals before scoring so evaluators can assert
+        # whether the review gate interrupted delivery or let it pass through.
+        result_status = str(getattr(graph_result, "status", "unknown"))
+        had_interrupt = "INTERRUPTED" in result_status
+        interrupt_ids = [
+            getattr(i, "id", "") for i in (getattr(graph_result, "interrupts", None) or [])
+        ]
+        deliver_ran = any(
+            getattr(n, "node_id", "") == "deliver"
+            for n in getattr(graph_result, "execution_order", [])
         )
 
         # Documentation-authoring runs score the writers' DocChangePlan
@@ -518,6 +638,7 @@ def build_online_task(client: StrandsClient):
             tool_calls=len(flat_trajectory),
             nodes=len(interactions),
             delivery=bool(delivery),
+            had_interrupt=had_interrupt,
         )
 
         # Surface the REAL source change to the LLM judges so groundedness and
@@ -547,15 +668,30 @@ def build_online_task(client: StrandsClient):
                     "tool_calls": len(flat_trajectory),
                     "nodes": len(interactions),
                 },
-            )
+            ),
+            EnvironmentState(
+                name="gate",
+                state={
+                    "result_status": result_status,
+                    "had_interrupt": had_interrupt,
+                    "interrupt_ids": interrupt_ids,
+                    "deliver_ran": deliver_ran,
+                },
+            ),
         ]
-        if surface in ("issue", "support"):
+        if surface in ("issue", "support", "slack", "discord", "release"):
             # Carry repo scope + relevant authly doc evidence into
             # <ActualEnvironmentState> so groundedness/correctness/completeness
-            # verify claims against real source instead of an empty env. Issue
-            # and support surfaces both back their cases with a local authly
+            # verify claims against real source instead of an empty env. Issue,
+            # support, and release surfaces all back their cases with a local
             # checkout (repo_dir) and declared evidence docs.
-            surface_payload = issue if surface == "issue" else support
+            surface_payload = (
+                event.get("release")
+                if surface == "release"
+                else issue
+                if surface == "issue"
+                else support
+            )
             repo_dir = surface_payload.get("repo_dir")
             if repo_dir:
                 env_state.append(EnvironmentState(name="repo_dir", state=repo_dir))
@@ -610,6 +746,10 @@ def build_online_task(client: StrandsClient):
             "trajectory": flat_trajectory,
             "interactions": interactions,
             "environment_state": env_state,
+            "result_status": result_status,
+            "had_interrupt": had_interrupt,
+            "interrupt_ids": interrupt_ids,
+            "deliver_ran": deliver_ran,
         }
 
     return task

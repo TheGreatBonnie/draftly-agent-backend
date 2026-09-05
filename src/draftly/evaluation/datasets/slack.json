@@ -1,8 +1,8 @@
 [
   {
-    "name": "support",
-    "description": "Golden support-question cases derived from the authly codebase. Tests error diagnosis, API usage, and version-specific limitations across different documentation sources.",
-    "surface": "support",
+    "name": "slack",
+    "description": "Golden support-question cases derived from the authly codebase, exercised through the Slack event source. Tests error diagnosis, API usage, and version-specific limitations across different documentation sources.",
+    "surface": "slack",
     "required_tools": {
       "context": ["semantic_search", "keyword_search", "hybrid_search"],
       "research": ["keyword_search", "code_search"],
@@ -15,7 +15,9 @@
         "input": "I'm calling permissions.check() and getting AuthorizationError: user 'usr_123' lacks permission 'documents:write'. The user exists and has roles assigned. What's wrong?",
         "expected_output": "The error means none of the roles assigned to the user contain the exact permission string 'documents:write'. Permission names are case-sensitive ('documents:write' ≠ 'documents:Write'). To diagnose: 1) Inspect held permissions via authly.permissions.list_for_user(user_id=user.id), 2) Compare the actual permission strings against 'documents:write', 3) Assign a missing role or extend an existing one with the correct permission. Note: this error also appears for unknown user IDs because they have no assigned roles.",
         "metadata": {
-          "surface": "support",
+          "surface": "slack",
+          "source": "slack",
+          "event_type": "slack.message",
           "expected_contains_threshold": 0.45,
           "evidence": [
             {

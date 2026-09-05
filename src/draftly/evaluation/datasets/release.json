@@ -1,0 +1,73 @@
+[
+  {
+    "name": "release",
+    "description": "Golden release-authoring cases: release.published events whose notes require changelog generation and optionally documentation updates",
+    "surface": "release",
+    "required_tools": {
+      "context": [
+        "read_file",
+        "list_directory",
+        "git_status",
+        "git_diff",
+        "file_exists"
+      ],
+      "research": [
+        "read_file",
+        "git_status",
+        "git_log",
+        "git_diff",
+        "code_search",
+        "file_exists"
+      ],
+      "impact": [
+        "semantic_search",
+        "keyword_search",
+        "hybrid_search",
+        "code_search",
+        "ImpactAnalysis"
+      ]
+    },
+    "cases": [
+      {
+        "name": "breaking-major-release",
+        "input": "Release v2.0.0: BREAKING: Removed API key authentication. Migrate to OAuth. Added RBAC with organization scoping.",
+        "expected_output": "Changelog entry with Changed (Breaking) and Added sections. Migration guide created.",
+        "metadata": {
+          "surface": "release",
+          "event_type": "release.published",
+          "repository": "TheGreatBonnie/authly",
+          "project_id": "proj_demo",
+          "org_id": "org_3IfMDevV4Tg8DLD8Ljc0GG6c2GJ",
+          "repo_dir": "/Applications/Projects/hackathon/draftly-docs-engineer/authly-scenarios/003-api-key-deprecation",
+          "tag_name": "v2.0.0",
+          "changed_files": [
+            {
+              "path": "src/authly/client.py",
+              "change": "removed API key authentication"
+            },
+            {
+              "path": "src/authly/permissions.py",
+              "change": "added RBAC organization scoping"
+            }
+          ],
+          "evidence": [
+            {
+              "id": "docs/how-to/configure-client",
+              "topic": "authentication",
+              "url": "docs/how-to/configure-client.md"
+            },
+            {
+              "id": "docs/explanation/authorization-model",
+              "topic": "rbac",
+              "url": "docs/explanation/authorization-model.md"
+            }
+          ],
+          "expected_tools": ["read_file"],
+          "expected_action": "create",
+          "review_policy": "always",
+          "expected_gate": "interrupt"
+        }
+      }
+    ]
+  }
+]

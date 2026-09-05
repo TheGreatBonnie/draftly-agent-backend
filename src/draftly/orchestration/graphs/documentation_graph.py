@@ -35,10 +35,14 @@ from draftly.orchestration.hooks.audit import RunAuditLogger
 from draftly.orchestration.hooks.review_gate import ReviewGate
 from draftly.orchestration.nodes.evaluate import EvaluatorNode
 from draftly.orchestration.routing.conditions import (
+    changelog_eval_passed,
+    changelog_needs_revision,
     eval_passed,
     generated,
+    generated_changelog,
     is_valid_surface,
     needs_revision_of,
+    none_and_release,
     route_to_answer,
     route_to_create,
     route_to_update,
@@ -53,7 +57,7 @@ logger = structlog.get_logger(__name__)
 _LOCAL_CODE_SEARCH = [code_search]
 
 DEFAULT_GRAPH_ID = "draftly-main-graph"
-DEFAULT_MAX_NODE_EXECUTIONS = 10
+DEFAULT_MAX_NODE_EXECUTIONS = 15
 DEFAULT_EXECUTION_TIMEOUT = 600.0
 DEFAULT_NODE_TIMEOUT = 180.0
 DEFAULT_EVALUATOR_MAX_ITERATIONS = 2
@@ -123,12 +127,14 @@ def build_documentation_graph(
     """Build the unified Draftly Graph for documentation workflows."""
     # Import agents (factories — one instance per graph node)
     from draftly.agents.documentation.analyzer import build_impact_agent
+    from draftly.agents.documentation.changelog import build_changelog_agent
     from draftly.agents.documentation.context import build_doc_context_agent
     from draftly.agents.documentation.research_swarm import build_doc_research_swarm
     from draftly.agents.documentation.writer import build_writer_agent
     from draftly.agents.shared.classifier import build_classifier
     from draftly.agents.shared.delivery import build_delivery_agent
     from draftly.agents.support.answer_writer import build_answer_writer
+    from draftly.orchestration.nodes.changelog_evaluate import ChangelogEvaluatorNode
 
     reg = tools_registry
 
@@ -189,6 +195,13 @@ def build_documentation_graph(
         _dedupe(reg.github_delivery, reg.slack_post_message, reg.discord_post_message),
         hitl=False,  # the graph-level ReviewGate owns human approval
     )
+    changelog_agent = build_changelog_agent(
+        writer_model,
+        _scope_writer_tools(reg.documentation_engineer, reg.documentation),
+    )
+    changelog_evaluator = ChangelogEvaluatorNode(
+        "changelog_evaluate", max_iterations=evaluator_max_iterations
+    )
 
     builder = GraphBuilder()
     builder.set_graph_id(graph_id)
@@ -236,7 +249,23 @@ def build_documentation_graph(
 
     # Delivery
     builder.add_node(delivery_agent, "deliver")
-    builder.add_edge("evaluate", "deliver", condition=eval_passed)
+
+    # Changelog generation (runs for every release event)
+    builder.add_node(changelog_agent, "changelog")
+    builder.add_node(changelog_evaluator, "changelog_evaluate")
+
+    # Normal path: docs evaluated → changelog → changelog evaluated → deliver
+    builder.add_edge("evaluate", "changelog", condition=eval_passed)
+    builder.add_edge("changelog", "changelog_evaluate", condition=generated_changelog)
+
+    # No-docs release path: impact none + release → changelog (skips writer/evaluate)
+    builder.add_edge("impact", "changelog", condition=none_and_release)
+
+    # Changelog revision loop
+    builder.add_edge("changelog_evaluate", "changelog", condition=changelog_needs_revision)
+
+    # Changelog passes → deliver
+    builder.add_edge("changelog_evaluate", "deliver", condition=changelog_eval_passed)
 
     # Safety rails
     builder.set_max_node_executions(max_node_executions)

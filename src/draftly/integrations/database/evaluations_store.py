@@ -1,9 +1,29 @@
+from __future__ import annotations
+
 import json
 from datetime import datetime
 from typing import Any
 from uuid import UUID, uuid4
 
 from draftly.integrations.database.client import DatabaseClient
+
+
+def _decode_jsonb_column(value: Any) -> Any:
+    """Coerce a JSONB column value to a Python container.
+
+    With the connection-level ``json``/``jsonb`` codec registered (see
+    ``DatabaseClient``) asyncpg hands back dict/list objects directly. This
+    guard is defense-in-depth for any connection/path where the column still
+    arrives as a raw JSON string (asyncpg's default jsonb codec): it parses
+    it so consumers never receive JSON text for semantically-JSONB fields
+    (e.g. ``evaluations.metrics`` / ``evaluations.failures``).
+    """
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except (ValueError, TypeError):
+            return value
+    return value
 
 
 def _normalize_uuid(value: str | UUID | None) -> UUID | None:
@@ -47,11 +67,15 @@ class DatabaseEvaluationsStore:
         org_id: str,
         evaluation_type: str,
         run_id: str | None = None,
+        case_id: str | None = None,
+        target_type: str | None = None,
         target_id: str | None,
         score: float,
+        passed: bool = False,
         status: str,
         metrics: dict[str, Any],
         failures: list[dict[str, Any]],
+        trace_id: str | None = None,
         started_at: datetime,
         completed_at: datetime,
     ) -> dict[str, Any]:
@@ -71,11 +95,15 @@ class DatabaseEvaluationsStore:
                 org_id,
                 evaluation_type,
                 run_id,
+                case_id,
+                target_type,
                 target_id,
                 score,
+                passed,
                 status,
                 metrics,
                 failures,
+                trace_id,
                 started_at,
                 completed_at
             )
@@ -87,21 +115,29 @@ class DatabaseEvaluationsStore:
                 $5,
                 $6,
                 $7,
-                $8::JSONB,
-                $9::JSONB,
+                $8,
+                $9,
                 $10,
-                $11
+                $11::JSONB,
+                $12::JSONB,
+                $13,
+                $14,
+                $15
             )
             RETURNING
                 id,
                 org_id,
                 evaluation_type,
                 run_id,
+                case_id,
+                target_type,
                 target_id,
                 score,
+                passed,
                 status,
                 metrics,
                 failures,
+                trace_id,
                 started_at,
                 completed_at
             """,
@@ -109,11 +145,15 @@ class DatabaseEvaluationsStore:
             org_id,
             evaluation_type,
             run_id,
+            case_id,
+            target_type,
             _normalize_uuid(target_id),
             score,
+            passed,
             status,
             metrics_json,
             failures_json,
+            trace_id,
             started_at,
             completed_at,
         )
@@ -133,11 +173,15 @@ class DatabaseEvaluationsStore:
                 org_id,
                 evaluation_type,
                 run_id,
+                case_id,
+                target_type,
                 target_id,
                 score,
+                passed,
                 status,
                 metrics,
                 failures,
+                trace_id,
                 started_at,
                 completed_at
             FROM evaluations
@@ -164,16 +208,21 @@ class DatabaseEvaluationsStore:
                     org_id,
                     evaluation_type,
                     run_id,
+                    case_id,
+                    target_type,
                     target_id,
                     score,
+                    passed,
                     status,
                     metrics,
                     failures,
+                    trace_id,
                     started_at,
                     completed_at
                 FROM evaluations
                 WHERE org_id = $1
                   AND evaluation_type = $2
+                  AND case_id IS NULL
                 ORDER BY started_at DESC
                 LIMIT $3
                 """,
@@ -189,15 +238,20 @@ class DatabaseEvaluationsStore:
                     org_id,
                     evaluation_type,
                     run_id,
+                    case_id,
+                    target_type,
                     target_id,
                     score,
+                    passed,
                     status,
                     metrics,
                     failures,
+                    trace_id,
                     started_at,
                     completed_at
                 FROM evaluations
                 WHERE org_id = $1
+                  AND case_id IS NULL
                 ORDER BY started_at DESC
                 LIMIT $2
                 """,
@@ -210,18 +264,26 @@ class DatabaseEvaluationsStore:
     @staticmethod
     def _to_dict(row) -> dict[str, Any]:
         if isinstance(row, dict):
-            return dict(row)
+            result = dict(row)
+            for key in ("metrics", "failures"):
+                if key in result:
+                    result[key] = _decode_jsonb_column(result[key])
+            return result
 
         return {
             "id": str(row[0]),
             "org_id": str(row[1]),
             "evaluation_type": row[2],
             "run_id": row[3],
-            "target_id": row[4],
-            "score": row[5],
-            "status": row[6],
-            "metrics": row[7],
-            "failures": row[8],
-            "started_at": row[9],
-            "completed_at": row[10],
+            "case_id": row[4],
+            "target_type": row[5],
+            "target_id": row[6],
+            "score": row[7],
+            "passed": row[8],
+            "status": row[9],
+            "metrics": _decode_jsonb_column(row[10]),
+            "failures": _decode_jsonb_column(row[11]),
+            "trace_id": row[12],
+            "started_at": row[13],
+            "completed_at": row[14],
         }
