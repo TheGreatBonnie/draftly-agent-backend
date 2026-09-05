@@ -117,3 +117,20 @@ async def test_policy_never_skips_the_gate(model, tools, tmp_sessions) -> None:
 
     assert result.status == Status.COMPLETED
     assert [n.node_id for n in result.execution_order][-1] == "deliver"
+
+
+async def test_interrupt_reason_carries_document_content(model, tools, tmp_sessions) -> None:
+    """The gate must attach the proposed document (writer output) to the
+    interrupt reason so reviewers can see what they are approving."""
+    _, result = await _run_to_interrupt(model, tools, tmp_sessions, "gate-5")
+    _interrupt_id(result)
+
+    reason = result.interrupts[0].reason
+    assert isinstance(reason, dict)
+    document = reason.get("document")
+    assert isinstance(document, dict), "expected document payload in interrupt reason"
+    assert document.get("kind") in ("change_plan", "answer")
+    files = document.get("files")
+    assert isinstance(files, list) and files, "document must carry the planned files"
+    assert files[0]["path"] == "docs/widgets.md"
+    assert files[0]["content"], "file content must not be empty"

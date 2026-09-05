@@ -12,9 +12,11 @@ from draftly.integrations.database.client import DatabaseClient
 def _reason_detail(reason: Any) -> dict[str, Any]:
     """Extract structured detail from a review-gate reason.
 
-    The gate builds ``reason = {"run_id", "summary", "evaluation", "evidence_count"}``
-    (review_gate.py:62-67). Only dict reasons carry structured fields; other
-    types degrade to an empty detail so the column stays JSONB-null-ish.
+    The gate builds ``reason = {"run_id", "summary", "evaluation",
+    "evidence_count", "document"}`` (review_gate.py) where ``document``
+    carries the proposed documentation (writer payload) for the reviewer.
+    Only dict reasons carry structured fields; other types degrade to an
+    empty detail so the column stays JSONB-null-ish.
     """
     if isinstance(reason, dict):
         return {
@@ -22,6 +24,7 @@ def _reason_detail(reason: Any) -> dict[str, Any]:
             "evaluation": reason.get("evaluation"),
             "evidence_count": reason.get("evidence_count"),
             "run_id": reason.get("run_id"),
+            "document": reason.get("document"),
         }
     return {}
 

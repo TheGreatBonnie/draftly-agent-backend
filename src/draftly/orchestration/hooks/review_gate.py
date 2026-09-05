@@ -27,12 +27,57 @@ from typing import Any
 import structlog
 from strands.hooks import BeforeNodeCallEvent, HookProvider, HookRegistry
 
+from draftly.orchestration.nodes.base import safe_node_data
 from draftly.orchestration.routing.policies import should_review
 
 logger = structlog.get_logger(__name__)
 
 REVIEW_NODE_ID = "deliver"
 INTERRUPT_NAME = "doc-review"
+
+# Writer nodes whose structured output is the document under review,
+# in delivery order (first match wins — the winning plan).
+WRITER_NODE_IDS = ("update", "create", "answer")
+
+
+def _collect_document(source: Any, state: dict[str, Any]) -> dict[str, Any] | None:
+    """Pull the proposed document from completed writer nodes.
+
+    Reads the graph's ``state.results`` (same data the evaluator's edge
+    conditions consume via ``safe_node_data``) so the reviewer sees exactly
+    what would be delivered. Best-effort: returns ``None`` when no writer
+    has completed or payloads did not survive session restore.
+    """
+    graph_state = getattr(source, "state", None)
+    results = getattr(graph_state, "results", None)
+    if not isinstance(results, dict):
+        return None
+
+    for node_id in WRITER_NODE_IDS:
+        data = safe_node_data(graph_state, node_id)
+        if not data:
+            continue
+        if node_id == "answer":
+            content = data.get("content", "")
+            document = {
+                "kind": "answer",
+                "content": content,
+                "summary": data.get("summary") or state.get("delivery_summary", ""),
+                "sources": data.get("sources", []),
+            }
+        else:
+            files = data.get("files", [])
+            document = {
+                "kind": "change_plan",
+                "files": files,
+                "commit_message": data.get("commit_message", ""),
+                "summary": data.get("summary") or state.get("delivery_summary", ""),
+                "branch": data.get("branch", ""),
+                "repository": data.get("repository", ""),
+            }
+        if document.get("content") or document.get("files"):
+            return document
+    return None
 
 
 class ReviewGate(HookProvider):
@@ -64,6 +109,7 @@ class ReviewGate(HookProvider):
                 "summary": state.get("delivery_summary", ""),
                 "evaluation": state.get("evaluation", {}),
                 "evidence_count": state.get("evidence_count", 0),
+                "document": _collect_document(event.source, state),
             },
         )
 

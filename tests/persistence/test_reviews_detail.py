@@ -43,3 +43,36 @@ async def test_store_interrupt_persists_structured_detail() -> None:
     # The detail JSON param parses back to the structured dict (not a stringified blob).
     detail_json = params[-1]
     assert json.loads(detail_json)["evaluation"]["faithfulness"] == 98
+
+
+async def test_store_interrupt_persists_document_payload() -> None:
+    """The gate's document payload must survive into the persisted detail
+    JSONB so the review detail page can render the proposed content."""
+    client = FakeClient()
+    repo = ReviewsRepository(database=client)
+
+    await repo.store_interrupt(
+        run_id="ev-2",
+        interrupt_id="i-2",
+        reason={
+            "run_id": "ev-2",
+            "summary": "Updated widgets guide",
+            "evaluation": {},
+            "evidence_count": 2,
+            "document": {
+                "repository": "acme/api",
+                "files": [
+                    {"path": "docs/widgets.md", "content": "# Widgets", "action": "update"}
+                ],
+                "commit_message": "docs: update widgets",
+                "summary": "Updated widgets guide",
+            },
+        },
+        workflow_type="pull_request",
+        org_id="o-1",
+    )
+
+    _, params = client.executed[0]
+    detail = json.loads(params[-1])
+    assert detail["document"]["files"][0]["path"] == "docs/widgets.md"
+    assert detail["document"]["files"][0]["content"] == "# Widgets"
