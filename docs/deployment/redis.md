@@ -6,8 +6,8 @@
 ## 1. Prerequisites
 
 - Redis 7.x+ (or Valkey 7.x+ compatible)
-- `redis-py` 6.4+ (Python client, already in `pyproject.toml`)
-- RediSearch module (for semantic cache + vector search)
+- `redis-py` (Python client installed through `pyproject.toml`)
+- RediSearch module when enabling Redis semantic cache or vector search; the plain-Redis setup below uses pgvector instead
 
 ## 2. Quick Start (Local)
 
@@ -254,3 +254,40 @@ redis-cli ACL SETUSER draftly on >your-strong-password ~draftly:* +@all -DEBUG -
 | `OOM command not allowed` | Memory limit reached | Increase `maxmemory` or tune eviction |
 | `NOGROUP No such key` | Stream expired or deleted | Recreate stream (handled by app) |
 | Slow `FT.SEARCH` | Large vector index | Increase RediSearch memory or shard |
+
+## 11. Compose and RQ worker alternatives
+
+Run these commands from the backend directory. The [README](../../README.md#run-draftly) recommends native API and RQ processes with Redis in Docker.
+
+The checked-in [Compose file](../../docker-compose.redis.yml) uses `redis:7-alpine`, which supports queues and streams but does **not** include RediSearch. For that image, set `VECTOR_SEARCH_BACKEND=pgvector` and `SEMANTIC_CACHE_ENABLED=false` in the native processes' `.env`. The Redis Stack example above is an alternative when you need Redis vector search or semantic caching; do not start both examples on port 6379.
+
+Start just the Redis dependency:
+
+```bash
+docker compose -f docker-compose.redis.yml up -d redis
+```
+
+For containerized queue consumption, the Compose file also defines `rq-worker`:
+
+```bash
+docker compose -f docker-compose.redis.yml up -d
+```
+
+That worker reads `.env`, overrides `REDIS_URL` to `redis://redis:6379/0`, and waits for the Redis health check. Configure the same pgvector/cache settings for plain Redis. This command does not start the API.
+
+The current [worker Dockerfile](../../docker/Dockerfile.worker) copies the local `secrets/` directory into the image. Compose sets `GITHUB_PRIVATE_KEY_PATH=secrets/private-key.pem`; make the configured key available for GitHub App operations. A mounted key alone does not remove a key already baked into an image. Treat such an image as sensitive and do not publish it. Native workers avoid this container packaging issue.
+
+To build and run a standalone worker locally with a read-only key mount:
+
+```bash
+docker build -f docker/Dockerfile.worker -t draftly-worker .
+docker run --rm --env-file .env \
+  -e REDIS_URL=redis://host.docker.internal:6379/0 \
+  -e GITHUB_PRIVATE_KEY_PATH=/run/secrets/private-key.pem \
+  -v "$PWD/secrets/private-key.pem:/run/secrets/private-key.pem:ro" \
+  draftly-worker
+```
+
+On macOS and Windows, `host.docker.internal` addresses a service running on the host. A container's `localhost` addresses that container; this applies to `DATABASE_URL` as well as Redis. Configure the database hostname accordingly. Linux host access requires an appropriate host gateway or network configuration.
+
+The worker consumes the `scheduled`, `webhooks`, and `default` queues. This guide does not establish that periodic jobs have been registered merely because a worker is running. Container commands were inspected against the files but were not built or started during the README review.

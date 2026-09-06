@@ -1,616 +1,257 @@
 # Draftly
 
-**Autonomous documentation engineering platform.**
+**Documentation that keeps up with your code.**
 
-Draftly is an event-driven, multi-agent documentation engineering platform that continuously keeps software documentation aligned with a changing codebase and the people using it.
+Draftly helps SDK maintainers and developer teams keep documentation aligned with their code. It watches GitHub changes and developer questions, researches the project, and prepares documentation updates for review, so maintainers can focus on decisions instead of repeatedly investigating and rewriting docs.
 
-Draftly watches signals from GitHub, Slack, and Discord, understands what changed, researches the project's existing knowledge, generates documentation or support responses, evaluates the result, routes it through human review when required, and delivers approved changes. Feedback from evaluations, reviewers, and users feeds back into project memory and future workflows.
+Built with **Strands Agents SDK**, a Python/FastAPI backend, and a Next.js review workspace. This directory contains the backend; the [frontend](../draftly-agent-frontend/README.md) provides onboarding, workflow inspection, and human review.
 
-> **Draftly turns documentation from a manually maintained artifact into a continuous engineering process.**
+[Walkthrough](#from-code-change-to-reviewed-documentation) · [Strands implementation](#built-with-strands-agents) · [Architecture](#architecture) · [Evaluation](#evaluation-and-evidence) · [Run locally](#run-draftly) · [Frontend](../draftly-agent-frontend/README.md)
 
----
+## See Draftly in action
 
-## Why Draftly?
+Start with the [OAuth documentation walkthrough](#from-code-change-to-reviewed-documentation): a code change creates a documentation gap, agents prepare an update, and a maintainer decides whether to deliver it.
 
-Software changes faster than documentation.
+The [documentation dataset](src/draftly/evaluation/datasets/documentation.json) exposes the scenario, expected research tools, and required review interruption. The [frontend guide](../draftly-agent-frontend/README.md) describes the workspace for inspecting the result.
 
-A pull request can introduce a new API, change authentication behavior, deprecate a feature, or alter an SDK without anyone remembering to update the relevant documentation. Meanwhile, users ask questions in Slack, Discord, and GitHub issues that reveal gaps in the existing docs.
+A recorded demonstration and verified generated PR are not included here yet. The walkthrough below is illustrative; dataset expectations are not evidence of a successful execution. See the [evidence audit](docs/readme-evidence-audit.md) for what was verified.
 
-Traditional documentation workflows usually depend on someone noticing these changes and manually connecting them to the right documentation. Draftly automates that loop.
+## Who it helps
 
-| Traditional documentation   | Draftly                                             |
-| --------------------------- | --------------------------------------------------- |
-| Manually maintained         | Event-driven                                        |
-| Updated after the fact      | Continuously monitored                              |
-| Author searches for context | Agents research project context                     |
-| One-off generation          | Workflow-based documentation engineering            |
-| Static knowledge            | Persistent, curated project memory                  |
-| Quality checked manually    | Evaluated against evidence                          |
-| Human does the entire task  | Agents perform the work, humans control publication |
-| Feedback is often lost      | Feedback becomes a signal for future improvements   |
+For SDK maintainers and developer teams, shipping an API change starts another job: identify affected guides, research the new behavior, update examples, and answer questions from people following older instructions. Draftly connects those tasks to the changes and conversations that caused them.
 
----
+The intended outcome is a reviewable documentation change with supporting project context. Maintainers retain the publication decision when their review policy requires it.
 
-## The Documentation Engineering Loop
+## From code change to reviewed documentation
 
-Draftly is built around a continuous documentation engineering loop:
+**Illustrative walkthrough: adding OAuth authentication to Authly.** Authly is a fictional benchmark application used to exercise documentation drift. This example follows the checked-in `oauth-authentication-add` evaluation case; it is not a report of a completed run.
 
-```text
-┌──────────────────────┐
-│   Software Project   │
-│ GitHub · Slack ·     │
-│ Discord · Docs       │
-└──────────┬───────────┘
-           │
-           ▼
-        OBSERVE
-           │
-           ▼
-       UNDERSTAND
-           │
-           ▼
-         RESEARCH
-           │
-           ▼
-        GENERATE
-           │
-           ▼
-        EVALUATE
-           │
-           ▼
-      HUMAN REVIEW
-         /       \
-    changes      approve
-     requested      │
-        │           ▼
-        └──────►  DELIVER
-                   │
-                   ▼
-                FEEDBACK
-                   │
-                   ▼
-          CURATE PROJECT MEMORY
-                   │
-                   ▼
-            FUTURE WORKFLOWS
-```
+1. **A change arrives.** The case represents a merged PR adding OAuth authorization URLs, authorization-code exchange, and OAuth-backed login. The production GitHub route skips PR events that are not merged.
+2. **Draftly researches the impact.** Agents inspect the repository and documentation, including the OAuth implementation, authentication flow, and client configuration. The dataset lists evidence references and expects repository tools to be used.
+3. **A documentation update is proposed.** The expected update explains provider setup, URL construction, callback handling, code exchange, and login. Writers produce a structured file-change plan; delivery tools are excluded from their tool set.
+4. **The output is checked.** The documentation graph evaluates the output and can route it back for revision. It also authors and checks a changelog before reaching delivery.
+5. **A maintainer decides.** With `review_policy: always`, the graph pauses before delivery. The reviewer can approve or reject; a rejection cancels delivery. The dataset explicitly expects this interruption.
+6. **Delivery follows approval.** The delivery agent has tools to create the documentation PR. A completed run would need an actual PR and delivery receipt to demonstrate this final step.
 
-Draftly does not stop after generating documentation. Every workflow produces useful signals — evaluation failures, reviewer corrections, recurring support questions, documentation gaps, rejected changes, grounding failures, and successful outcomes — and those signals improve project memory, prioritization, skills, prompts, retrieval, and model routing.
+The proposed change turns missing OAuth guidance into a reviewable update:
 
----
+| Before, as described by the case | Expected documentation coverage |
+| --- | --- |
+| OAuth behavior is introduced without complete guidance | Authorization URL construction and provider configuration |
+| Callback handling and code exchange are undocumented | Callback handling and authorization-code exchange steps |
+| Developers lack guidance for the new login flow | OAuth-backed login usage |
 
-## What Draftly Does
+Inspect the [case and its evidence references](src/draftly/evaluation/datasets/documentation.json), [GitHub event handling](src/draftly/app/api/routes/github.py), and [documentation graph](src/draftly/orchestration/graphs/documentation_graph.py).
 
-- **GitHub change analysis** — analyzes pull requests, issues, and releases to determine what changed and whether it has documentation impact.
-- **Documentation generation & sync** — researches the repository and project knowledge before generating conceptual docs, how-tos, tutorials, API references, release documentation, and updates, delivered as GitHub pull requests for review.
-- **Developer support** — responds to questions from GitHub issues, Slack, and Discord, grounded in indexed project documentation and project knowledge.
-- **Feedback loop** — turns support questions, reviewer feedback, and evaluation failures into future documentation work and documented gap analysis.
-- **Human-in-the-loop review** — configurable review policies hold agent output at a review gate until a human approves it.
-- **Persistent project memory** — searchable, curated project knowledge that agents retrieve for grounding, deduplication, and future workflows.
-- **Evaluation** — scores agent outputs on groundedness, correctness, completeness, relevance, documentation quality, and review behavior.
-- **Multi-provider model routing** — pluggable registry and router across Amazon Bedrock, Bedrock Mantle, OpenRouter, NVIDIA, Requesty, and Orcarouter.
+## Core capabilities
 
----
+| Capability | What it does for the maintainer |
+| --- | --- |
+| Event-triggered documentation maintenance | Starts documentation work from merged PRs and release events |
+| Grounded developer support | Uses project context to answer GitHub, Slack, and Discord questions |
+| Research with evidence | Connects proposed answers and updates to repository and documentation sources |
+| Configurable human review | Holds delivery for approval under `always`, or for classified risks under `risky`; `never` bypasses the gate |
+| Feedback and project memory | Collects knowledge candidates and provides curation and retrieval workflows for later work |
 
-## How Draftly Works
+Memory curation can create, merge, supersede, or archive knowledge when its workflow runs. Model routing can use stored task-performance statistics. Changes to prompts and packaged skills remain developer work; this README does not claim they rewrite themselves or that every run improves future quality.
 
-A typical documentation workflow looks like this:
+## Built with Strands Agents
 
-```text
-GitHub PR
-   │
-   ▼
-Webhook
-   │
-   ▼
-Event normalization
-   │
-   ▼
-Workflow selection
-   │
-   ▼
-Documentation impact analysis
-   │
-   ▼
-Repository + project research
-   │
-   ▼
-Documentation generation
-   │
-   ▼
-Evaluation
-   │
-   ▼
-Human review
-   │
-   ├─────────────── changes requested ──────┐
-   │                                        │
-   ▼                                        │
-Delivery                                    │
-   │                                        │
-   ▼                                        │
-GitHub PR / Slack / Discord                 │
-                                            │
-                                            └──► Rework → Evaluation
-```
+Strands supplies agents, graph orchestration, and interrupt hooks. Draftly supplies the domain tools, routing conditions, review policy, persistence, and delivery integration.
 
-The exact workflow depends on the event and the configured workflow policy.
+| Responsibility | Implementation | Why it matters |
+| --- | --- | --- |
+| Research project evidence | [Shared researchers](src/draftly/agents/shared/research.py) | Strands agents receive tools and source-specific research instructions |
+| Coordinate documentation work | [Documentation graph](src/draftly/orchestration/graphs/documentation_graph.py) | `GraphBuilder` connects research, impact analysis, writing, evaluation, and conditional revision |
+| Check outputs | [Runtime evaluator](src/draftly/orchestration/nodes/evaluate.py) and [evaluation framework](src/draftly/evaluation/) | Runtime quality checks and dataset-based evaluation serve different purposes |
+| Pause for a person | [Review gate](src/draftly/orchestration/hooks/review_gate.py) | A Strands `BeforeNodeCallEvent` interrupt prevents delivery until the required decision |
+| Deliver the result | [Delivery agent](src/draftly/agents/shared/delivery.py) | A separate agent receives publication tools after the graph's review boundary |
 
-### Core concepts
+Research and writing need to interpret changing code and incomplete context. Explicit graph conditions and review policy constrain when their output can proceed. The writer's tool restrictions keep authoring separate from repository mutation.
 
-- **Events** — normalized signals representing changes or interactions from GitHub, Slack, and Discord.
-- **Workflows** — the business process Draftly executes for an event (documentation sync, GitHub issue handling, support, release authoring, feedback processing, evaluation).
-- **Agents** — specialized reasoning units within workflows (change analyzers, repository researchers, documentation writers, support agents, reviewers, auditors, memory curators).
-- **Skills** — self-contained, reusable agent capabilities: instructions, rules, resources, templates, examples, and domain-specific guidance.
-- **Memory** — durable, curated project knowledge that agents retrieve during future workflows.
-- **Evaluation** — determines whether agent behavior and outputs meet workflow quality requirements.
-- **Review gates** — explicit human control over agent-generated changes.
-- **Delivery** — publishes approved results back to project communication and development systems.
-
-> **Workflows decide what happens. Agents perform reasoning. Skills define reusable capabilities.**
-
----
+The graph supports `always`, `risky`, and `never` review policies. Unknown policy values resolve to `always`. Review approval does not merge the resulting GitHub PR; maintainers still control that repository action.
 
 ## Architecture
 
+The diagram summarizes the documentation path. Other surfaces have their own graphs; evaluation and review behavior depend on the selected workflow and policy.
+
 ```mermaid
 flowchart TD
-    subgraph sources["Event sources"]
-        GH["GitHub<br/>PRs · issues · releases"]
-        SL["Slack"]
-        DC["Discord"]
-    end
-
-    subgraph api["FastAPI application"]
-        WH["Webhook routes"] --> DISP["Event dispatcher"]
-    end
-
-    subgraph runtime["Workflow runtime"]
-        RUN["Workflow runner"]
-        GRAPH["Orchestration graphs<br/>documentation · support · issue · feedback · evaluation"]
-        AGENTS["Agent teams<br/>analyzer · researcher · writer · reviewer · auditor"]
-        GATE{"Human review gate"}
-
-        RUN --> GRAPH
-        GRAPH --> AGENTS
-        AGENTS --> GATE
-    end
-
-    subgraph platform["Platform services"]
-        MEM[("NeonDB / PostgreSQL<br/>project memory + vector search")]
-        EVAL["Strands Agents evals<br/>evaluation"]
-        MODELS["Model router<br/>Bedrock · Mantle · OpenRouter · NVIDIA"]
-        REDIS[("Redis<br/>streams · cache · rate limiting · state")]
-    end
-
-    GH --> WH
-    SL --> WH
-    DC --> WH
-
-    DISP --> RUN
-
-    AGENTS <--> MEM
-    AGENTS --> MODELS
-    AGENTS <--> REDIS
-
-    AGENTS --> EVAL
-    EVAL --> GATE
-
-    GATE -- "approved" --> DELIVER["Delivery service<br/>GitHub PRs & comments · Slack · Discord"]
-    GATE -- "changes requested" --> FEEDBACK["Feedback / rework loop"]
-
-    EVAL --> FEEDBACK
-    FEEDBACK --> GRAPH
-    FEEDBACK --> MEM
+    Sources["GitHub / Slack / Discord events"] --> API["FastAPI event routes"]
+    UI["Next.js workspace / Clerk authentication"] -->|authenticated requests| API
+    API --> Queue["Dispatch / Redis RQ queues"]
+    Queue --> Worker["RQ worker / workflow runner"]
+    Worker --> Graph["Strands documentation graph"]
+    Graph --> Research["Research / impact analysis"]
+    Research --> Write["Answer / update / create"]
+    Write --> Eval["Documentation evaluation"]
+    Eval -->|revise| Write
+    Eval -->|pass| Changelog["Changelog / evaluation"]
+    Research -->|release with no docs change| Changelog
+    Changelog -->|revise| Changelog
+    Changelog -->|pass| Gate{"Review policy"}
+    Gate -->|required| Review["Pause / maintainer decision"]
+    UI -.-> Review
+    Review -->|approve| Deliver["Delivery tools / PR or response"]
+    Review -->|reject| Stop["Cancel delivery"]
+    Gate -->|not required| Deliver
+    Research <--> DB[("PostgreSQL / project memory / pgvector")]
+    Graph <--> Models["Model router / configured providers"]
+    Worker -.-> Memory["Memory candidates / curation"]
+    Memory --> DB
+    API <--> Redis[("Redis / event streams / state")]
+    API -->|SSE progress and responses| UI
 ```
 
-1. **Event sources** produce project or user events.
-2. **Webhook routes** receive and authenticate incoming events.
-3. **Event dispatcher** normalizes them into Draftly events.
-4. **Workflow runner** selects and starts the appropriate workflow.
-5. **Orchestration graphs** coordinate specialized agents.
-6. **Agents** research, reason, write, review, and curate project knowledge.
-7. **Memory** provides persistent project context and retrieval.
-8. **Model routing** selects an appropriate model for each task.
-9. **Evaluation** scores generated outputs.
-10. **Human review** controls publication when required.
-11. **Delivery** publishes approved results.
-12. **Feedback** becomes input to rework, memory curation, prioritization, and future workflows.
+With the default RQ configuration, long-running jobs are consumed by a separate worker. The API exposes workflow state and event streams so the frontend can display progress without holding a generation request open.
 
-The evaluation and feedback systems are not isolated from the runtime; they form a learning loop around agent execution:
+The no-documentation-change release branch goes straight from impact analysis to changelog authoring and evaluation. Review can be bypassed by policy; the graph does not promise human approval on every configuration.
 
-```text
-Execute
-  ↓
-Evaluate
-  ↓
-Observe failure or success
-  ↓
-Understand the cause
-  ↓
-Improve context / skills / prompts / routing
-  ↓
-Execute again
-  ↓
-Compare results
-```
+For deeper implementation detail, see [orchestration](docs/architecture/orchestration.md), [model routing](docs/architecture/models-router.md), [memory](docs/architecture/memory.md), and [delivery](docs/architecture/delivery.md).
 
----
+## Evaluation and evidence
 
-## Example: Pull Request → Documentation
+**This README does not yet publish measured benchmark results.** The repository contains evaluation scenarios and evaluation code, but the evidence audit found no qualifying saved run report with reproducible results to cite. No success rate, time saving, or cost claim is made.
 
-Suppose a pull request changes authentication behavior:
+The [datasets](src/draftly/evaluation/datasets/) cover these workflow surfaces:
 
-```text
-PR changes authentication
-        ↓
-GitHub webhook
-        ↓
-Event normalization
-        ↓
-Documentation workflow
-        ↓
-Impact analysis
-        ↓
-Find affected documentation
-        ↓
-Research repository + existing docs
-        ↓
-Generate documentation update
-        ↓
-Evaluation
-        ↓
-Human review
-        ↓
-Approved
-        ↓
-Documentation PR
-```
+| Dataset | Intended coverage |
+| --- | --- |
+| `documentation.json` | OAuth documentation updates from a merged PR |
+| `github_issues.json` | GitHub issue handling |
+| `slack.json` / `discord.json` | Support questions from different event sources |
+| `feedback.json` | Documentation gaps and prioritization |
+| `release.json` | Release authoring and review behavior |
 
-If the reviewer requests changes:
+The framework distinguishes **LLM-judged quality**—groundedness, correctness, completeness, and relevance—from **deterministic checks**, including expected interruption and passthrough. Documentation quality also uses citation, coverage, and length heuristics. A score is evidence about the tested cases, not a correctness guarantee.
 
-```text
-Reviewer feedback
-        ↓
-Rework
-        ↓
-Re-evaluation
-        ↓
-Human review
-        ↓
-Approval
-```
-
-Draftly also bootstraps its project knowledge from an existing repository: connecting a GitHub repository, indexing its existing documentation, analyzing the codebase, building initial project knowledge, identifying documentation gaps, and generating an initial documentation PR. It does not require a project to start with a perfect documentation system.
-
----
-
-## Evaluation
-
-Draftly uses **Strands Agents evals** to evaluate agent behavior and generated outputs. Evaluation proceeds through the same workflow surfaces as production events:
-
-```text
-Dataset
-   ↓
-Draftly workflow
-   ↓
-Agent execution
-   ↓
-Strands Agents evals
-   ↓
-Evaluation results
-   ↓
-Failure analysis
-```
-
-### Evaluation dimensions
-
-| Metric                  | Description                                               |
-| ----------------------- | --------------------------------------------------------- |
-| `groundedness`          | Claims are traceable to available evidence                |
-| `correctness`           | Output is factually accurate                              |
-| `completeness`          | Essential information is covered                          |
-| `relevance`             | Output directly addresses the task                        |
-| `documentation_quality` | Citation coverage, topic coverage, and adequate detail    |
-| `expected_interrupt`    | Workflow correctly stops at the configured review gate    |
-| `expected_passthrough`  | Workflow correctly passes through when review is disabled |
-
-### Running evaluations
-
-Datasets live under [`src/draftly/evaluation/datasets/`](src/draftly/evaluation/datasets/):
+After configuring the runtime and adapting dataset paths and project identifiers to your checkout, run one live dataset from this directory:
 
 ```bash
-# Documentation (PR event) evaluation
 uv run python scripts/run_evaluation.py --live --datasets src/draftly/evaluation/datasets/documentation.json
-
-# GitHub issue evaluation
-uv run python scripts/run_evaluation.py --live --datasets src/draftly/evaluation/datasets/github_issues.json
-
-# Support question evaluation
-uv run python scripts/run_evaluation.py --live --datasets src/draftly/evaluation/datasets/slack.json
-
-# Discord support evaluation (same support graph, Discord event source)
-uv run python scripts/run_evaluation.py --live --datasets src/draftly/evaluation/datasets/discord.json
-
-# Feedback loop evaluation (gap detection and prioritization)
-uv run python scripts/run_evaluation.py --live --datasets src/draftly/evaluation/datasets/feedback.json
-
-# Release authoring evaluation (includes review gate checks)
-uv run python scripts/run_evaluation.py --live --datasets src/draftly/evaluation/datasets/release.json
 ```
 
-> [!NOTE]
-> Live runs invoke real agent graphs and LLM judges. Each dataset runs with a ~600s inner budget. Use `--datasets` with a single-case file for smoke runs to stay within timeouts.
+Use `github_issues.json`, `slack.json`, `discord.json`, `feedback.json`, or `release.json` in the same command to select another surface. Live runs invoke real agents and LLM judges and can incur provider costs; they also start the configured application and require its services. Inspect the printed workflow status, errors, and results, not just the process exit code.
 
-### Evaluation as a build loop
+The checked-in cases include machine-specific `repo_dir` values and project/organization identifiers. They require adaptation before reproduction on another machine. The sample documentation case expects a review interruption, so passing it alone would not establish successful publication.
 
-Evaluation is also the agent-development loop:
+For any published run, record the commit, dataset, model, date, case count, repeated-run count, completion results, review checks, and measured runtime/cost. Authly is a fictional evaluation project; its results alone do not establish performance across arbitrary repositories. See [evaluation internals](docs/architecture/evaluation.md) and the [evidence audit](docs/readme-evidence-audit.md).
 
-```text
-Change agent / skill / workflow
-        ↓
-Run evaluation
-        ↓
-Inspect failures and traces
-        ↓
-Identify failure cause
-        ↓
-Improve implementation
-        ↓
-Run evaluation again
-        ↓
-Compare results
-```
+## Run Draftly
 
-The objective is not to prove that an agent works once, but to continuously improve agent behavior against representative scenarios.
+This is the recommended **native API + native RQ worker + containerized Redis** development topology, derived from the current source. A fresh database setup and integrated delivery were not executed during this documentation review.
 
----
+### 1. Install
 
-## Adaptive Model Routing
+You need Python 3.11+, `uv`, Docker for Redis, and a PostgreSQL database supporting the `vector` extension. Node.js and Clerk configuration are additionally required for the frontend experience.
 
-Draftly supports multiple model providers through a pluggable model registry and routing layer. The router selects models based on task requirements such as reasoning needs, context requirements, latency, cost, provider availability, and historical evaluation performance:
-
-```text
-Task
-  ↓
-Candidate models
-  ├── capability
-  ├── cost
-  ├── latency
-  ├── context requirements
-  └── historical performance
-  ↓
-Selected model → Agent execution → Evaluation → Routing feedback
-```
-
----
-
-## Integrations
-
-- **GitHub** — analyzes pull requests, processes issues, analyzes releases, identifies documentation impact, creates documentation PRs, and responds to issues and comments.
-- **Slack** — consumes support and engineering signals and provides grounded responses.
-- **Discord** — consumes developer and community questions and responds using project documentation and persistent knowledge.
-- **Clerk** — application authentication through JWT-based authentication.
-
----
-
-## Tech Stack
-
-| Layer           | Technology                                                 |
-| --------------- | ---------------------------------------------------------- |
-| Language        | Python 3.11, managed with [uv](https://docs.astral.sh/uv/) |
-| API             | FastAPI + Uvicorn                                          |
-| Agents          | [Strands Agents](https://github.com/strands-agents) SDK    |
-| Evaluation      | Strands Agents evals                                       |
-| Database        | PostgreSQL (asyncpg / psycopg), NeonDB-compatible          |
-| Vector search   | Redis, pgvector, or dual backend                           |
-| Event streaming | Redis streams / pubsub                                     |
-| Cache           | Redis (semantic cache, rate limiting, distributed state)   |
-| Background jobs | RQ workers                                                 |
-| Auth            | Clerk (JWT), plus Slack, Discord, and GitHub app auth      |
-| Observability   | structlog, tracing, metrics, audit logging                 |
-
----
-
-## Getting Started
-
-### Prerequisites
-
-- Python 3.11+
-- [uv](https://docs.astral.sh/uv/getting-started/installation/)
-- A PostgreSQL database (NeonDB works) and Redis
-- AWS credentials with access to Amazon Bedrock (or an IAM role)
-
-### Install
+From the workspace containing both app directories:
 
 ```bash
+cd draftly-agent-backend
 uv sync
-```
-
-### Configure
-
-```bash
 cp .env.example .env
 ```
 
-At minimum, configure your database and AWS access:
+Configure `.env` using the table below. The example file does not list every integration setting; [Settings](src/draftly/app/config.py) is the source for those names.
 
-```text
-DATABASE_URL=...
-AWS_REGION=...
-```
+| Setting | Required for |
+| --- | --- |
+| `DATABASE_URL` | Database connectivity and migrations; use a dedicated development database |
+| `AWS_REGION` plus AWS credentials or an IAM role | The Bedrock model path; alternatively configure a supported model provider |
+| `REQUESTY_API_KEY`, `ORCAROUTER_API_KEY`, or `OPENROUTER_API_KEY` | At least one embedding provider for semantic retrieval; Bedrock embeddings are not implemented directly |
+| `EMBEDDING_MODEL_ID=text-embedding-3-small` | The configured embedding provider must serve the model and return 1,536-dimensional vectors |
+| `REDIS_URL=redis://localhost:6379/0` | Queue consumption, state, and event streaming |
+| `DEBUG=false` | Boolean debug setting; an exported shell value overrides `.env` |
+| `RQ_ENABLED=true` | The recommended separate-worker execution path |
+| `VECTOR_SEARCH_BACKEND=pgvector` | Vector search for this setup, because Compose uses plain Redis |
+| `SEMANTIC_CACHE_ENABLED=false` | Avoids requiring RediSearch for the semantic cache in this setup |
 
-> [!TIP]
-> Only `DATABASE_URL` and AWS access are required. All other model providers (NVIDIA, OpenRouter, Requesty, Orcarouter, Mantle) are optional fallbacks for the model router.
+An embedding provider credential must have access to the configured model; its presence alone does not prove compatibility. Provider registration and defaults are defined in the [model factory](src/draftly/models/factory.py).
 
-### Run the API
+If your shell exports a non-boolean `DEBUG` value, set `export DEBUG=false` before running the commands below. This also applies to CLI help because the evaluation script imports application settings before parsing arguments.
 
-```bash
-python main.py
-```
+### 2. Initialize the database and start Redis
 
-The FastAPI application starts on the configured host and port. Interactive API documentation is available at:
-
-```text
-http://localhost:8000/docs
-```
-
-### Redis & worker containers (Docker)
-
-Draftly depends on Redis for event streaming, RQ job queues, caching, and rate limiting, and on worker processes to consume those queues asynchronously. A ready-to-run [compose file](docker-compose.redis.yml) defines a Redis container plus an RQ worker container.
-
-**Start only Redis** (for local development, when the API and workers run natively via `python main.py`):
+The bootstrap script applies SQL migrations in filename order and checks database connectivity. Run it against your development database and inspect its output:
 
 ```bash
+uv run python scripts/bootstrap.py
 docker compose -f docker-compose.redis.yml up -d redis
+docker compose -f docker-compose.redis.yml exec redis redis-cli ping
 ```
 
-**Start Redis + the RQ worker together** (queue-backed execution without an in-process runner):
+The Redis check should return `PONG`. The database account needs permission to apply the migrations, including creation of the `vector` extension. The bootstrap script handles some duplicate-object errors by skipping; it is not a version-tracking migration system.
+
+### 3. Start both native processes
+
+In one terminal, from `draftly-agent-backend/`:
 
 ```bash
-docker compose -f docker-compose.redis.yml up -d
+uv run python -m workers.rq_worker
 ```
 
-The compose file wires `REDIS_URL=redis://redis:6379/0` into the worker and sets `depends_on: redis: condition: service_healthy`, so the worker only starts once Redis reports healthy.
-
-**Standalone worker container** (from `docker/Dockerfile.worker`):
+In a second terminal, from the same directory:
 
 ```bash
-docker build -f docker/Dockerfile.worker -t draftly-worker .
-docker run --rm \
-  -e REDIS_URL=redis://host.docker.internal:6379/0 \
-  -e DATABASE_URL="$DATABASE_URL" \
-  draftly-worker
+uv run python main.py
 ```
 
-**Fully containerized API** (from `docker/Dockerfile.api`):
+Both processes load the same `.env`. The RQ worker consumes the `scheduled`, `webhooks`, and `default` queues under the configured prefix. Starting only the API does not consume queued jobs.
+
+### 4. Check liveness
 
 ```bash
-docker build -f docker/Dockerfile.api -t draftly-api .
-docker run --rm \
-  -p 8000:8000 \
-  -e "REDIS_URL=redis://host.docker.internal:6379/0" \
-  draftly-api
+curl --fail http://localhost:8000/api/health
 ```
 
-> [!NOTE]
->
-> - The `rq-worker` container reads `.env` via `env_file` and expects the GitHub private key referenced by `GITHUB_PRIVATE_KEY_PATH` to be available at `secrets/private-key.pem`. Ensure those exist before starting the worker.
-> - When Redis runs on the host and the worker runs in Docker on macOS or Windows, use `host.docker.internal` rather than `localhost` for `REDIS_URL`.
+Expected response: `{"status":"ok","service":"draftly"}`. This endpoint checks API liveness, not model access or successful agent execution. Explore the API at [localhost:8000/docs](http://localhost:8000/docs).
 
----
+### 5. Connect the review workspace
 
-## Background Workers
+Follow the [frontend setup guide](../draftly-agent-frontend/README.md), using `API_URL=http://localhost:8000`. Configure `CLERK_PUBLISHABLE_KEY` and `CLERK_SECRET_KEY` on the backend for the same Clerk application used by the frontend; `CLERK_SIGNING_SECRET` is needed for Clerk webhook verification.
 
-Draftly separates long-running work from the API process through dedicated workers.
+For the GitHub workflow, configure `GITHUB_APP_ID`, `GITHUB_APP_SLUG`, `GITHUB_PRIVATE_KEY_PATH`, and `GITHUB_WEBHOOK_SECRET`. Install the GitHub App on the target repository and configure its webhook against your reachable backend. Use onboarding to select the repository and documentation source. See [webhooks](docs/api/webhooks.md) and [GitHub workflow behavior](docs/workflows/github-pr.md).
 
-| Worker            | Purpose                                                     | Command                             | Docker container      |
-| ----------------- | ----------------------------------------------------------- | ----------------------------------- | --------------------- |
-| `rq_worker`       | Consumes the RQ queues (`scheduled`, `webhooks`, `default`) | `python -m workers.rq_worker`       | `rq-worker` (compose) |
-| `event_worker`    | Serves the API; in-process event processing                 | `python -m workers.event_worker`    | —                     |
-| `workflow_worker` | Periodic jobs: workflow retries and review expiry           | `python -m workers.workflow_worker` | —                     |
+After connecting the repository, a merged PR is the documentation trigger. The intended observable sequence is a workflow run, a review item when required, and a delivery artifact after approval. This complete integrated sequence remains unverified in this README; use the [illustrative scenario](#from-code-change-to-reviewed-documentation) to understand the expected behavior.
 
-Environment-specific defaults live in `config/` (`development.yaml`, `staging.yaml`, `production.yaml`).
+Slack and Discord credentials are needed only when connecting those integrations. See [integration architecture](docs/architecture/integrations.md).
 
----
+For alternate Redis and worker containers, see [Redis deployment](docs/deployment/redis.md). The [production guide](docs/deployment/production.md) records the current API-container packaging limitation.
 
-## Configuration
+## Current limitations
 
-See [`.env.example`](.env.example) for the complete configuration.
+- **Evidence:** no recorded demonstration or qualifying measured benchmark report is linked here yet.
+- **Portability:** evaluation datasets contain local paths and project identifiers that need adaptation.
+- **Setup:** the documented development path has been inspected against source, but fresh migrations and integrated delivery have not been run for this review.
+- **Containers:** the current API Dockerfile runs `main.py` without copying it into the runtime image; native API startup is the documented path.
+- **License:** the checked-in `LICENSE` file is empty; a license has not been established by that file.
 
-### Required
+## Development and documentation
 
-| Variable        | Description                                |
-| --------------- | ------------------------------------------ |
-| `DATABASE_URL`  | PostgreSQL / NeonDB connection string      |
-| `AWS_REGION`    | Region for Amazon Bedrock                  |
-| AWS credentials | Credentials or IAM role for Bedrock access |
-
-### Infrastructure
-
-| Variable                 | Description                                                   |
-| ------------------------ | ------------------------------------------------------------- |
-| `REDIS_URL`              | Redis connection string (default: `redis://localhost:6379/0`) |
-| `SEMANTIC_CACHE_ENABLED` | Enable LLM semantic cache (default: `True`)                   |
-| `VECTOR_SEARCH_BACKEND`  | `redis`, `pgvector`, or `dual` (default: `dual`)              |
-| `EVENT_BUS_BACKEND`      | `pubsub`, `stream`, or `dual` (default: `dual`)               |
-
-### Models
-
-| Variable                         | Description                        |
-| -------------------------------- | ---------------------------------- |
-| `BEDROCK_CLAUDE_REASONING_MODEL` | Reasoning model override           |
-| `BEDROCK_CLAUDE_FAST_MODEL`      | Fast model override                |
-| `EMBEDDING_MODEL_ID`             | Embedding model used for retrieval |
-
-### Optional providers
-
-```text
-MANTLE_API_KEY, MANTLE_ENDPOINT_URL
-OPENROUTER_API_KEY
-NVIDIA_API_KEY
-REQUESTY_API_KEY
-ORCAROUTER_API_KEY
-```
-
----
-
-## Development
-
-### Code quality
+From this directory:
 
 ```bash
 uv run ruff check .
 uv run ruff format --check .
 uv run mypy src
+uv run pytest -m "not integration"
 ```
 
-### Tests
+Live integration tests use external services. Configure their credentials and set `DRAFTLY_LIVE=1` before running `uv run pytest -m integration`. These commands are developer entry points, not a claim that this documentation change ran the application test suite.
 
-```bash
-uv run pytest                  # unit + workflow tests
-uv run pytest -m integration   # live integration tests
-```
+| Area | Entry point |
+| --- | --- |
+| Agents, prompts, and skills | [Agents](src/draftly/agents/) · [packaged skills](src/draftly/skills/) |
+| Graphs and execution | [Orchestration](src/draftly/orchestration/) · [workflows](src/draftly/workflows/) |
+| API and integrations | [API routes](src/draftly/app/api/routes/) · [integrations](src/draftly/integrations/) |
+| Quality and retrieval | [Evaluation](src/draftly/evaluation/) · [memory](src/draftly/memory/) |
+| Frontend | [Next.js workspace](../draftly-agent-frontend/README.md) |
 
-> [!IMPORTANT]
-> Integration tests may use a live database and real model endpoints. Set `DRAFTLY_LIVE=1` and provide valid credentials before running them.
+Continue with the [architecture overview](docs/architecture/overview.md), [workflow guides](docs/workflows/overview.md), [API reference](docs/api/routes.md), [Redis operations](docs/deployment/redis.md), and [production deployment](docs/deployment/production.md).
 
----
+## Hackathon and license
 
-## Project Structure
+Draftly is being developed for the [Agents for Humans hackathon](https://agentsforhumans.devpost.com/), with **Professional Agents** as its intended track. Its contribution is documentation maintenance that runs from project events and brings a person in at the configured review boundary.
 
-```text
-draftly-agent-backend/
-├── src/draftly/
-│   ├── agents/          # Agent definitions and prompts
-│   ├── evaluation/      # Evaluation framework and datasets
-│   ├── integrations/    # Slack, Discord, GitHub, database
-│   ├── models/          # Model router and providers
-│   ├── orchestration/   # Graphs, nodes, and routing
-│   ├── skills/          # Self-contained agent capabilities
-│   └── workflows/       # Workflow definitions
-├── scripts/             # CLI and evaluation utilities
-├── workers/             # Background worker processes
-├── config/              # Environment-specific configuration
-└── docs/                # Architecture and engineering documentation
-```
-
-### Where the pieces fit
-
-```text
-Event → Integration → Orchestration → Workflow → Agents
-  → Skills + Tools + Memory → Model Router → Evaluation
-  → Review → Delivery
-```
-
----
-
-## Documentation
-
-Detailed engineering documentation lives in [`docs/`](docs), covering:
-
-- **Architecture** — overview & design, event-driven design, multi-agent topology, orchestration, memory, feedback loops, documentation pipeline, persistence, integrations, security, delivery, evaluation, review, observability, support, tools, Redis, and the models router (`docs/architecture/`)
-- **Agents** — agent overview, research swarms, and packaged skills (`docs/agents/`)
-- **API** — route reference and GitHub, Slack, Discord, and Clerk webhook handling (`docs/api/`)
-- **Workflows** — workflow overview plus documentation sync, GitHub PR and issue, support, and feedback loop guides (`docs/workflows/`)
-- **Deployment** — AWS, production configuration, CockroachDB, and Redis operations (`docs/deployment/`)
+The competition asks for a public repository, setup instructions, an architecture diagram, and a demonstration video of up to five minutes. It also requires an MIT or Apache open-source license. The current [LICENSE](LICENSE) is empty, so this README does not claim that licensing requirement is satisfied. The project owner must choose and add the license before submission.

@@ -176,6 +176,8 @@ flowchart TD
 
 ### 5.1 Deployment
 
+Before building the API image, read [API container packaging status](#8-api-container-packaging-status): its current entry point is missing from the image. The commands below describe the intended deployment flow after packaging is corrected.
+
 ```bash
 # Build and push images
 docker build -f docker/Dockerfile.api -t draftly-api:latest .
@@ -240,3 +242,21 @@ Structured logs use `structlog` and output JSON. Key log events:
 - `src/draftly/workflows/runner.py` — WorkflowRunner (execution engine)
 - `src/draftly/workflows/context.py` — WorkflowContext (dependency bundle)
 - `src/draftly/observability/metrics.py` — Prometheus metrics
+
+## 8. API container packaging status
+
+The [backend README](../../README.md#run-draftly) uses native API startup. The current [API Dockerfile](../../docker/Dockerfile.api) declares `CMD ["python", "main.py"]`, but copies only the virtual environment and `src/` into its runtime stage. It does not copy `main.py`. Its build stage also installs the project without explicitly copying the `README.md` referenced by the package manifest.
+
+The following are the intended build/run commands, **not a verified working deployment**. Correct the image's package inputs and runtime entry point before using them. This documentation change does not modify the Dockerfile.
+
+```bash
+docker build -f docker/Dockerfile.api -t draftly-api .
+docker run --rm --env-file .env \
+  -p 8000:8000 \
+  -e REDIS_URL=redis://host.docker.internal:6379/0 \
+  draftly-api
+```
+
+On macOS and Windows, use `host.docker.internal` for host services reached from a container; configure the database hostname similarly if PostgreSQL runs on the host. Redis and the database are separate dependencies, and queued work also needs a running RQ worker. See [Redis and worker alternatives](redis.md#11-compose-and-rq-worker-alternatives).
+
+The `.env` must include model and embedding-provider access as well as database and Redis configuration. GitHub App operations additionally need the configured private key available at `GITHUB_PRIVATE_KEY_PATH`. No image build, cloud deployment, or end-to-end container run was performed as part of this README review.
