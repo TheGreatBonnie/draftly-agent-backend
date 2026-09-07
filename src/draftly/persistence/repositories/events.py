@@ -88,6 +88,33 @@ class EventRepository:
             payload=row["payload"],
         )
 
+    async def get_event_by_id(self, event_id: str) -> dict[str, Any] | None:
+        """Source-agnostic event lookup — Slack/Discord and GitHub both claim rows."""
+        query = """
+        SELECT event_id, source, event_type, repository, actor, org_id, payload, occurred_at
+        FROM events
+        WHERE event_id = $1
+        """
+        row = await self.database.fetch_one(query, event_id)
+        if row is None:
+            return None
+        payload = row["payload"]
+        if isinstance(payload, str):
+            try:
+                payload = json.loads(payload)
+            except json.JSONDecodeError:
+                payload = {}
+        return {
+            "event_id": str(row["event_id"]),
+            "source": str(row["source"]),
+            "event_type": str(row["event_type"]),
+            "repository": row.get("repository"),
+            "actor": row.get("actor"),
+            "org_id": str(row["org_id"]) if row.get("org_id") is not None else None,
+            "payload": payload,
+            "occurred_at": row.get("occurred_at"),
+        }
+
     async def list_events(
         self,
         repository: str,

@@ -57,27 +57,25 @@ class EvaluationRepository:
 
     def list_datasets(self) -> list[dict[str, Any]]:
         """Golden datasets as serialized dicts for the evaluation graph."""
-        loaded = StrandsEvalsRunner().load_all_datasets()
-        datasets = [
-            {
-                "name": name,
+        loaded = StrandsEvalsRunner().load_all_dataset_definitions()
+        datasets: list[dict[str, Any]] = []
+        for definition in loaded:
+            dataset = {
+                **definition,
                 "cases": [
                     {
-                        "name": case.name,
-                        "input": case.input,
-                        "expected_output": getattr(case, "expected_output", None),
+                        **case,
                         "metadata": {
-                            **(case.metadata or {}),
-                            "name": case.name,
+                            **(case.get("metadata") or {}),
+                            "name": case.get("name", ""),
                         }
-                        if isinstance(case.metadata, dict)
-                        else {"name": case.name},
+                        if isinstance(case.get("metadata"), dict)
+                        else {"name": case.get("name", "")},
                     }
-                    for case in cases
+                    for case in definition.get("cases", [])
                 ],
             }
-            for name, cases in loaded.items()
-        ]
+            datasets.append(dataset)
         logger.info(
             "evaluations_list_datasets",
             datasets=[d["name"] for d in datasets],

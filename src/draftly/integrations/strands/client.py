@@ -33,6 +33,7 @@ class StrandsClient:
     session_storage_dir: str = DEFAULT_SESSION_STORAGE_DIR
     audit_repo: Any = None
     hooks: list[Any] = field(default_factory=list)
+    content_repository: Any = None
 
     def __post_init__(self) -> None:
         if self.model is None:
@@ -48,6 +49,11 @@ class StrandsClient:
         **graph_kwargs: Any,
     ):
         """Build a fresh per-run graph with its own session manager."""
+        # The content graph is the only consumer of the content repository;
+        # other builders do not accept it and inject it selectively so a
+        # non-content run never leaks the kwarg into an incompatible builder.
+        if surface == "content" and self.content_repository is not None:
+            graph_kwargs["content_repository"] = self.content_repository
         return build_graph_for_run(
             run_id,
             surface=surface,

@@ -59,12 +59,11 @@ def build_workflows(
     redis_client: Any = None,
 ) -> ComposedWorkflows:
     """Compose the workflow registry, context, and runner."""
-    del agents  # graphs build agents per-run via build_graph_for_run
-
     from draftly.memory.candidates.service import CandidateService
     from draftly.memory.docgraph.service import DocGraphService
     from draftly.memory.episodic.service import EpisodicService
     from draftly.memory.procedural.service import ProceduralService
+    from draftly.workflows.content.content_generation import run_content_workflow
     from draftly.workflows.context import WorkflowContext
     from draftly.workflows.documentation.documentation_audit import (
         run_documentation_audit,
@@ -84,6 +83,7 @@ def build_workflows(
     from draftly.workflows.feedback.documentation_feedback_loop import (
         run_feedback_loop,
     )
+    from draftly.workflows.github.feedback_ingestion import ingest_github_feedback
     from draftly.workflows.github.issue_resolution import (
         run_github_issue_workflow,
     )
@@ -110,6 +110,7 @@ def build_workflows(
         feedback=feedback,
         config=config,
         tools=tools,
+        agents=agents,
         model=model,
         hooks=list(hooks or []),
         audit_repo=audit_repo,
@@ -128,11 +129,13 @@ def build_workflows(
     registry.register("github_pr", run_pull_request_workflow)
     registry.register("github_release", run_release_workflow)
     registry.register("github_issue", run_github_issue_workflow)
+    registry.register("github_feedback", ingest_github_feedback)
     registry.register("slack_support", run_slack_support)
     registry.register("discord_support", run_discord_support)
     registry.register("documentation_sync", run_documentation_sync)
     registry.register("documentation_audit", run_documentation_audit)
     registry.register("feedback_loop", run_feedback_loop)
+    registry.register("content_generation", run_content_workflow)
     registry.register("evaluation_loop", run_evaluation_loop)
     registry.register("onboarding_initialize", run_onboarding_initialize)
     registry.register("memory_curation", run_memory_curation)
@@ -167,6 +170,27 @@ def build_workflows(
                 context.broadcaster = DashboardStreamBus(redis_client.native)
 
     runner = WorkflowRunner(context, publisher=publisher)
+    context.runner = runner
+
+    notifier = None
+    if repositories is not None and getattr(repositories, "reviews", None) is not None:
+        from draftly.integrations import email as email_module
+        from draftly.integrations.discord.client import DiscordClient
+        from draftly.integrations.slack.client import SlackClient
+        from draftly.persistence.repositories.review_notifications import (
+            ReviewNotificationRepository,
+        )
+        from draftly.review.notifier import ReviewNotifier
+
+        notifier = ReviewNotifier(
+            reviews=getattr(repositories, "reviews", None),
+            reviewers=getattr(repositories, "reviewers", None),
+            slack=SlackClient(),
+            discord=DiscordClient(),
+            notifications=ReviewNotificationRepository(),
+            email=email_module,
+        )
+        context.notifier = notifier
 
     logger.info(
         "workflow registry built workflows=%d streaming=%s",

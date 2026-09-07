@@ -14,12 +14,14 @@ SURFACE_BY_EVENT_PREFIX = {
     "issues": "issue",
     "slack": "support",
     "discord": "support",
+    "content": "content",
 }
 
 WORKFLOW_BY_SURFACE = {
     "pull_request": "github_pr",
     "issue": "github_issue",
     "support": "support",
+    "content": "content_generation",
 }
 
 

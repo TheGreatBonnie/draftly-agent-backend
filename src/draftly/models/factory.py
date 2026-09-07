@@ -619,6 +619,18 @@ ROLE_POLICIES: tuple[tuple[str, str, str, tuple[str, ...]], ...] = (
     ("memory_curator", "fast", "tool_calling", ("tool_calling",)),
     ("classifier", "fast", "tool_calling", ("tool_calling",)),
     ("context", "research", "research", ("research", "tool_calling")),
+    (
+        "content_strategist", "research", "research",
+        ("research", "tool_calling", "structured_output"),
+    ),
+    (
+        "content_blog_writer", "reasoning", "reasoning",
+        ("reasoning", "tool_calling", "structured_output"),
+    ),
+    (
+        "content_social_adapter", "reasoning", "reasoning",
+        ("reasoning", "tool_calling", "structured_output"),
+    ),
 )
 
 
@@ -643,6 +655,9 @@ ROLE_OUTPUT_TOKENS: dict[str, int] = {
     "memory_curator": 1024,
     "classifier": 1024,
     "context": 2048,
+    "content_strategist": 2048,
+    "content_blog_writer": 8192,
+    "content_social_adapter": 4096,
 }
 
 

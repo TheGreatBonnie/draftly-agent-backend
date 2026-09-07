@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from datetime import datetime
+from typing import Any
 
+from draftly.delivery.models import SupportDeliveryReceipt
 from draftly.integrations.database.client import DatabaseClient
 from draftly.support.events import SupportEvent
 from draftly.support.models import (
@@ -19,6 +21,65 @@ class SupportRepository:
 
     def __init__(self, database: DatabaseClient | None = None):
         self.database = database or DatabaseClient()
+
+    # ---------------------------------------------------------
+    # Delivery receipts
+    # ---------------------------------------------------------
+
+    async def save_support_delivery(
+        self,
+        receipt: SupportDeliveryReceipt,
+    ) -> str | None:
+        """Persist a support delivery receipt on the platform workflow row."""
+        if receipt.platform == "slack":
+            from draftly.persistence.repositories.slack import save_support_delivery
+
+            return await save_support_delivery(receipt=receipt, db=self.database)
+        if receipt.platform == "discord":
+            from draftly.persistence.repositories.discord import save_support_delivery
+
+            return await save_support_delivery(receipt=receipt, db=self.database)
+        return None
+
+    async def get_support_delivery(self, run_id: str) -> dict[str, Any] | None:
+        """Fetch a support delivery receipt row by run id across platforms."""
+        from draftly.persistence.repositories.discord import get_support_delivery as discord_by_run
+        from draftly.persistence.repositories.slack import get_support_delivery as slack_by_run
+
+        for finder in (slack_by_run, discord_by_run):
+            row = await finder(run_id=run_id, db=self.database)
+            if row is not None:
+                return row
+        return None
+
+    async def get_support_delivery_by_source(
+        self,
+        org_id: str,
+        platform: str,
+        source_message_id: str,
+    ) -> dict[str, Any] | None:
+        """Fetch a delivery receipt by organization/source event identity."""
+        if platform == "slack":
+            from draftly.persistence.repositories.slack import (
+                get_support_delivery_by_source,
+            )
+
+            return await get_support_delivery_by_source(
+                org_id=org_id,
+                source_message_id=source_message_id,
+                db=self.database,
+            )
+        if platform == "discord":
+            from draftly.persistence.repositories.discord import (
+                get_support_delivery_by_source,
+            )
+
+            return await get_support_delivery_by_source(
+                org_id=org_id,
+                source_message_id=source_message_id,
+                db=self.database,
+            )
+        return None
 
     # ---------------------------------------------------------
     # Messages
@@ -223,11 +284,22 @@ class SupportRepository:
         query: str,
         *,
         platform: str | None = None,
+        org_id: str | None = None,
         limit: int = 20,
     ) -> Sequence[SupportMessage]:
-
+        conditions: list[str] = []
+        args: list[object] = []
         if platform:
-            sql = """
+            conditions.append(f"platform = ${len(args) + 1}")
+            args.append(platform)
+        conditions.append(f"content ILIKE ${len(args) + 1}")
+        args.append(f"%{query}%")
+        if org_id is not None:
+            conditions.append(f"org_id = ${len(args) + 1}")
+            args.append(org_id)
+        args.append(limit)
+        limit_placeholder = f"${len(args)}"
+        sql = f"""
             SELECT
                 message_id,
                 platform,
@@ -242,45 +314,12 @@ class SupportRepository:
                 raw,
                 org_id
             FROM support_messages
-            WHERE platform = $1
-              AND content ILIKE $2
+            WHERE {' AND '.join(conditions)}
             ORDER BY timestamp DESC
-            LIMIT $3
+            LIMIT {limit_placeholder}
             """
 
-            rows = await self.database.fetch_all(
-                sql,
-                platform,
-                f"%{query}%",
-                limit,
-            )
-
-        else:
-            sql = """
-            SELECT
-                message_id,
-                platform,
-                channel_id,
-                channel_name,
-                author_id,
-                author_name,
-                content,
-                thread_id,
-                timestamp,
-                url,
-                raw,
-                org_id
-            FROM support_messages
-            WHERE content ILIKE $1
-            ORDER BY timestamp DESC
-            LIMIT $2
-            """
-
-            rows = await self.database.fetch_all(
-                sql,
-                f"%{query}%",
-                limit,
-            )
+        rows = await self.database.fetch_all(sql, *args)
 
         return [
             SupportMessage(

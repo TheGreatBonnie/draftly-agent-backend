@@ -175,6 +175,8 @@ class DatabaseJobsStore:
         *,
         job_id: str,
         status: str,
+        error: str | None = None,
+        result: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
 
         row = await self.client.fetch_one(
@@ -182,7 +184,18 @@ class DatabaseJobsStore:
             UPDATE jobs
             SET
                 status = $1,
-                last_run_at = now()
+                started_at = CASE
+                    WHEN $1 = 'running' AND started_at IS NULL THEN now()
+                    ELSE started_at
+                END,
+                completed_at = CASE
+                    WHEN $1 IN ('completed', 'failed', 'cancelled') THEN now()
+                    ELSE completed_at
+                END,
+                error = $3,
+                result = $4::JSONB,
+                last_run_at = now(),
+                updated_at = now()
             WHERE run_id = $2
             RETURNING
                 id,
@@ -198,6 +211,8 @@ class DatabaseJobsStore:
             """,
             status,
             job_id,
+            error,
+            json.dumps(result) if result is not None else None,
         )
 
         if not row:

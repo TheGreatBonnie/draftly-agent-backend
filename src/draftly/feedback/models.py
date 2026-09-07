@@ -14,12 +14,15 @@ class FeedbackItem(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     id: str | None = None
+    org_id: str | None = None
     platform: str = "slack"
     topic: str | None = None
     content: str
     author: str | None = None
     channel: str | None = None
     source_message_id: str | None = None
+    source_event_id: str | None = None
+    source_url: str | None = None
     category: str = "question"
     sentiment: str = "neutral"
     timestamp: datetime | None = None
@@ -50,3 +53,15 @@ class DocumentationGapCandidate(BaseModel):
     platforms: list[str] = Field(default_factory=list)
     sample_questions: list[str] = Field(default_factory=list)
     metadata: dict[str, Any] = {}
+
+
+class ContentOpportunity(BaseModel):
+    """A feedback gap that can be handed to the content pipeline."""
+
+    org_id: str
+    gap_id: str
+    topic: str
+    source_feedback_ids: list[str] = Field(default_factory=list)
+    recommended_channels: list[str] = Field(default_factory=lambda: ["blog", "linkedin", "x"])
+    evidence: list[dict[str, Any]] = Field(default_factory=list)
+    reason: str = "recurring feedback gap"

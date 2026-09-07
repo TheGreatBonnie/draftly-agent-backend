@@ -33,7 +33,12 @@ async def _set_job_status(context: WorkflowContext, run_id: str, status: str) ->
     try:
         await jobs.update_status(job_id=run_id, status=status)
     except Exception:
-        logger.warning("pr_job_status_failed run=%s status=%s", run_id, status)
+        logger.warning(
+            "pr_job_status_failed",
+            run_id=run_id,
+            status=status,
+            exc_info=True,
+        )
 
 
 async def run_pull_request_workflow(
@@ -63,11 +68,12 @@ async def run_pull_request_workflow(
     else:
         # Fallback for any future status: only DELIVERED is success, FAILED is
         # failure; other unknowns should not mark completed.
-        logger.warning("pr_workflow_unknown_status run_id=%s status=%s", run_id, state.status)
+        logger.warning(
+            "pr_workflow_unknown_status",
+            run_id=run_id,
+            status=state.status.value,
+        )
 
-    logger.info(
-        "pr_workflow_done run_id=%s status=%s",
-        state.run_id,
-        state.status.value,
-    )
+    log = logger.error if state.status == WorkflowStatus.FAILED else logger.info
+    log("pr_workflow_done", run_id=state.run_id, status=state.status.value)
     return state

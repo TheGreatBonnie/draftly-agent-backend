@@ -15,6 +15,7 @@ from strands.session import FileSessionManager
 from draftly.integrations.strands.models import (
     resolve_model_for_role,  # noqa: F401 - re-exported for graph builders
 )
+from draftly.orchestration.graphs.content_graph import build_content_graph
 from draftly.orchestration.graphs.documentation_graph import (
     build_documentation_graph,
 )
@@ -34,6 +35,7 @@ _BUILDERS = {
     # documentation graph below.
     "slack": build_support_graph,
     "discord": build_support_graph,
+    "content": build_content_graph,
 }
 
 
@@ -56,6 +58,7 @@ def build_graph_for_run(
     model: Any,
     hooks: list[Any] | None = None,
     *,
+    agents: Any = None,
     storage_dir: str = DEFAULT_SESSION_STORAGE_DIR,
     session_manager: Any | None = None,
     audit_repo: Any = None,
@@ -72,9 +75,21 @@ def build_graph_for_run(
     builder = _BUILDERS.get(surface, build_documentation_graph)
     manager = session_manager or build_session_manager(run_id, storage_dir)
 
+    # The content repository is consumed exclusively by the content graph;
+    # drop it for every other builder so an injected repo never leaks into an
+    # incompatible builder signature through **graph_kwargs.
+    if surface != "content":
+        graph_kwargs.pop("content_repository", None)
+
+    # The slack/discord surfaces already encode the support origin: scope the
+    # support graph's delivery tools to the originating platform.
+    if surface in ("slack", "discord"):
+        graph_kwargs.setdefault("source", surface)
+
     return builder(
         session_manager=manager,
         tools_registry=tools_registry,
+        agents=agents,
         model=model,
         hooks=hooks,
         audit_repo=audit_repo,

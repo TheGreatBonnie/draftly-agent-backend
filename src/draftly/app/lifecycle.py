@@ -247,7 +247,10 @@ class DraftlyApplication:
         try:
             from draftly.feedback import FeedbackService
 
-            return FeedbackService(support_repository=self.dependencies.repositories.support)
+            return FeedbackService(
+                support_repository=self.dependencies.repositories.support,
+                feedback_repository=self.dependencies.repositories.feedback,
+            )
         except Exception as exc:
             logger.warning("feedback_service_unavailable: %s", exc)
             return None

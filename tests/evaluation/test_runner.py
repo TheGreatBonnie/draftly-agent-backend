@@ -23,9 +23,11 @@ class FakeExperiment:
     evaluators: list = field(default_factory=list)
     report: FakeReport = field(default_factory=FakeReport)
     task_calls: list = field(default_factory=list)
+    data_store_calls: list = field(default_factory=list)
 
-    async def run_evaluations_async(self, task):
+    async def run_evaluations_async(self, task, evaluation_data_store=None):
         self.task_calls.append(task)
+        self.data_store_calls.append(evaluation_data_store)
         return self.report
 
 
@@ -87,6 +89,43 @@ async def test_runner_without_repo_skips_persist(mocked_experiment) -> None:
 
     assert record is None
     assert report.overall_score == pytest.approx(0.5)
+
+
+async def test_runner_passes_evaluation_data_store_to_strands(mocked_experiment) -> None:
+    from strands_evals import Case
+
+    store = object()
+    runner = StrandsEvalsRunner(evaluation_data_store=store)
+
+    await runner.run([Case(name="a", input="q1")], [], lambda case: case.input)
+
+    assert mocked_experiment[0].data_store_calls == [store]
+
+
+async def test_run_dataset_online_builds_cases_with_custom_evaluators(monkeypatch) -> None:
+    from draftly.evaluation.runner import run_dataset_online
+
+    created: list[FakeExperiment] = []
+
+    def factory(*, cases, evaluators):
+        experiment = FakeExperiment(cases=cases, evaluators=evaluators)
+        created.append(experiment)
+        return experiment
+
+    monkeypatch.setattr("strands_evals.Experiment", factory)
+    evaluator = object()
+
+    await run_dataset_online(
+        client=object(),
+        dataset={
+            "name": "custom",
+            "cases": [{"name": "case-1", "input": "question", "expected_output": "answer"}],
+        },
+        evaluators=[evaluator],
+    )
+
+    assert [case.name for case in created[0].cases] == ["case-1"]
+    assert created[0].evaluators == [evaluator]
 
 
 def test_report_rows_surfaces_swallowed_task_errors() -> None:

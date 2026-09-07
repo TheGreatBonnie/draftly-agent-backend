@@ -131,6 +131,29 @@ async def get_org_by_discord_guild(
     return dict(row) if row else None
 
 
+async def get_discord_guild_id(
+    *,
+    org_id: str,
+    db: DatabaseClient | None = None,
+) -> str | None:
+    """Return the Discord guild id linked to an organization, if any."""
+    if db is None:
+        from draftly.app.config import get_settings
+        from draftly.app.dependencies import build_dependencies
+
+        settings = get_settings()
+        deps = build_dependencies(settings=settings)
+        db = deps.integrations.database
+
+    row = await db.fetch_one(
+        "SELECT discord_guild_id FROM organizations WHERE clerk_org_id = $1",
+        org_id,
+    )
+    if not row:
+        return None
+    return row.get("discord_guild_id")
+
+
 async def get_or_create_org_by_clerk(
     *,
     clerk_org_id: str,

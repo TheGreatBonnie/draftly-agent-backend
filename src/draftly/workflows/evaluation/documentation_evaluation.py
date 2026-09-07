@@ -43,6 +43,7 @@ SURFACE_TO_EVALUATION_TYPE = {
     "slack": "support",
     "discord": "support",
     "release": "documentation",
+    "content": "content",
     "feedback": "feedback",
 }
 
@@ -207,6 +208,13 @@ async def run_evaluation_loop(
         tools_registry=getattr(context, "tools", None),
         model=getattr(context, "model", None),
         judge_model=judge_model if live else None,
+        # The live content manifold needs the content repository to ground
+        # authoring variants; other surfaces ignore it. Injected from the
+        # composition root so evaluation exercises the same repo instance the
+        # runtime content workflow uses.
+        content_repository=getattr(
+            getattr(context, "repositories", None), "content", None
+        ),
         # Live runs invoke real agents (deep context/research/impact/writer)
         # PLUS streamed LLM judges, which cannot fit the sync 600s default.
         # Give each dataset enough headroom to finish and be scored.
@@ -226,6 +234,12 @@ async def run_evaluation_loop(
 
     if result.status != Status.COMPLETED:
         state.errors.append(f"evaluation graph ended {result.status}")
+        await _record_feedback_outcome(
+            context,
+            org_id=org_id,
+            run_id=state.run_id,
+            payload={"status": "failed", "error": state.errors[-1]},
+        )
         logger.warning(
             "evaluation_loop_failed",
             run_id=state.run_id,
@@ -269,6 +283,13 @@ async def run_evaluation_loop(
             "status": str(persisted.get("status") or "completed"),
         })
 
+    await _record_feedback_outcome(
+        context,
+        org_id=org_id,
+        run_id=state.run_id,
+        payload={"status": "completed", "evaluation": persisted or {}},
+    )
+
     logger.info(
         "evaluation_loop_completed",
         run_id=state.run_id,
@@ -277,6 +298,26 @@ async def run_evaluation_loop(
     )
 
     return state.finish(WorkflowStatus.DELIVERED)
+
+
+async def _record_feedback_outcome(
+    context: WorkflowContext,
+    *,
+    org_id: str,
+    run_id: str,
+    payload: dict[str, Any],
+) -> None:
+    repository = getattr(
+        getattr(getattr(context, "repositories", None), "feedback_outcomes", None),
+        "save_outcome",
+        None,
+    )
+    if repository is None:
+        return
+    try:
+        await repository(org_id, "evaluation", run_id, payload)
+    except Exception:
+        logger.warning("evaluation_feedback_outcome_failed", run_id=run_id, exc_info=True)
 
 
 async def _run_graph(graph: Any, state: WorkflowState, datasets: list[dict[str, Any]]) -> Any:

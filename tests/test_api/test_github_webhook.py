@@ -41,20 +41,17 @@ async def test_non_merged_pr_not_enqueued() -> None:
     }
 
     bt = MagicMock()
-    with patch("draftly.app.api.routes.github._tickets") as mock_tickets, \
-         pytest.MonkeyPatch.context() as mp:
+    with pytest.MonkeyPatch.context() as mp:
         import draftly.app.api.routes.github as routes_mod
 
         mp.setattr(
             routes_mod, "verify_webhook_signature", lambda body, sig: True
         )
-        mock_tickets.return_value.issue = AsyncMock(return_value="ticket-abc")
         result = await github_webhook(request=request, background_tasks=bt)
 
     assert "skipped" in str(result)
     jobs.upsert_on_conflict.assert_not_awaited()
     bt.add_task.assert_not_called()
-    mock_tickets.return_value.issue.assert_not_awaited()
 
 
 async def test_merged_pr_enqueued() -> None:
@@ -86,16 +83,23 @@ async def test_merged_pr_enqueued() -> None:
     }
 
     bt = MagicMock()
-    with patch("draftly.app.api.routes.github._tickets") as mock_tickets, \
-         pytest.MonkeyPatch.context() as mp:
+    identity = AsyncMock(return_value=("org-1", 42))
+    with (
+        patch("draftly.app.api.routes.github._resolve_webhook_identity", new=identity),
+        patch(
+            "draftly.persistence.repositories.github.save_github_workflow",
+            new=AsyncMock(return_value="wf-1"),
+        ),
+        pytest.MonkeyPatch.context() as mp,
+    ):
         import draftly.app.api.routes.github as routes_mod
 
         mp.setattr(routes_mod, "verify_webhook_signature", lambda body, sig: True)
-        mock_tickets.return_value.issue = AsyncMock(return_value="ticket-abc")
         result = await github_webhook(request=request, background_tasks=bt)
 
     assert result.status.startswith("pull_request.merged")
     drafts = request.app.state.draftly
+    assert events.normalize_github.return_value["project_id"] == "org-1"
     bt.add_task.assert_called_once_with(
         drafts.worker.run_task,
         "github_pr.enqueue",
@@ -136,12 +140,23 @@ async def test_push_and_release_not_blocked() -> None:
         }
 
         bt = MagicMock()
-        with patch("draftly.app.api.routes.github._tickets") as mock_tickets, \
-             pytest.MonkeyPatch.context() as mp:
+        identity = AsyncMock(return_value=("org-1", 42))
+        with (
+            patch("draftly.app.api.routes.github._resolve_webhook_identity", new=identity),
+            patch(
+                "draftly.persistence.repositories.github.save_github_workflow",
+                new=AsyncMock(return_value="wf-1"),
+            ),
+            pytest.MonkeyPatch.context() as mp,
+        ):
             import draftly.app.api.routes.github as routes_mod
 
             mp.setattr(routes_mod, "verify_webhook_signature", lambda body, sig: True)
-            mock_tickets.return_value.issue = AsyncMock(return_value="ticket-abc")
             await github_webhook(request=request, background_tasks=bt)
 
-        bt.add_task.assert_called_once(), event_type
+        expected_task = (
+            "github_release.enqueue"
+            if event_type.startswith("release")
+            else "github_pr.enqueue"
+        )
+        assert bt.add_task.call_args.args[1] == expected_task, event_type

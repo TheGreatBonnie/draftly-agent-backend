@@ -43,6 +43,7 @@ class SlackProcessor(BaseProcessor):
             actor=message.get("user", ""),
             source="slack",
             project_id=team_id,
+            team_id=team_id,
             source_message_id=f"{channel}:{ts}",
             question=message.get("text", ""),
             channel=channel,

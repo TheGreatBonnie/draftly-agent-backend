@@ -116,6 +116,57 @@ API_CACHE_ENABLED=true
 
 The `dual` backend mode uses both Redis and PostgreSQL for redundancy. For cost optimization, start with `redis` and upgrade to `dual` as data volume grows.
 
+### 3.5 Slack and Discord Support
+
+Slack/Discord support is a durable, org-scoped pipeline. It requires platform
+installation, credential environment variables, queue workers, and a review
+callback contract. See `docs/workflows/support.md` for the full operational
+contract.
+
+**Required secrets:**
+
+| Variable | Purpose |
+|----------|---------|
+| `SLACK_SIGNING_SECRET` | Verify `X-Slack-Signature` on `/api/slack/events` and interactivity |
+| `SLACK_CLIENT_ID` / `SLACK_CLIENT_SECRET` | Slack OAuth v2 exchange on `/api/slack/oauth/callback` |
+| `SLACK_BOT_TOKEN` | Environment fallback bot token (workspace installs take precedence) |
+| `DISCORD_PUBLIC_KEY` | Verify `X-Signature-Ed25519` on Discord interactions |
+| `DISCORD_BOT_TOKEN` | Discord bot token for posting and channel/guild queries |
+
+Outbound delivery selects credentials **per installation** (Slack `team_id` /
+Discord `guild_id`) with the corresponding environment token as fallback, so a
+multi-tenant deployment never sends a reply through the wrong workspace's bot.
+
+**Slack installation:**
+
+1. Point users at `/api/slack/install-url` (returns a scoped OAuth URL).
+2. Completing OAuth saves the workspace bot token and redirects to the frontend.
+3. Link the workspace to a Clerk org via `/api/slack/link` — only linked
+   workspaces are routable.
+
+**Discord guild linking:**
+
+1. Invite the bot to the guild via `/api/discord/invite-url`.
+2. Link the guild to a Clerk org via `/api/discord/link`.
+3. Configure trigger channels via `/api/discord/trigger-channels` so the bot
+   only answers in the intended channels.
+
+**Queue workers:** each webhook worker must be reachable and subscribed.
+Support jobs are enqueued as `slack_support.enqueue` / `discord_support.enqueue`
+on the `webhooks` queue — include `webhooks` in `RQ_WORKER_QUEUES`. When RQ is
+disabled the same task handlers run in-process. Posted replies are persisted as
+`SupportDeliveryReceipt` rows before the thread is marked resolved, which
+short-circuits duplicate webhook redeliveries.
+
+**Review callback behavior:** when the policy requires human approval, the run
+pauses at `pending_review` and the originating platform's interactivity
+(button / modal / component) posts the decision to `/api/slack/interactivity`
+or `/api/discord/interactions`. The shared `resume_review_decision` helper
+resumes the paused graph and only records the decision when the run reaches the
+expected terminal status — an approval must reach `delivered`, a rejection must
+reach `failed`. A failed approval resume keeps the review actionable and never
+records an approval for work that did not reach delivery.
+
 ## 4. Deployment Architecture
 
 ### 4.1 Minimal Production Setup
@@ -213,6 +264,9 @@ Structured logs use `structlog` and output JSON. Key log events:
 | `runner_duplicate` | INFO | Event was already processed |
 | `pr_workflow_done` | INFO | PR workflow completed |
 | `slack_support_done` | INFO | Slack support workflow completed |
+| `discord_support_done` | INFO | Discord support workflow completed |
+| `support_delivery_already_exists` | INFO | Duplicate Slack/Discord delivery suppressed |
+| `review_resumed` | INFO | A paused review was resumed with a decision |
 | `documentation_sync_done` | INFO | Doc sync completed |
 | `runner_claim_failed` | ERROR | Idempotency claim failed |
 | `runner_publish_failed` | WARNING | Streaming publish failed (non-fatal) |
@@ -241,6 +295,8 @@ Structured logs use `structlog` and output JSON. Key log events:
 - `src/draftly/app/config.py` — All configuration with defaults
 - `src/draftly/workflows/runner.py` — WorkflowRunner (execution engine)
 - `src/draftly/workflows/context.py` — WorkflowContext (dependency bundle)
+- `src/draftly/support/identity.py` — Slack/Discord org enrichment
+- `src/draftly/review/resume.py` — Review-resume helper
 - `src/draftly/observability/metrics.py` — Prometheus metrics
 
 ## 8. API container packaging status

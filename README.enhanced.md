@@ -1124,6 +1124,15 @@ The architecture intentionally separates:
 
 This separation allows individual components to evolve without turning the entire platform into one monolithic agent.
 
+### Content production MVP
+
+Draftly can generate reviewable blog, LinkedIn, and X drafts from published
+releases, content-relevant merged pull requests, documentation, manual briefs,
+and feedback-gap opportunities. Packages remain organization-scoped and retain
+evidence, evaluation scores, revisions, and reviewer decisions. The MVP never
+publishes externally; future publishing adapters must consume approved packages
+only. See `docs/content-production.md` for the lifecycle and boundaries.
+
 ---
 
 ## License

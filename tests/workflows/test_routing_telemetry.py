@@ -96,3 +96,34 @@ async def test_task_type_keyed_not_profile_when_they_differ():
     repositories.performance.record_outcome.assert_awaited_once_with(
         task_type="research", model_name="alpha", success=True, latency_ms=10.0,
     )
+
+
+async def test_multiple_role_decisions_are_each_recorded():
+    context = WorkflowContext(repositories=MagicMock())
+    repositories = context.repositories
+    repositories.routing = MagicMock()
+    repositories.routing.record = AsyncMock(return_value=None)
+    repositories.performance = MagicMock()
+    repositories.performance.record_outcome = AsyncMock(return_value=None)
+
+    runner = WorkflowRunner(context)
+    decisions = {
+        "classifier": _decision(task_type="fast", profile="fast", selected_model="fast-model"),
+        "research": _decision(
+            task_type="research", profile="reasoning", selected_model="research-model"
+        ),
+    }
+
+    await runner._record_routing_outcome(
+        run_id="run-many",
+        success=True,
+        latency_ms=42.0,
+        decisions=decisions,
+        organization_id="org-1",
+    )
+
+    assert repositories.routing.record.await_count == 2
+    rows = [call.args[0] for call in repositories.routing.record.await_args_list]
+    assert {row["selected_model"] for row in rows} == {"fast-model", "research-model"}
+    assert all(row["organization_id"] == "org-1" for row in rows)
+    assert repositories.performance.record_outcome.await_count == 2

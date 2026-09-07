@@ -211,6 +211,28 @@ async def test_upsert_configuration_is_passed_as_serialized_json():
     assert json.loads(args[7]) == cfg
 
 
+async def test_update_status_persists_terminal_lifecycle_fields():
+    calls: list[tuple[str, tuple]] = []
+    store = _capture([_row()], calls)
+
+    await store.update_status(
+        job_id="run-1",
+        status="failed",
+        error="graph failed",
+        result={"status": "FAILED"},
+    )
+
+    sql, args = calls[-1]
+    assert "completed_at = CASE" in sql
+    assert "started_at = CASE" in sql
+    assert "error = $" in sql
+    assert "result = $" in sql
+    assert args[0] == "failed"
+    assert args[1] == "run-1"
+    assert args[-2] == "graph failed"
+    assert json.loads(args[-1]) == {"status": "FAILED"}
+
+
 _POSITIONAL_ROW = (
     "job-1",
     "run-1",

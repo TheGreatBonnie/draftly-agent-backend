@@ -212,6 +212,7 @@ def build_evaluation_graph(
     dataset_timeout: float | None = None,
     surface_required_tools: dict[str, list[str]] | None = None,
     run_id_prefix: str = "evaluation",
+    content_repository: Any = None,
 ):
     """Build the CI/batch evaluation graph.
 
@@ -236,7 +237,11 @@ def build_evaluation_graph(
         from draftly.evaluation.runner import run_dataset_live
         from draftly.integrations.strands.client import StrandsClient
 
-        client = StrandsClient(tools=tools_registry, model=model)
+        client = StrandsClient(
+            tools=tools_registry,
+            model=model,
+            content_repository=content_repository,
+        )
         # functools.partial (not a lambda) so that RunExperimentsNode's
         # inspect.iscoroutinefunction() correctly detects the async live runner.
         runner = functools.partial(

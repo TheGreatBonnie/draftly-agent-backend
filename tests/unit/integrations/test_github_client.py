@@ -1,6 +1,6 @@
 """Unit tests for GitHub client extensions."""
 
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -63,6 +63,35 @@ async def test_get_repository_forwards_per_call_token():
         # Default call stays compatible: no explicit override required.
         await client.get_repository("owner/repo")
         assert req.await_args.kwargs.get("token") is None
+
+
+@pytest.mark.asyncio
+async def test_installation_client_uses_installation_token_for_async_requests():
+    from draftly.integrations.github import client as client_module
+
+    client = GitHubClient(installation_id=987)
+    response = MagicMock()
+    response.json.return_value = {"name": "repo"}
+    response.raise_for_status = MagicMock()
+    http_client = AsyncMock()
+    http_client.request.return_value = response
+    with patch.object(
+        client_module,
+        "get_installation_token",
+        new_callable=AsyncMock,
+        return_value="installation-token",
+    ) as token_factory, patch.object(
+        client,
+        "_client",
+        return_value=http_client,
+    ):
+        result = await client.get_repository("owner/repo")
+
+    assert result == {"name": "repo"}
+    token_factory.assert_awaited_once_with(987)
+    assert http_client.request.await_args.kwargs["headers"]["Authorization"] == (
+        "Bearer installation-token"
+    )
 
 
 @pytest.mark.asyncio

@@ -130,13 +130,7 @@ async def handle_interactions(request: Request) -> JSONResponse:
         review_id = full_token  # full_token is the review UUID
         reviewer_id = payload.get("member", {}).get("user", {}).get("id", "unknown")
 
-        decision_map = {
-            "discord_approve": "approved",
-            "discord_reject": "rejected",
-            "discord_revise": "changes_requested",
-            "discord_feedback": "changes_requested",
-        }
-        decision = decision_map.get(action_prefix, "rejected")
+        approved = action == "approved"
         feedback = payload.get("data", {}).get("components", [{}])[0].get("value", "")
 
         logger.info(
@@ -147,26 +141,14 @@ async def handle_interactions(request: Request) -> JSONResponse:
         )
 
         try:
-            # Get the ReviewDecisionService from app state
-            review_decision = getattr(request.app.state.draftly, "review_decision", None)
-            if review_decision is None:
-                logger.error("review_decision_service_not_available")
-                return JSONResponse(
-                    content={
-                        "type": 4,
-                        "data": {
-                            "content": "Service not available. Please use the dashboard.",
-                            "flags": 64,
-                        },
-                    },
-                )
+            from draftly.review.resume import resume_review_decision
 
-            decision = action.split("_")[0] if "_" in action else action
-            await review_decision.decide(
+            await resume_review_decision(
                 review_id=review_id,
-                decision=decision,
+                approved=approved,
                 reviewer_id=reviewer_id,
                 comment=feedback,
+                app_state=getattr(request.app.state, "draftly", None),
             )
         except Exception as e:
             logger.error(

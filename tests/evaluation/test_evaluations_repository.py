@@ -25,14 +25,25 @@ def test_list_datasets_returns_serialized_cases(monkeypatch):
     repo = EvaluationRepository(store=FakeStore())
     calls = {"called": False}
 
-    fake_cases = [
-        type("Case", (), {"name": "c1", "input": "in", "expected_output": "out", "metadata": {}})(),
-    ]
-
     class FakeRunner:
-        def load_all_datasets(self):
+        def load_all_dataset_definitions(self):
             calls["called"] = True
-            return {"geometry": fake_cases}
+            return [
+                {
+                    "name": "geometry",
+                    "description": "Geometry questions",
+                    "surface": "support",
+                    "required_tools": {"research": ["code_search"]},
+                    "cases": [
+                        {
+                            "name": "c1",
+                            "input": "in",
+                            "expected_output": "out",
+                            "metadata": {},
+                        }
+                    ],
+                }
+            ]
 
     monkeypatch.setattr(
         "draftly.persistence.repositories.evaluations.StrandsEvalsRunner", FakeRunner
@@ -42,9 +53,20 @@ def test_list_datasets_returns_serialized_cases(monkeypatch):
 
     assert calls["called"] is True
     assert datasets == [
-        {"name": "geometry", "cases": [
-            {"name": "c1", "input": "in", "expected_output": "out", "metadata": {"name": "c1"}}
-        ]}
+        {
+            "name": "geometry",
+            "description": "Geometry questions",
+            "surface": "support",
+            "required_tools": {"research": ["code_search"]},
+            "cases": [
+                {
+                    "name": "c1",
+                    "input": "in",
+                    "expected_output": "out",
+                    "metadata": {"name": "c1"},
+                }
+            ],
+        }
     ]
 
 
@@ -52,8 +74,8 @@ def test_list_datasets_returns_empty_when_no_datasets(monkeypatch):
     repo = EvaluationRepository(store=FakeStore())
 
     class FakeRunner:
-        def load_all_datasets(self):
-            return {}
+        def load_all_dataset_definitions(self):
+            return []
 
     monkeypatch.setattr(
         "draftly.persistence.repositories.evaluations.StrandsEvalsRunner", FakeRunner

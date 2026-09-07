@@ -11,10 +11,11 @@ from draftly.app.workers.task_runner import TaskRunner
 logger = structlog.get_logger(__name__)
 
 
-# Scheduled task name → WorkflowRegistry workflow name. Surface workflows
-# (github_issue / slack_support / discord_support) are NOT here: they run
-# through the webhook → WorkflowRunner path (§7.4). `github_pr.enqueue` is
-# dispatched via RQ/in-process through the same WorkflowRunner graph.
+# Scheduled task name → WorkflowRegistry workflow name. GitHub webhook tasks are
+# dispatched via RQ/in-process through their owning WorkflowRunner graph.
+# Slack/Discord support rides the same durable worker path: each ingress event
+# enqueues as ``slack_support.enqueue`` / ``discord_support.enqueue`` and the
+# handler runs the registered surface workflow against the composed context.
 TASK_REGISTRY: dict[str, str] = {
     "documentation.sync": "documentation_sync",
     "documentation.sync_repository": "documentation_sync",
@@ -25,6 +26,11 @@ TASK_REGISTRY: dict[str, str] = {
     "memory.curation": "memory_curation",
     "memory.maintenance": "memory_maintenance",
     "github_pr.enqueue": "github_pr",
+    "github_release.enqueue": "github_release",
+    "github_feedback.enqueue": "github_feedback",
+    "content_generation.enqueue": "content_generation",
+    "slack_support.enqueue": "slack_support",
+    "discord_support.enqueue": "discord_support",
 }
 
 

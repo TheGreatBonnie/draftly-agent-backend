@@ -78,6 +78,8 @@ _DOCUMENTATION_TOOLS = [
     affected_docs,
 ]
 
+_CONTENT_TOOLS = [semantic_search, keyword_search, hybrid_search, code_search, get_diff, get_files]
+
 _DOCUMENTATION_ENGINEER_TOOLS = [
     read_file,
     write_file,
@@ -182,6 +184,7 @@ class ToolRegistry:
     documentation: list[Any] = field(default_factory=list)
     documentation_engineer: list[Any] = field(default_factory=list)
     documentation_reviewer: list[Any] = field(default_factory=list)
+    content: list[Any] = field(default_factory=list)
     github_intelligence: list[Any] = field(default_factory=list)
 
     support_engineer: list[Any] = field(default_factory=list)
@@ -242,6 +245,7 @@ def build_tools() -> ToolRegistry:
         documentation=_DOCUMENTATION_TOOLS,
         documentation_engineer=_DOCUMENTATION_ENGINEER_TOOLS,
         documentation_reviewer=_DOCUMENTATION_REVIEWER_TOOLS,
+        content=_CONTENT_TOOLS,
         github_intelligence=_GITHUB_INTELLIGENCE_TOOLS,
         support_engineer=_SUPPORT_ENGINEER_TOOLS,
         support_reviewer=_SUPPORT_REVIEWER_TOOLS,
@@ -262,6 +266,7 @@ def build_tools() -> ToolRegistry:
             _DOCUMENTATION_TOOLS,
             _DOCUMENTATION_ENGINEER_TOOLS,
             _DOCUMENTATION_REVIEWER_TOOLS,
+            _CONTENT_TOOLS,
             _GITHUB_INTELLIGENCE_TOOLS,
             _SUPPORT_ENGINEER_TOOLS,
             _SUPPORT_REVIEWER_TOOLS,

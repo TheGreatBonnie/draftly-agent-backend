@@ -50,6 +50,24 @@ All responses use JSON unless otherwise noted. Errors follow the standard FastAP
 | `POST` | `/api/slack/events` | None | Slack Events API webhook — handled via Bolt's `AsyncSlackRequestHandler` |
 | `POST` | `/api/slack/interactivity` | None | Slack interactivity webhook — button clicks, dropdowns, modals |
 
+**Operational contract for Slack:**
+
+- **OAuth installation** begins at `/api/slack/install-url`, which returns a
+  scoped authorize URL (`chat:write`, channel history/read scopes). Completing
+  OAuth hits `/api/slack/oauth/callback`, which stores the workspace bot token
+  in the Slack installation store and redirects the browser back to the
+  frontend. A workspace is only routable once its `team_id` is linked to a
+  Clerk org via `/api/slack/link`.
+- **Ingress** arrives on `/api/slack/events`. The Bolt handler normalizes each
+  message (adding an 👀 reaction to acknowledge), then calls
+  `enrich_support_event` to resolve `team_id` → Clerk org. Unlinked workspaces
+  are dropped. The event is dispatched through the durable worker path.
+- **Outbound credentials** are selected by workspace installation
+  (`team_id`), not only the environment fallback — each Slack delivery uses the
+  token for the originating workspace.
+- **Review actions** on Slack (button clicks/modals from `interactivity`)
+  resume the paused graph through the shared review-resume helper.
+
 ### 2.5 Discord
 
 | Method | Endpoint | Auth | Purpose |
@@ -62,6 +80,19 @@ All responses use JSON unless otherwise noted. Errors follow the standard FastAP
 | `POST` | `/api/discord/trigger-channels` | JWT | Sets trigger channels. Body: `{"channels": [str]}` |
 | `DELETE` | `/api/discord/link` | JWT | Removes the Discord guild link from the current organization |
 | `POST` | `/api/discord/interactions` | None | Discord component interactions — Ed25519 signature verification, review decisions via button clicks |
+
+**Operational contract for Discord:**
+
+- **Guild linking** is a two-step flow: the bot is added to a guild via the
+  invite URL, then the guild is linked to a Clerk org via `/api/discord/link`.
+  Trigger channels restrict which channels the bot answers in.
+- **Ingress** arrives on `/api/discord/interactions` (message-create). The
+  normalizer runs, `enrich_support_event` resolves `guild_id` → Clerk org, and
+  the event is dispatched through the durable worker path.
+- **Delivery** validates guild ownership and configured target channels before
+  posting to the originating thread.
+- **Review actions** from component buttons resume the paused graph through the
+  shared review-resume helper.
 
 ### 2.6 Documentation
 

@@ -32,6 +32,40 @@ _COMMON_BASENAMES = {
 }
 
 
+def _draft_text(payload: dict[str, Any]) -> str:
+    """Flatten answer or documentation-plan output into scored text."""
+    content = payload.get("content") or payload.get("draft")
+    if isinstance(content, str):
+        return content
+
+    files = payload.get("files")
+    if isinstance(files, list):
+        chunks: list[str] = []
+        for file in files:
+            if not isinstance(file, dict):
+                continue
+            path = str(file.get("path") or "")
+            body = str(file.get("content") or "")
+            if path or body:
+                chunks.append(f"{path}\n{body}")
+        return "\n\n".join(chunks)
+    return ""
+
+
+def _research_evidence(payload: Any) -> list[dict]:
+    """Normalize EvidenceBundle and legacy evaluator payload shapes."""
+    if isinstance(payload, list):
+        return [item for item in payload if isinstance(item, dict)]
+    if not isinstance(payload, dict):
+        return []
+    evidence = payload.get("evidence")
+    if evidence is None:
+        evidence = payload.get("items", [])
+    if not isinstance(evidence, list):
+        return []
+    return [item for item in evidence if isinstance(item, dict)]
+
+
 def _evidence_match_tokens(entry: dict) -> set[str]:
     """Normalized substrings that indicate the draft references ``entry``.
 
@@ -117,32 +151,28 @@ class EvaluatorNode(MultiAgentBase):
         # "From <dep_id>:" sections — the draft comes from whichever of
         # answer/update/create ran; evidence comes from research.
         # NOTE: the research swarm's final message may be plain text, not
-        # JSON; parse_node_input skips non-JSON payloads, so evidence
-        # degrades to [] and scoring falls back to length + iteration
-        # caps. Safe by design.
+        # JSON; parse_node_input skips non-JSON payloads, so evidence safely
+        # degrades to [] in that case.
         deps = parse_node_input(task)
 
         draft = ""
         for dep_id in ("answer", "update", "create"):
             if dep_id in deps:
-                draft = deps[dep_id].get(
-                    "draft",
-                    deps[dep_id].get("content", ""),
-                )
+                draft = _draft_text(deps[dep_id])
 
-        research_out = deps.get("research")
-        if isinstance(research_out, list):
-            evidence = research_out
-        elif isinstance(research_out, dict):
-            evidence = research_out.get("evidence", [])
-        else:
-            evidence = []
+        evidence = []
+        for evidence_source in ("context", "research"):
+            evidence = _research_evidence(deps.get(evidence_source))
+            if evidence:
+                break
 
         score, reasons = compute_quality(evidence, draft)
-        passed = score >= 0.7 or self.iteration >= self.max_iterations
+        passed = score >= 0.7
 
         if not reasons:
             reasons.append(f"Score {score:.2f} (threshold: 0.70)")
+        if not passed and self.iteration >= self.max_iterations:
+            reasons.append(f"Quality threshold not met after {self.iteration} evaluations")
 
         return MultiAgentResult(
             status=Status.COMPLETED,

@@ -95,7 +95,11 @@ class RedisStreamBus:
             except asyncio.CancelledError:
                 return
             except Exception:
-                logger.warning("stream_bus_subscribe_error run_id=%s", run_id, exc_info=True)
+                logger.warning(
+                    "stream_bus_subscribe_error",
+                    run_id=run_id,
+                    exc_info=True,
+                )
                 await asyncio.sleep(1)
 
     async def close(self) -> None:

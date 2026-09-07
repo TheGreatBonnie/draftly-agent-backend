@@ -18,6 +18,7 @@ from draftly.orchestration.graphs.documentation_graph import (
     DEFAULT_NODE_TIMEOUT,
     _dedupe,
 )
+from draftly.orchestration.graphs.tool_scoping import scope_writer_tools
 from draftly.orchestration.hooks.review_gate import ReviewGate
 from draftly.orchestration.nodes.evaluate import EvaluatorNode
 from draftly.orchestration.routing.conditions import (
@@ -50,6 +51,7 @@ def build_issue_graph(
     model: Any,
     hooks: list[Any] | None = None,
     *,
+    agents: Any = None,
     graph_id: str = ISSUE_GRAPH_ID,
     audit_repo: Any = None,
     memory: Any = None,
@@ -79,8 +81,11 @@ def build_issue_graph(
     writer_model = resolve_model_for_role(model, "documentation_engineer")
     intelligence_model = resolve_model_for_role(model, "github_intelligence")
 
-    classifier = build_classifier(classifier_model)
-    context_agent = build_issue_context_agent(
+    registry = agents
+    classifier_builder = getattr(registry, "classifier", None) or build_classifier
+    classifier = classifier_builder(classifier_model)
+    context_builder = getattr(registry, "issue_context", None) or build_issue_context_agent
+    context_agent = context_builder(
         context_model,
         _dedupe(
             reg.semantic_search,
@@ -88,7 +93,8 @@ def build_issue_graph(
             _LOCAL_CODE_SEARCH,
         ),
     )
-    research_swarm = build_issue_research_swarm(
+    research_builder = getattr(registry, "issue_research_swarm", None) or build_issue_research_swarm
+    research_swarm = research_builder(
         research_model,
         reg,
         local_tools=_dedupe(
@@ -98,7 +104,8 @@ def build_issue_graph(
             _LOCAL_CODE_SEARCH,
         ),
     )
-    issue_analyzer = build_issue_analyzer(
+    analyzer_builder = getattr(registry, "issue_analyzer", None) or build_issue_analyzer
+    issue_analyzer = analyzer_builder(
         intelligence_model,
         _dedupe(
             reg.semantic_search,
@@ -106,19 +113,22 @@ def build_issue_graph(
             _LOCAL_CODE_SEARCH,
         ),
     )
-    answer_agent = build_answer_writer(
+    answer_builder = getattr(registry, "answer_writer", None) or build_answer_writer
+    answer_agent = answer_builder(
         support_model,
         _dedupe(reg.semantic_search, reg.keyword_search),
     )
-    update_writer = build_writer_agent(
+    writer_builder = getattr(registry, "writer_agent", None) or build_writer_agent
+    update_writer = writer_builder(
         writer_model,
-        _dedupe(reg.documentation_engineer, reg.documentation),
+        scope_writer_tools(reg.documentation_engineer, reg.documentation),
     )
-    create_writer = build_writer_agent(
+    create_writer = writer_builder(
         writer_model,
-        _dedupe(reg.documentation_engineer, reg.documentation),
+        scope_writer_tools(reg.documentation_engineer, reg.documentation),
     )
-    responder = build_issue_responder(
+    responder_builder = getattr(registry, "issue_responder", None) or build_issue_responder
+    responder = responder_builder(
         intelligence_model,
         _dedupe(reg.github_intelligence),
     )
@@ -155,6 +165,8 @@ def build_issue_graph(
     builder.add_edge("answer", "evaluate", condition=generated)
     builder.add_edge("update", "evaluate", condition=generated)
     builder.add_edge("create", "evaluate", condition=generated)
+    builder.add_edge("context", "evaluate", condition=generated)
+    builder.add_edge("research", "evaluate", condition=generated)
 
     builder.add_edge("evaluate", "answer", condition=needs_revision_of("answer"))
     builder.add_edge("evaluate", "update", condition=needs_revision_of("update"))

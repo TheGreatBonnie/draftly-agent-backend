@@ -97,6 +97,14 @@ class Settings(BaseSettings):
     discord_guild_id: str | None = None
 
     # ------------------------------------------------------------------
+    # Email (SendGrid)
+    # ------------------------------------------------------------------
+
+    sendgrid_api_key: str | None = None
+    sendgrid_from_email: str = "reviews@draftly.ai"
+    sendgrid_from_name: str = "Draftly Reviews"
+
+    # ------------------------------------------------------------------
     # Database (NeonDB / Postgres)
     # ------------------------------------------------------------------
 

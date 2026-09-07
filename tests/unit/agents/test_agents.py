@@ -131,6 +131,33 @@ def test_surface_agents_construct(stub_model: StubModel) -> None:
     )
 
 
+def test_agent_registry_contains_all_active_graph_factories() -> None:
+    from draftly.app.composition.agents import build_agents
+
+    registry = build_agents(models=None, tools=None)
+    required = {
+        "classifier",
+        "context_agent",
+        "delivery_agent",
+        "impact_agent",
+        "writer_agent",
+        "answer_writer",
+        "question_analyzer",
+        "solution_researcher",
+        "issue_analyzer",
+        "issue_responder",
+        "research_swarm_factory",
+        "documentation_context",
+        "documentation_research_swarm",
+        "issue_context",
+        "issue_research_swarm",
+        "support_research_swarm",
+        "changelog_agent",
+    }
+    assert required <= set(registry.__dataclass_fields__)
+    assert all(callable(getattr(registry, name)) for name in required)
+
+
 def test_writer_agent_registers_authoring_skills(stub_model: StubModel) -> None:
     from draftly.agents.documentation.writer import build_writer_agent
 
@@ -141,6 +168,33 @@ def test_writer_agent_registers_authoring_skills(stub_model: StubModel) -> None:
     assert plugin is not None
     names = {skill.name for skill in plugin.get_available_skills(agent)}
     assert {"documentation-update", "documentation-generation"} <= names
+
+
+def test_pr_research_and_delivery_agents_register_workflow_skills(
+    stub_model: StubModel,
+) -> None:
+    from draftly.agents.documentation.research_swarm import build_doc_research_swarm
+
+    tools = build_tools()
+
+    swarm = build_doc_research_swarm(
+        stub_model,
+        tools,
+        local_tools=tools.documentation,
+    )
+    local = swarm.nodes["local_repo_researcher"].executor
+    plugin = local._plugin_registry._plugins.get("agent_skills")
+    assert plugin is not None
+    assert "github-pr-analysis" in {
+        skill.name for skill in plugin.get_available_skills(local)
+    }
+
+    delivery = build_delivery_agent(stub_model, tools.github_delivery, hitl=False)
+    plugin = delivery._plugin_registry._plugins.get("agent_skills")
+    assert plugin is not None
+    assert "github-delivery" in {
+        skill.name for skill in plugin.get_available_skills(delivery)
+    }
 
 
 def test_issue_surface_agents_register_skills(stub_model: StubModel) -> None:
@@ -219,7 +273,8 @@ def test_skills_load_from_directory() -> None:
     skills_root = Path(__file__).resolve().parents[3] / "src" / "draftly" / "skills"
     skills = Skill.from_directory(skills_root)
     names = {skill.name for skill in skills}
-    assert len(skills) == 20
+    assert len(skills) == 21
+    assert "content-production" in names
     assert "github-pr-analysis" in names
     assert "documentation-generation" in names
     assert "support-answering" in names

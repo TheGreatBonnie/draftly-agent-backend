@@ -4,6 +4,7 @@ routing, and EventComposition normalization."""
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
@@ -53,6 +54,41 @@ class FakeReviewsRepo:
         return {"id": f"review-{len(self.interrupts)}"}
 
 
+@dataclass
+class FakeJobsRepo:
+    statuses: list[dict] = field(default_factory=list)
+
+    async def update_status(self, **kwargs):
+        self.statuses.append(kwargs)
+        return kwargs
+
+
+@dataclass
+class FakeGitHubWorkflowsRepo:
+    statuses: list[dict] = field(default_factory=list)
+
+    async def update_status(self, **kwargs):
+        self.statuses.append(kwargs)
+
+
+@dataclass
+class FakeDeliveryRepo:
+    pull_requests: list[Any] = field(default_factory=list)
+
+    async def save_pull_request(self, pull_request):
+        self.pull_requests.append(pull_request)
+        return pull_request
+
+
+@dataclass
+class FakeDocumentsRepo:
+    upserts: list[dict] = field(default_factory=list)
+
+    async def upsert(self, **kwargs):
+        self.upserts.append(kwargs)
+        return kwargs
+
+
 class FakeGraph:
     def __init__(self, result):
         self.result = result
@@ -64,10 +100,23 @@ class FakeGraph:
         return self.result
 
 
+class RejectingGraph(FakeGraph):
+    async def invoke_async(self, task, invocation_state=None, **kwargs):
+        self.calls.append({"task": task, "invocation_state": invocation_state})
+        raise RuntimeError("Rejected by reviewer: needs changes")
+
+
 def make_context(**overrides) -> WorkflowContext:
     base: dict[str, Any] = dict(
         repositories=type(
-            "Repos", (), {"events": FakeEventsRepo(), "reviews": FakeReviewsRepo()}
+            "Repos", (), {
+                "events": FakeEventsRepo(),
+                "reviews": FakeReviewsRepo(),
+                "jobs": FakeJobsRepo(),
+                "github_workflows": FakeGitHubWorkflowsRepo(),
+                "delivery": FakeDeliveryRepo(),
+                "documents": FakeDocumentsRepo(),
+            }
         )(),
         config=type("Config", (), {"strands": None})(),
     )
@@ -77,6 +126,36 @@ def make_context(**overrides) -> WorkflowContext:
 
 def completed_result() -> MultiAgentResult:
     return MultiAgentResult(status=Status.COMPLETED)
+
+
+def completed_result_with_evaluation() -> MultiAgentResult:
+    result = MultiAgentResult(status=Status.COMPLETED)
+    result.execution_order = [
+        SimpleNamespace(
+            node_id="evaluate",
+            result=SimpleNamespace(
+                result=SimpleNamespace(
+                    results={
+                        "evaluate": SimpleNamespace(
+                            result=SimpleNamespace(
+                                message={
+                                    "content": [
+                                        {
+                                            "text": (
+                                                '{"passed": true, "score": 0.91, '
+                                                '"reasons": ["grounded"]}'
+                                            )
+                                        }
+                                    ]
+                                }
+                            )
+                        )
+                    }
+                )
+            ),
+        )
+    ]
+    return result
 
 
 def interrupted_result() -> MultiAgentResult:
@@ -144,6 +223,23 @@ class TestRunnerOutcomes:
         assert state.status.value == "delivered"
         assert state.surface == "pull_request"
         assert context.events.statuses["evt-1"] == "completed"
+        assert [row["status"] for row in context.repositories.jobs.statuses] == [
+            "running", "completed"
+        ]
+        assert [row["status"] for row in context.repositories.github_workflows.statuses] == [
+            "running", "completed"
+        ]
+
+    async def test_completed_persists_evaluation_details(self) -> None:
+        state, context = await run_with(completed_result_with_evaluation())
+
+        assert state.status.value == "delivered"
+        completed = context.repositories.jobs.statuses[-1]
+        assert completed["result"]["evaluation"] == {
+            "passed": True,
+            "score": 0.91,
+            "reasons": ["grounded"],
+        }
 
     async def test_interrupted_stores_and_pends(self) -> None:
         state, context = await run_with(interrupted_result())
@@ -162,6 +258,82 @@ class TestRunnerOutcomes:
         assert state.status.value == "failed"
         assert sorted(state.errors) == ["evaluate", "update"]
         assert context.events.statuses["evt-1"] == "failed"
+
+    async def test_completed_github_delivery_persists_pull_request_receipt(self) -> None:
+        context = make_context()
+        graph_result = completed_result()
+        graph_result.execution_order = [SimpleNamespace(
+            node_id="update",
+            result=SimpleNamespace(
+                structured_output={
+                    "repository": "acme/api",
+                    "files": [{"path": "docs/auth.md", "content": "# Auth"}],
+                }
+            ),
+        ), SimpleNamespace(
+            node_id="deliver",
+            result=SimpleNamespace(
+                structured_output={
+                    "status": "completed",
+                    "surface": "github",
+                    "delivered_to": "acme/api",
+                    "reference": "https://github.com/acme/api/pull/42",
+                }
+            ),
+        )]
+        runner = WorkflowRunner(
+            context,
+            graph_factory=lambda run_id, surface: FakeGraph(graph_result),
+        )
+
+        await runner.run({**PR_EVENT, "project_id": "org-1"})
+
+        receipt = context.repositories.delivery.pull_requests[0]
+        assert receipt.number == 42
+        assert receipt.repository_id == "acme/api"
+        assert receipt.org_id == "org-1"
+        assert receipt.run_id == "evt-1"
+        document = context.repositories.documents.upserts[0]
+        assert document["path"] == "docs/auth.md"
+        assert document["org_id"] == "org-1"
+
+    async def test_resume_approval_uses_runner_lifecycle_and_org_context(self) -> None:
+        context = make_context()
+        graph = FakeGraph(completed_result())
+        runner = WorkflowRunner(context, graph_factory=lambda run_id, surface: graph)
+
+        state = await runner.resume_review(
+            event={**PR_EVENT, "project_id": "org-1"},
+            interrupt_id="int-1",
+            response={"approved": True, "comment": "ship it"},
+        )
+
+        assert state.status.value == "delivered"
+        assert context.events.statuses["evt-1"] == "completed"
+        assert context.repositories.jobs.statuses[-1]["status"] == "completed"
+        assert context.repositories.github_workflows.statuses[-1]["status"] == "completed"
+        assert graph.calls[0]["task"] == [{
+            "interruptResponse": {
+                "interruptId": "int-1",
+                "response": {"approved": True, "comment": "ship it"},
+            }
+        }]
+        assert graph.calls[0]["invocation_state"]["project_id"] == "org-1"
+
+    async def test_resume_rejection_finalizes_failed_workflow(self) -> None:
+        context = make_context()
+        graph = RejectingGraph(completed_result())
+        runner = WorkflowRunner(context, graph_factory=lambda run_id, surface: graph)
+
+        state = await runner.resume_review(
+            event={**PR_EVENT, "project_id": "org-1"},
+            interrupt_id="int-1",
+            response={"approved": False, "comment": "needs changes"},
+        )
+
+        assert state.status.value == "failed"
+        assert context.events.statuses["evt-1"] == "failed"
+        assert context.repositories.jobs.statuses[-1]["status"] == "failed"
 
     async def test_unknown_surface_skips_graph(self) -> None:
         context = make_context()
@@ -188,7 +360,6 @@ class TestRunnerOutcomes:
 
 class TestRunnerMergedOnlyGate:
     async def _run_event(self, event_type: str) -> tuple[WorkflowState, object]:
-        from draftly.workflows.context import WorkflowContext
         from draftly.workflows.runner import WorkflowRunner
 
         context = make_context()

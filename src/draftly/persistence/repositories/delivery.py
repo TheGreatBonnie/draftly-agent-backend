@@ -28,10 +28,11 @@ class DeliveryRepository:
                 summary,
                 status,
                 created_at,
-                org_id
+                org_id,
+                run_id
             )
             VALUES (
-                $1, $2, $3, $4, $5, $6, $7
+                $1, $2, $3, $4, $5, $6, $7, $8
             )
             """,
             plan.id,
@@ -41,6 +42,7 @@ class DeliveryRepository:
             plan.status,
             plan.created_at,
             plan.org_id,
+            plan.run_id,
         )
 
         return plan
@@ -58,10 +60,11 @@ class DeliveryRepository:
                 message,
                 files,
                 created_at,
-                org_id
+                org_id,
+                run_id
             )
             VALUES (
-                $1, $2, $3, $4, $5, $6, $7
+                $1, $2, $3, $4, $5, $6, $7, $8
             )
             """,
             commit.repository_id,
@@ -71,6 +74,7 @@ class DeliveryRepository:
             commit.files,
             commit.created_at,
             commit.org_id,
+            commit.run_id,
         )
 
         return commit
@@ -91,10 +95,11 @@ class DeliveryRepository:
                 branch,
                 base_branch,
                 created_at,
-                org_id
+                org_id,
+                run_id
             )
             VALUES (
-                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10
+                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11
             )
             """,
             pull_request.repository_id,
@@ -107,6 +112,7 @@ class DeliveryRepository:
             pull_request.base_branch,
             pull_request.created_at,
             pull_request.org_id,
+            pull_request.run_id,
         )
 
         return pull_request

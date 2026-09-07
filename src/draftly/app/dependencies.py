@@ -14,6 +14,7 @@ from draftly.integrations.database.evaluations_store import DatabaseEvaluationsS
 from draftly.integrations.database.jobs_store import DatabaseJobsStore
 from draftly.integrations.database.memory_store import DatabaseMemoryStore
 from draftly.integrations.database.vector_search import VectorSearch
+from draftly.integrations.database.workflow_events_store import WorkflowEventsStore
 from draftly.integrations.discord.auth import DiscordAuth
 from draftly.integrations.discord.client import DiscordClient
 from draftly.integrations.discord.gateway import DiscordGateway
@@ -27,11 +28,19 @@ from draftly.integrations.slack.installation_store import SlackInstallationStore
 # from draftly.memory.embeddings import build_memory_embedder
 # from draftly.memory.manager import MemoryManager
 from draftly.persistence.repositories.agent_runs import AgentRunsRepository
+from draftly.persistence.repositories.content import ContentRepository
 from draftly.persistence.repositories.delivery import DeliveryRepository
+from draftly.persistence.repositories.discord import DiscordWorkflowRepository
+from draftly.persistence.repositories.documentation_gaps import DocumentationGapRepository
 from draftly.persistence.repositories.documents import DocumentRepository
 from draftly.persistence.repositories.evaluations import EvaluationRepository
 from draftly.persistence.repositories.events import EventRepository
-from draftly.persistence.repositories.github import GitHubInstallationsRepository
+from draftly.persistence.repositories.feedback import FeedbackRepository
+from draftly.persistence.repositories.feedback_outcomes import FeedbackOutcomeRepository
+from draftly.persistence.repositories.github import (
+    GitHubInstallationsRepository,
+    GitHubWorkflowRepository,
+)
 from draftly.persistence.repositories.jobs import JobRepositoryImpl
 from draftly.persistence.repositories.memory import MemoryRepository
 from draftly.persistence.repositories.onboarding import OnboardingRepository
@@ -39,6 +48,7 @@ from draftly.persistence.repositories.repository_config import RepositoryConfigR
 from draftly.persistence.repositories.reviewers import ReviewersRepository
 from draftly.persistence.repositories.reviews import ReviewsRepository
 from draftly.persistence.repositories.routing import PerformanceRepository, RoutingRepository
+from draftly.persistence.repositories.slack import SlackWorkflowRepository
 from draftly.persistence.repositories.support import SupportRepository
 from draftly.persistence.repositories.workflow_events import WorkflowEventRepositoryImpl
 from draftly.persistence.stores.routing import DatabasePerformanceStore, DatabaseRoutingStore
@@ -233,6 +243,10 @@ class RepositoryDependencies:
     github_installations: GitHubInstallationsRepository
     evaluations: EvaluationRepository
     support: SupportRepository
+    feedback: FeedbackRepository
+    documentation_gaps: DocumentationGapRepository
+    feedback_outcomes: FeedbackOutcomeRepository
+    content: ContentRepository
     jobs: JobRepositoryImpl
     reviews: ReviewsRepository
     reviewers: ReviewersRepository
@@ -241,6 +255,9 @@ class RepositoryDependencies:
     onboarding: OnboardingRepository
     repository_config: RepositoryConfigRepository
     workflow_events: WorkflowEventRepositoryImpl
+    github_workflows: GitHubWorkflowRepository
+    slack_workflows: SlackWorkflowRepository
+    discord_workflows: DiscordWorkflowRepository
 
     agent_runs: AgentRunsRepository
 
@@ -287,6 +304,20 @@ def build_repositories(
         database=database,
     )
 
+    feedback = FeedbackRepository(
+        database=database,
+    )
+
+    documentation_gaps = DocumentationGapRepository(
+        database=database,
+    )
+
+    feedback_outcomes = FeedbackOutcomeRepository(
+        database=database,
+    )
+
+    content = ContentRepository(database=database)
+
     jobs = JobRepositoryImpl(
         store=DatabaseJobsStore(
             client=database,
@@ -313,7 +344,12 @@ def build_repositories(
 
     repository_config = RepositoryConfigRepository(client=database)
 
-    workflow_events = WorkflowEventRepositoryImpl()
+    workflow_events = WorkflowEventRepositoryImpl(
+        store=WorkflowEventsStore(client=database)
+    )
+    github_workflows = GitHubWorkflowRepository(database)
+    slack_workflows = SlackWorkflowRepository(database)
+    discord_workflows = DiscordWorkflowRepository(database)
 
     agent_runs = AgentRunsRepository(database=database)
 
@@ -325,6 +361,10 @@ def build_repositories(
         github_installations=github_installations,
         evaluations=evaluations,
         support=support,
+        feedback=feedback,
+        documentation_gaps=documentation_gaps,
+        feedback_outcomes=feedback_outcomes,
+        content=content,
         jobs=jobs,
         reviews=reviews,
         reviewers=reviewers,
@@ -333,6 +373,9 @@ def build_repositories(
         onboarding=onboarding,
         repository_config=repository_config,
         workflow_events=workflow_events,
+        github_workflows=github_workflows,
+        slack_workflows=slack_workflows,
+        discord_workflows=discord_workflows,
         agent_runs=agent_runs,
     )
 

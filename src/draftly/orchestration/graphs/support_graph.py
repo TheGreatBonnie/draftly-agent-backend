@@ -19,6 +19,7 @@ from draftly.orchestration.graphs.documentation_graph import (
     DEFAULT_NODE_TIMEOUT,
     _dedupe,
 )
+from draftly.orchestration.graphs.tool_scoping import scope_writer_tools
 from draftly.orchestration.hooks.review_gate import ReviewGate
 from draftly.orchestration.nodes.evaluate import EvaluatorNode
 from draftly.orchestration.routing.conditions import (
@@ -36,23 +37,54 @@ logger = structlog.get_logger(__name__)
 SUPPORT_GRAPH_ID = "draftly-support-graph"
 
 
+def _delivery_tools_for_source(source: str | None, registry: Any) -> list[Any]:
+    """Scope the support delivery agent to the origin platform's tools.
+
+    Direct answers return to the originating thread, so the model must never
+    be handed a cross-platform poster: a Slack run sees only
+    ``slack_post_message`` and a Discord run only ``discord_post_message``.
+    ``github`` scopes to the documentation-delivery tools for a typed gap
+    handoff. Unknown sources (supervised builds without a runtime) fall back
+    to the union of platform posting tools.
+    """
+    if source == "slack":
+        return list(getattr(registry, "slack_post_message", None) or [])
+    if source == "discord":
+        return list(getattr(registry, "discord_post_message", None) or [])
+    if source == "github":
+        return list(getattr(registry, "github_delivery", None) or [])
+    return list(
+        _dedupe(
+            getattr(registry, "slack_post_message", None),
+            getattr(registry, "discord_post_message", None),
+        )
+    )
+
+
 def build_support_graph(
     session_manager: SessionManager | None,
     tools_registry: Any,
     model: Any,
     hooks: list[Any] | None = None,
     *,
+    agents: Any = None,
     graph_id: str = SUPPORT_GRAPH_ID,
     audit_repo: Any = None,
     memory: Any = None,
     publisher: Any = None,
     jobs_repo: Any = None,
+    source: str | None = None,
     max_node_executions: int = DEFAULT_MAX_NODE_EXECUTIONS,
     execution_timeout: float = DEFAULT_EXECUTION_TIMEOUT,
     node_timeout: float = DEFAULT_NODE_TIMEOUT,
     evaluator_max_iterations: int = DEFAULT_EVALUATOR_MAX_ITERATIONS,
 ):
-    """Build the Slack/Discord support surface graph."""
+    """Build the Slack/Discord support surface graph.
+
+    ``source`` is the normalized event platform (``slack`` or ``discord``)
+    when it is known at build time; otherwise it is resolved from the active
+    support runtime so delivery is scoped to the originating platform.
+    """
     from draftly.agents.documentation.writer import build_writer_agent
     from draftly.agents.shared.classifier import build_classifier
     from draftly.agents.shared.context import build_context_agent
@@ -66,9 +98,13 @@ def build_support_graph(
         build_solution_researcher,
     )
     from draftly.integrations.strands.models import resolve_model_for_role
+    from draftly.integrations.support.runtime import current_support_runtime
     from draftly.tools.repository.code_search import code_search
 
     reg = tools_registry
+
+    runtime = current_support_runtime()
+    source = source or (runtime.platform if runtime is not None else None)
 
     classifier_model = resolve_model_for_role(model, "classifier")
     context_model = resolve_model_for_role(model, "context")
@@ -77,8 +113,11 @@ def build_support_graph(
     writer_model = resolve_model_for_role(model, "documentation_engineer")
     delivery_model = resolve_model_for_role(model, "github_delivery")
 
-    classifier = build_classifier(classifier_model)
-    context_agent = build_context_agent(
+    registry = agents
+    classifier_builder = getattr(registry, "classifier", None) or build_classifier
+    classifier = classifier_builder(classifier_model)
+    context_builder = getattr(registry, "context_agent", None) or build_context_agent
+    context_agent = context_builder(
         context_model,
         _dedupe(
             reg.semantic_search,
@@ -89,7 +128,10 @@ def build_support_graph(
             reg.discord_get_thread,
         ),
     )
-    research_swarm = build_support_research_swarm(
+    research_builder = (
+        getattr(registry, "support_research_swarm", None) or build_support_research_swarm
+    )
+    research_swarm = research_builder(
         research_model,
         reg,
         local_tools=_dedupe(
@@ -98,11 +140,13 @@ def build_support_graph(
             [code_search],
         ),
     )
-    question_analyzer = build_question_analyzer(
+    question_builder = getattr(registry, "question_analyzer", None) or build_question_analyzer
+    question_analyzer = question_builder(
         support_model,
         _dedupe(reg.semantic_search, reg.keyword_search),
     )
-    solution_researcher = build_solution_researcher(
+    solution_builder = getattr(registry, "solution_researcher", None) or build_solution_researcher
+    solution_researcher = solution_builder(
         support_model,
         _dedupe(
             reg.semantic_search,
@@ -110,22 +154,26 @@ def build_support_graph(
             [code_search],
         ),
     )
-    answer_agent = build_answer_writer(
+    answer_builder = getattr(registry, "answer_writer", None) or build_answer_writer
+    answer_agent = answer_builder(
         support_model,
         _dedupe(reg.semantic_search, reg.keyword_search),
     )
-    update_writer = build_writer_agent(
+    writer_builder = getattr(registry, "writer_agent", None) or build_writer_agent
+    update_writer = writer_builder(
         writer_model,
-        _dedupe(reg.documentation_engineer, reg.documentation),
+        scope_writer_tools(reg.documentation_engineer, reg.documentation),
     )
-    create_writer = build_writer_agent(
+    create_writer = writer_builder(
         writer_model,
-        _dedupe(reg.documentation_engineer, reg.documentation),
+        scope_writer_tools(reg.documentation_engineer, reg.documentation),
     )
-    delivery_agent = build_delivery_agent(
+    delivery_builder = getattr(registry, "delivery_agent", None) or build_delivery_agent
+    delivery_agent = delivery_builder(
         delivery_model,
-        _dedupe(reg.slack_post_message, reg.discord_post_message),
+        _delivery_tools_for_source(source, reg),
         hitl=False,  # the graph-level ReviewGate owns human approval
+        skill_names=("support-delivery",),
     )
 
     builder = GraphBuilder()
@@ -165,6 +213,8 @@ def build_support_graph(
     builder.add_edge("answer", "evaluate", condition=generated)
     builder.add_edge("update", "evaluate", condition=generated)
     builder.add_edge("create", "evaluate", condition=generated)
+    builder.add_edge("context", "evaluate", condition=generated)
+    builder.add_edge("research", "evaluate", condition=generated)
 
     builder.add_edge("evaluate", "answer", condition=needs_revision_of("answer"))
     builder.add_edge("evaluate", "update", condition=needs_revision_of("update"))

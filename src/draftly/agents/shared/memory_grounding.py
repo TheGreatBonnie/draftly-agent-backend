@@ -8,6 +8,7 @@ unavailable — grounding must never break a run.
 
 from __future__ import annotations
 
+import inspect
 from typing import Any
 
 import structlog
@@ -26,6 +27,24 @@ MAX_PROCEDURE_ITEMS = 1
 GROUNDING_HEADER = "Relevant organizational knowledge:"
 
 
+async def _call_source(source: Any, query: str, *, limit: int, org_id: str | None) -> Any:
+    """Call memory sources with tenant scope while keeping legacy adapters valid."""
+    kwargs: dict[str, Any] = {}
+    try:
+        parameters = inspect.signature(source).parameters
+    except (TypeError, ValueError):
+        parameters = {}
+    accepts_kwargs = any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD
+        for parameter in parameters.values()
+    )
+    if "limit" in parameters or accepts_kwargs:
+        kwargs["limit"] = limit
+    if org_id is not None and ("org_id" in parameters or accepts_kwargs):
+        kwargs["org_id"] = org_id
+    return await source(query, **kwargs)
+
+
 class MemoryGroundedNode(MultiAgentBase):
     """Prepend recalled memory to the task, then delegate."""
 
@@ -40,7 +59,7 @@ class MemoryGroundedNode(MultiAgentBase):
         invocation_state: dict[str, Any] | None = None,
         **kwargs: Any,
     ) -> MultiAgentResult:
-        grounded_task = await self._ground(task)
+        grounded_task = await self._ground(task, invocation_state=invocation_state)
         result = await self.inner.invoke_async(
             grounded_task,
             invocation_state=invocation_state,
@@ -57,13 +76,30 @@ class MemoryGroundedNode(MultiAgentBase):
             for attr in ("knowledge", "episodes", "procedures")
         )
 
-    async def _ground(self, task: Any) -> Any:
+    async def _ground(
+        self,
+        task: Any,
+        *,
+        invocation_state: dict[str, Any] | None = None,
+    ) -> Any:
         if self.memory is None or not isinstance(task, str) or not task.strip():
             return task
+        state = invocation_state or {}
+        org_id = state.get("project_id") or state.get("org_id")
         try:
             if self._is_bundle():
-                return await self._merge_sources(task, self.memory)
-            items = await self.memory.recall_knowledge(task, limit=MAX_GROUNDING_ITEMS)
+                return await self._merge_sources(task, self.memory, org_id=org_id)
+            if org_id is None:
+                items = await self.memory.recall_knowledge(
+                    task,
+                    limit=MAX_GROUNDING_ITEMS,
+                )
+            else:
+                items = await self.memory.recall_knowledge(
+                    task,
+                    limit=MAX_GROUNDING_ITEMS,
+                    org_id=org_id,
+                )
         except Exception:
             logger.exception("memory_grounding_failed")
             return task
@@ -79,7 +115,13 @@ class MemoryGroundedNode(MultiAgentBase):
             return task
         return "\n".join(lines) + "\n\n" + task
 
-    async def _merge_sources(self, task: str, bundle: Any) -> str:
+    async def _merge_sources(
+        self,
+        task: str,
+        bundle: Any,
+        *,
+        org_id: str | None = None,
+    ) -> str:
         """Merge facts + episodes + procedures into one grounding block.
 
         Every source is individually optional and individually fail-open;
@@ -91,7 +133,14 @@ class MemoryGroundedNode(MultiAgentBase):
         knowledge = getattr(bundle, "knowledge", None)
         if knowledge is not None:
             try:
-                for item in list(await knowledge(task))[: max(budget, 0)]:
+                for item in list(
+                    await _call_source(
+                        knowledge,
+                        task,
+                        limit=max(budget, 0),
+                        org_id=org_id,
+                    )
+                )[: max(budget, 0)]:
                     content = str(item.get("content", "")).strip()
                     if content:
                         lines.append(f"- {content}")
@@ -102,7 +151,12 @@ class MemoryGroundedNode(MultiAgentBase):
         episodes = getattr(bundle, "episodes", None)
         if episodes is not None and budget > 0:
             try:
-                hits = await episodes(task, limit=MAX_EPISODE_ITEMS)
+                hits = await _call_source(
+                    episodes,
+                    task,
+                    limit=MAX_EPISODE_ITEMS,
+                    org_id=org_id,
+                )
                 relevant = [h for h in hits if h.get("trigger_summary") or h.get("summary")]
                 if relevant:
                     lines.append("Similar past episode:")
@@ -116,7 +170,12 @@ class MemoryGroundedNode(MultiAgentBase):
         procedures = getattr(bundle, "procedures", None)
         if procedures is not None and budget > 0:
             try:
-                procs = await procedures(task, limit=MAX_PROCEDURE_ITEMS)
+                procs = await _call_source(
+                    procedures,
+                    task,
+                    limit=MAX_PROCEDURE_ITEMS,
+                    org_id=org_id,
+                )
                 for proc in procs[: max(budget, 0)]:
                     desc = proc.get("pattern_description")
                     if desc:

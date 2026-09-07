@@ -85,6 +85,19 @@ def test_for_role_with_decision_returns_model_and_decision(router):
     assert decision.task_type == "documentation_generation"
 
 
+def test_for_role_publishes_decision_to_run_scoped_sink(router):
+    captured = []
+    resolver = RoleAwareModelResolver(
+        router,
+        decision_sink=lambda role, decision: captured.append((role, decision)),
+    )
+
+    assert resolver.for_role("github_intelligence") == "MODEL<writer-model>"
+    assert len(captured) == 1
+    assert captured[0][0] == "github_intelligence"
+    assert captured[0][1].task_type == "research"
+
+
 def test_for_role_delegates_to_for_role_with_decision(router):
     resolver = RoleAwareModelResolver(router)
     model, _decision = resolver.for_role_with_decision("github_intelligence")

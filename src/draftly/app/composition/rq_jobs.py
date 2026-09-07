@@ -6,6 +6,7 @@ used by API endpoints and rq-scheduler.
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from datetime import UTC, datetime
 from typing import Any
@@ -32,11 +33,16 @@ QUEUE_MAP: dict[str, str] = {
     "memory.maintenance": "scheduled",
     "onboarding.initialize": "default",
     "github_pr.enqueue": "webhooks",
+    "github_release.enqueue": "webhooks",
+    "github_feedback.enqueue": "webhooks",
+    "content_generation.enqueue": "webhooks",
     "github_pr": "webhooks",
     "github_release": "webhooks",
     "github_issue": "webhooks",
     "slack_support": "webhooks",
     "discord_support": "webhooks",
+    "slack_support.enqueue": "webhooks",
+    "discord_support.enqueue": "webhooks",
 }
 
 # RQ job timeout (seconds). "-1" is the RQ 2.x sentinel for "jobs never
@@ -132,3 +138,73 @@ def enqueue_job(
     )
 
     return job
+
+
+def support_task_for_event(event: dict[str, Any]) -> str | None:
+    """Map a normalized support event to its durable dispatch task name."""
+    source = str(event.get("source") or "")
+    if source == "slack":
+        return "slack_support.enqueue"
+    if source == "discord":
+        return "discord_support.enqueue"
+    return None
+
+
+async def enqueue_support_event(
+    event: dict[str, Any],
+    *,
+    app_state: Any = None,
+) -> bool:
+    """Dispatch an enriched support event through the durable worker path.
+
+    Shared dispatch boundary for the Slack and Discord ingress adapters and
+    support route handlers. Uses RQ when enabled; otherwise schedules the
+    registered support task in-process. Returns ``True`` when a job was
+    scheduled, ``False`` when the runtime is not ready or the event source is
+    unsupported.
+    """
+    if app_state is None:
+        from draftly.app.api.app import app as api_app
+
+        app_state = getattr(api_app.state, "draftly", None)
+    if app_state is None:
+        logger.warning("support_dispatch_runtime_not_started")
+        return False
+
+    task_name = support_task_for_event(event)
+    if task_name is None:
+        logger.warning("support_dispatch_unknown_source", source=event.get("source"))
+        return False
+
+    settings = getattr(app_state, "settings", None)
+    rq_enabled = bool(getattr(settings, "rq_enabled", False)) if settings else False
+    rq_queues = getattr(app_state, "rq_queues", None)
+    task_handlers = getattr(app_state, "task_handlers", None)
+
+    if rq_enabled and rq_queues is not None and task_handlers is not None:
+        job = enqueue_job(
+            queues=rq_queues,
+            task_handlers=task_handlers,
+            task_name=task_name,
+            event=event,
+        )
+        logger.info(
+            "support_event_enqueued",
+            task_name=task_name,
+            event_id=event.get("event_id"),
+            rq_job_id=getattr(job, "id", ""),
+        )
+        return True
+
+    worker = getattr(app_state, "worker", None)
+    if worker is None or getattr(worker, "run_task", None) is None:
+        logger.warning("support_dispatch_worker_disabled")
+        return False
+
+    asyncio.create_task(worker.run_task(task_name, event=event))
+    logger.info(
+        "support_event_dispatch_inprocess",
+        task_name=task_name,
+        event_id=event.get("event_id"),
+    )
+    return True

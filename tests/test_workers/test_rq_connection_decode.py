@@ -15,15 +15,15 @@ enqueue -> Job.fetch round-trip works on such a connection.
 
 from __future__ import annotations
 
-import pytest
 import zlib
 
 import fakeredis
+import pytest
 from rq import Queue
 from rq.job import Job
 
-from draftly.integrations.redis import RedisClient
 from draftly.app.composition.rq_jobs import build_rq_queues
+from draftly.integrations.redis import RedisClient
 
 
 def test_get_rq_connection_is_raw_bytes_for_rq():
@@ -51,7 +51,7 @@ def test_rq_job_data_is_zlib_compressed_on_raw_connection():
     async def noop(**kw):
         return kw
 
-    job = queue.enqueue(make_sync_handler(noop), kwargs={"x": 1}, job_id="dec-raw-1")
+    queue.enqueue(make_sync_handler(noop), kwargs={"x": 1}, job_id="dec-raw-1")
     stored = raw.hget("rq:job:dec-raw-1", "data")
     assert stored[0] == 0x78  # zlib header (x\x9c...)
     assert zlib.decompress(stored)  # decompresses cleanly
@@ -80,7 +80,6 @@ def test_decode_responses_true_connection_breaks_rq_job_read():
     UnicodeDecodeError on strict decode), so RQ sees garbage instead of raw
     bytes.  This is the exact crash the worker hit.
     """
-    import redis
 
     from draftly.app.workers.async_sync import make_sync_handler
 

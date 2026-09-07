@@ -25,7 +25,16 @@ AGENT_CATALOG: list[dict[str, Any]] = [
         "name": "context",
         "description": "Collects evidence about the event from GitHub, search, and docs.",
         "surface": "shared",
-        "tool_keys": ["github_intelligence", "semantic_search", "keyword_search", "hybrid_search", "slack_search", "slack_get_thread", "discord_search", "discord_get_thread"],
+        "tool_keys": [
+            "github_intelligence",
+            "semantic_search",
+            "keyword_search",
+            "hybrid_search",
+            "slack_search",
+            "slack_get_thread",
+            "discord_search",
+            "discord_get_thread",
+        ],
     },
     {
         "role": "delivery_agent",
@@ -88,8 +97,16 @@ AGENT_CATALOG: list[dict[str, Any]] = [
         "name": "research_swarm",
         "description": "Four channel-scoped researchers handing off autonomously.",
         "surface": "research",
-        "tool_keys": ["github_intelligence", "slack_search", "slack_get_thread", "discord_search", "discord_get_thread",
-                      "semantic_search", "keyword_search", "hybrid_search"],
+        "tool_keys": [
+            "github_intelligence",
+            "slack_search",
+            "slack_get_thread",
+            "discord_search",
+            "discord_get_thread",
+            "semantic_search",
+            "keyword_search",
+            "hybrid_search",
+        ],
     },
 ]
 

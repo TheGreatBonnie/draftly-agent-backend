@@ -30,10 +30,14 @@ class JobRepositoryImpl:
         *,
         job_id: str,
         status: str,
+        error: str | None = None,
+        result: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         return await self.store.update_status(
             job_id=job_id,
             status=status,
+            error=error,
+            result=result,
         )
 
     async def list_active(self) -> list[dict[str, Any]]:

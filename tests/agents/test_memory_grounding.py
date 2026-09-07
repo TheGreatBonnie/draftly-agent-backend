@@ -78,3 +78,45 @@ class TestMemoryGroundedNode:
         await node.invoke_async("task")
 
         assert inner.received == "task"
+
+    async def test_retrieval_is_scoped_to_workflow_organization(self) -> None:
+        inner = RecordingInner()
+        memory = FakeMemory([])
+        memory.org_ids: list[str | None] = []
+
+        async def recall_knowledge(query: str, limit: int = 5, org_id: str | None = None):
+            memory.queries.append(query)
+            memory.org_ids.append(org_id)
+            return memory.items[:limit]
+
+        memory.recall_knowledge = recall_knowledge
+        node = MemoryGroundedNode(inner, memory)
+
+        await node.invoke_async("PR task", invocation_state={"project_id": "org-7"})
+
+        assert memory.org_ids == ["org-7"]
+
+    async def test_bundle_grounding_includes_episodes_and_procedures(self) -> None:
+        inner = RecordingInner()
+        calls: list[tuple[str, str | None]] = []
+
+        class Bundle:
+            async def knowledge(self, query: str, *, org_id: str | None = None):
+                calls.append(("knowledge", org_id))
+                return [{"content": "known fact"}]
+
+            async def episodes(self, query: str, *, limit: int = 2, org_id: str | None = None):
+                calls.append(("episodes", org_id))
+                return [{"trigger_summary": "similar PR"}]
+
+            async def procedures(self, query: str, *, limit: int = 1, org_id: str | None = None):
+                calls.append(("procedures", org_id))
+                return [{"pattern_description": "update docs then review"}]
+
+        node = MemoryGroundedNode(inner, Bundle())
+        await node.invoke_async("PR task", invocation_state={"project_id": "org-7"})
+
+        assert "known fact" in inner.received
+        assert "similar PR" in inner.received
+        assert "update docs then review" in inner.received
+        assert calls == [("knowledge", "org-7"), ("episodes", "org-7"), ("procedures", "org-7")]

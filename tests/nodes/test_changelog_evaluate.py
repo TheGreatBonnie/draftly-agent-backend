@@ -103,7 +103,7 @@ class TestChangelogEvaluatorNode:
         second_data = json.loads(
             second.results["changelog_evaluate"].result.message["content"][0]["text"]
         )
-        assert second_data["passed"] is True  # iteration >= max_iterations
+        assert second_data["passed"] is False
         assert second_data["iteration"] == 2
 
     @pytest.mark.asyncio

@@ -43,6 +43,11 @@ class FakeReviewsRepository:
             return self.record
         return None
 
+    async def get_review(self, review_id: str) -> Any:
+        if self.record and self.record.id == review_id:
+            return self.record
+        return None
+
     async def record_decision(
         self,
         *,
@@ -61,6 +66,31 @@ class FakeReviewsRepository:
         )
         self.record.status = decision
         return self.record
+
+
+class FakeEventsRepository:
+    async def get_event(self, event_id: str) -> Any:
+        if event_id != "run-1":
+            return None
+        return SimpleNamespace(
+            payload={
+                "event_id": event_id,
+                "event_type": "pull_request.merged",
+                "repository": "acme/api",
+                "source": "github",
+                "actor": "dev",
+            }
+        )
+
+
+class FakeWorkflowRunner:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+
+    async def resume_review(self, **kwargs: Any) -> Any:
+        self.calls.append(kwargs)
+        status = "delivered" if kwargs["response"]["approved"] else "failed"
+        return SimpleNamespace(status=SimpleNamespace(value=status))
 
 
 class FakeDocumentsRepository:
@@ -132,8 +162,9 @@ def client() -> TestClient:
     app.include_router(evaluations.router, prefix="/api")
     app.include_router(support.router, prefix="/api")
     app.dependency_overrides[get_verified_token] = lambda: {
-        "sub": "tester",
+        "user_id": "tester",
         "org_id": "org-1",
+        "org_role": "reviewer",
     }
 
     reviews = FakeReviewsRepository(_review_record())
@@ -141,12 +172,13 @@ def client() -> TestClient:
         dependencies=SimpleNamespace(
             repositories=SimpleNamespace(
                 reviews=reviews,
+                events=FakeEventsRepository(),
                 documents=FakeDocumentsRepository(),
                 evaluations=FakeEvaluationsRepository(),
                 support=FakeSupportRepository(),
             )
         ),
-        workflows=None,
+        workflows=SimpleNamespace(runner=FakeWorkflowRunner()),
         worker=None,
     )
     app.state.draftly = state
@@ -212,10 +244,6 @@ class TestReviewResumeRoute:
         client: TestClient,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        def _fail(*args: Any, **kwargs: Any) -> None:
-            raise AssertionError("graph must not be built on rejection")
-
-        monkeypatch.setattr("draftly.integrations.strands.graph.build_graph_for_run", _fail)
         response = client.post(
             "/api/github/review/run-1",
             json={
@@ -229,32 +257,13 @@ class TestReviewResumeRoute:
         assert response.json()["status"] == "rejected"
         state = client.app.state.draftly  # type: ignore[attr-defined]
         assert state.dependencies.repositories.reviews.decisions[0]["decision"] == "rejected"
+        assert state.workflows.runner.calls[0]["response"]["approved"] is False
 
     def test_approve_resumes_graph(
         self,
         client: TestClient,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        captured: dict[str, Any] = {}
-
-        class FakeResult:
-            status = "COMPLETED"
-
-        class FakeGraph:
-            async def invoke_async(self, task, invocation_state=None, **kw):
-                captured["task"] = task
-                captured["state"] = invocation_state
-                return FakeResult()
-
-        def _fake_build(run_id, surface, tools_registry, model, hooks=None, **kw):
-            captured["run_id"] = run_id
-            captured["surface"] = surface
-            return FakeGraph()
-
-        monkeypatch.setattr(
-            "draftly.integrations.strands.graph.build_graph_for_run",
-            _fake_build,
-        )
         response = client.post(
             "/api/github/review/run-1",
             json={
@@ -266,14 +275,12 @@ class TestReviewResumeRoute:
         )
         assert response.status_code == 200
         body = response.json()
-        assert body["status"] == "COMPLETED"
-        assert captured["run_id"] == "run-1"
-        assert captured["surface"] == "pull_request"
-        # strands interrupt-response contract
-        interrupt_response = captured["task"][0]["interruptResponse"]
-        assert interrupt_response["interruptId"] == "int-1"
-        assert interrupt_response["response"]["approved"] is True
-        assert captured["state"] == {"run_id": "run-1"}
+        assert body["status"] == "resumed"
+        assert body["workflow_status"] == "delivered"
+        runner_call = client.app.state.draftly.workflows.runner.calls[0]  # type: ignore[attr-defined]
+        assert runner_call["interrupt_id"] == "int-1"
+        assert runner_call["response"]["approved"] is True
+        assert runner_call["event"]["project_id"] == "org-1"
 
     def test_approve_non_resumable_surface_409(self, client: TestClient) -> None:
         state = client.app.state.draftly  # type: ignore[attr-defined]

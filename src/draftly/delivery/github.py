@@ -68,7 +68,7 @@ class GitHubDelivery:
         org_id: str | None = None,
     ) -> PullRequestResult:
         owner, name = repository.split("/", 1)
-        pr = self.client.create_pull_request(
+        pr = await self.client.create_pull_request(
             owner=owner,
             repository=name,
             head=branch,

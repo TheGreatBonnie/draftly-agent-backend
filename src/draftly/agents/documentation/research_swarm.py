@@ -12,7 +12,9 @@ from typing import Any
 
 from strands import Agent
 from strands.multiagent import Swarm
+from strands.vended_plugins.skills import AgentSkills
 
+from draftly.agents.prompts import load_skills
 from draftly.agents.shared.research import (
     build_discord_researcher,
     build_docs_researcher,
@@ -36,6 +38,11 @@ def build_doc_research_swarm(model: Any, tools: Any, local_tools: list[Any]) -> 
         ),
         model=model,
         tools=local_tools,
+        plugins=[
+            AgentSkills(
+                skills=load_skills("github-pr-analysis", "github-release-analysis")
+            )
+        ],
         description="Researches local repository evidence for the event.",
     )
     slack_agent = build_slack_researcher(

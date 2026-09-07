@@ -21,6 +21,7 @@ class DeliveryPlan(BaseModel):
     created_at: datetime | None = None
     status: str = "planned"
     org_id: str | None = None
+    run_id: str | None = None
 
 
 class CommitResult(BaseModel):
@@ -35,6 +36,7 @@ class CommitResult(BaseModel):
     files: list[Any] = []
     created_at: datetime | None = None
     org_id: str | None = None
+    run_id: str | None = None
 
 
 class PullRequestResult(BaseModel):
@@ -52,3 +54,21 @@ class PullRequestResult(BaseModel):
     base_branch: str | None = None
     created_at: datetime | None = None
     org_id: str | None = None
+    run_id: str | None = None
+
+
+class SupportDeliveryReceipt(BaseModel):
+    """Receipt for a delivered Slack/Discord support reply."""
+
+    model_config = ConfigDict(extra="allow")
+
+    run_id: str
+    org_id: str | None = None
+    platform: str = ""
+    channel_id: str | None = None
+    thread_id: str | None = None
+    source_message_id: str | None = None
+    provider_message_id: str | None = None
+    status: str = "delivered"  # delivered | failed | pending
+    error: str | None = None
+    delivered_at: datetime | None = None

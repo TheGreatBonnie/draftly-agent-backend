@@ -2,6 +2,7 @@
 
 from . import (
     agents,
+    content,
     discord,
     documentation,
     evaluations,
@@ -22,6 +23,7 @@ from . import (
 
 __all__ = [
     "agents",
+    "content",
     "discord",
     "documentation",
     "evaluations",

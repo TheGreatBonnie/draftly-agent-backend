@@ -82,7 +82,16 @@ class SummarizeClustersNode(MultiAgentBase):
                 "topic": topic,
                 "count": len(items),
                 "sample_question": items[0].get("question", ""),
+                "sample_questions": [i.get("question", "") for i in items[:5]],
                 "sources": sorted({str(i.get("source", "")) for i in items}),
+                "source_event_ids": [
+                    str(i.get("source_event_id"))
+                    for i in items
+                    if i.get("source_event_id")
+                ],
+                "source_urls": [
+                    str(i.get("source_url")) for i in items if i.get("source_url")
+                ],
             }
             for topic, items in sorted(grouped.items())
         ]
@@ -180,6 +189,10 @@ class EnqueueGapsNode(MultiAgentBase):
                 "gap_id": f"gap-{i + 1:03d}",
                 "topic": g.get("topic", ""),
                 "count": g.get("count", 0),
+                "sample_questions": g.get("sample_questions") or [g.get("sample_question", "")],
+                "platforms": g.get("sources", []),
+                "source_event_ids": g.get("source_event_ids", []),
+                "source_urls": g.get("source_urls", []),
                 "action": "create",
             }
             for i, g in enumerate(gaps)

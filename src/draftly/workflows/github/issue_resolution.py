@@ -7,8 +7,9 @@ from typing import Any
 import structlog
 
 from draftly.workflows.context import WorkflowContext
+from draftly.workflows.github.issue_feedback import process_issue_feedback
 from draftly.workflows.runner import WorkflowRunner
-from draftly.workflows.state import WorkflowState
+from draftly.workflows.state import WorkflowState, WorkflowStatus
 
 logger = structlog.get_logger(__name__)
 
@@ -18,6 +19,15 @@ async def run_github_issue_workflow(
     event: dict[str, Any],
 ) -> WorkflowState:
     """Run the issue graph for one GitHub issue event."""
+    feedback_repository = getattr(
+        getattr(context, "repositories", None),
+        "feedback",
+        None,
+    )
+    if feedback_repository is not None:
+        feedback_state = await process_issue_feedback(context, event)
+        if feedback_state.status != WorkflowStatus.DELIVERED:
+            return feedback_state
     runner = WorkflowRunner(context)
     state = await runner.run(event)
     logger.info(

@@ -1,3 +1,4 @@
+import json
 from typing import Any
 from uuid import uuid4
 
@@ -6,8 +7,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request,
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 
-from draftly.app.api.auth import get_verified_token
-from draftly.app.api.routes.workflows import _tickets
+from draftly.app.api.auth import get_verified_token, require_reviewer_role
 from draftly.app.composition.rq_jobs import enqueue_job
 from draftly.app.config import get_settings
 from draftly.integrations.github.app_auth import (
@@ -34,6 +34,50 @@ def _job_repos(request: Request) -> Any | None:
     context = getattr(workflows, "context", None) if workflows is not None else None
     repositories = getattr(context, "repositories", None) if context is not None else None
     return getattr(repositories, "jobs", None)
+
+
+async def _resolve_webhook_identity(
+    app_state: Any,
+    event: dict[str, Any],
+    payload: dict[str, Any],
+) -> tuple[str, int]:
+    """Resolve a signed GitHub webhook to its Draftly organization.
+
+    GitHub webhooks do not carry a Clerk organization claim. The GitHub App
+    installation is the trust boundary, with the repository owner as a
+    backwards-compatible fallback for older webhook payloads.
+    """
+    repository = str(event.get("repository") or "")
+    owner = repository.split("/", 1)[0].strip()
+    installation = payload.get("installation") or {}
+    installation_id = int(installation.get("id") or 0)
+
+    dependencies = getattr(app_state, "dependencies", None)
+    integrations = getattr(dependencies, "integrations", None)
+    db = getattr(integrations, "database", None)
+    from draftly.persistence.repositories.github import get_org_by_github_org
+
+    if not owner:
+        raise HTTPException(status_code=422, detail="GitHub webhook has no repository")
+
+    organization = await get_org_by_github_org(github_org=owner, db=db)
+    if not organization:
+        raise HTTPException(
+            status_code=422,
+            detail=f"GitHub organization '{owner}' is not linked to Draftly",
+        )
+
+    return str(organization["clerk_org_id"]), installation_id
+
+
+def _webhook_task_name(event: dict[str, Any]) -> str:
+    """Select the task whose workflow owns the normalized GitHub event."""
+    prefix = str(event.get("event_type") or "").split(".", 1)[0]
+    if prefix in {"issue_comment", "pull_request_review", "pull_request_review_comment"}:
+        return "github_feedback.enqueue"
+    if prefix == "release":
+        return "github_release.enqueue"
+    return "github_pr.enqueue"
 
 
 class WebhookResponse(BaseModel):
@@ -213,12 +257,12 @@ async def github_webhook(
     Supported events:
     - installation (created/deleted) — GitHub App lifecycle
     - issues — Issue opened/closed/reopened/updated
-    - issue_comment — Comment on issues
     - pull_request — PR opened/closed/merged/updated
-    - pull_request_review — PR review activity
     - release — Release published/created/edited
     - push — Code pushed to branches
-    - repository — Repository created/updated
+
+    Other GitHub webhook event types are rejected with 422 until a dedicated
+    normalizer and workflow are registered for them.
     """
     body = await request.body()
     signature = request.headers.get("X-Hub-Signature-256")
@@ -227,7 +271,6 @@ async def github_webhook(
         logger.warning("github_webhook_invalid_signature")
         raise HTTPException(status_code=401, detail="Invalid signature")
 
-    import json
 
     try:
         payload = json.loads(body)
@@ -279,21 +322,14 @@ async def github_webhook(
 
     run_id = str(event.get("event_id") or uuid4().hex)
     org_repo = str(event.get("repository") or "")
-    # PR webhooks have no Clerk org_id; use empty string as the jobs row key.
-    # Note: POST /workflows/{run_id}/stream-ticket checks org_id against the jobs
-    # row and will 403 for empty-org PR runs; the webhook-issued ticket (via
-    # _tickets.issue) still allows GET /workflows/{run_id}/events?ticket=... since
-    # that path only validates ticket->run_id, not org ownership. Frontend re-ticket
-    # via POST will need a future org lookup if per-org isolation is required.
-    org_id = ""
-
-    # Issue an SSE ticket + backing jobs row so /workflows/{run_id}/events
-    # stream-ticket lookup succeeds, mirroring onboarding. A jobs-row failure
-    # is fatal: without it the SSE stream would 404 forever.
-    try:
-        await _tickets(request).issue(run_id=run_id, org_id=org_id)
-    except Exception as exc:
-        logger.warning("github_webhook_ticket_failed", error=str(exc))
+    org_id, installation_id = await _resolve_webhook_identity(
+        app_state, event, payload
+    )
+    # The normalized event is the runner's persistence boundary. Carry the
+    # resolved tenant identity forward so events, audit runs, and reviews use
+    # the same organization as the jobs/workflow rows created below.
+    event["project_id"] = org_id
+    event["installation_id"] = installation_id
     jobs_repo = _job_repos(request)
     if jobs_repo is None:
         logger.error("github_webhook_jobs_unavailable", run_id=run_id)
@@ -302,53 +338,72 @@ async def github_webhook(
         await jobs_repo.upsert_on_conflict(
             run_id=run_id,
             org_id=org_id,
-            name="github_pr",
+            name=(
+                "github_release"
+                if str(event.get("event_type", "")).startswith("release.")
+                else "github_pr"
+            ),
             job_type="github",
             schedule="webhook",
-            configuration={"repository": org_repo},
+            configuration={
+                "repository": org_repo,
+                "event_type": str(event.get("event_type") or ""),
+            },
         )
     except Exception as exc:
         logger.exception("github_webhook_jobs_failed", error=str(exc))
         raise HTTPException(status_code=500, detail="Failed to register PR run") from exc
 
-    # Best-effort: register the PR identity in github_workflows for the list page.
-    # A failure here must not abort the run already queued to RQ/in-process.
+    # Register the workflow identity before dispatch so the run cannot exist
+    # without its organization-scoped read-model row.
     try:
         pr = event.get("pull_request") or {}
         owner_repo = str(event.get("repository") or "")
         owner, _, repo = owner_repo.partition("/")
         from draftly.persistence.repositories.github import save_github_workflow
         deps = getattr(app_state, "dependencies", None)
-        db = getattr(deps, "integrations", None).database if deps else None
+        integrations = getattr(deps, "integrations", None) if deps else None
+        db = getattr(integrations, "database", None)
         await save_github_workflow(
             org_id=org_id,
             workflow_id=run_id,
             run_id=run_id,
-            installation_id=0,  # noqa: E501
+            installation_id=installation_id,
             owner=owner,
             repo=repo,
             issue_number=int(pr.get("number") or 0),
             title=str(pr.get("title") or ""),
             actor=str(event.get("actor") or ""),
+            event_type=str(event.get("event_type") or ""),
             db=db,
         )
     except Exception as exc:
-        logger.warning("github_webhook_workflow_registration_failed", error=str(exc))
+        logger.exception("github_webhook_workflow_registration_failed", error=str(exc))
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to register GitHub workflow",
+        ) from exc
 
     settings = getattr(app_state, "settings", None)
     rq_enabled = bool(getattr(settings, "rq_enabled", False)) if settings else False
     rq_queues = getattr(app_state, "rq_queues", None)
     task_handlers = getattr(app_state, "task_handlers", None)
 
+    task_name = _webhook_task_name(event)
     if rq_enabled and rq_queues is not None and task_handlers is not None:
         job = enqueue_job(
             queues=rq_queues,
             task_handlers=task_handlers,
-            task_name="github_pr.enqueue",
+            task_name=task_name,
             event=event,
             run_id=run_id,
         )
-        logger.info("github_pr_enqueued", run_id=run_id, rq_job_id=getattr(job, "id", ""))
+        logger.info(
+            "github_webhook_enqueued",
+            task_name=task_name,
+            run_id=run_id,
+            rq_job_id=getattr(job, "id", ""),
+        )
     else:
         # In-process fallback: run via the registered task so the path is
         # identical to RQ. Schedule on FastAPI BackgroundTasks so the webhook
@@ -358,9 +413,13 @@ async def github_webhook(
         if worker is None or getattr(worker, "run_task", None) is None:
             raise HTTPException(status_code=503, detail="Background worker is disabled")
         background_tasks.add_task(
-            worker.run_task, "github_pr.enqueue", event=event, run_id=run_id
+            worker.run_task, task_name, event=event, run_id=run_id
         )
-        logger.info("github_pr_dispatch_inprocess", run_id=run_id)
+        logger.info(
+            "github_webhook_dispatch_inprocess",
+            task_name=task_name,
+            run_id=run_id,
+        )
 
     return WebhookResponse(status=f"{event.get('event_type')} (run_id={run_id})")
 
@@ -446,13 +505,14 @@ async def resume_review(
     run_id: str,
     decision: ReviewDecision,
     request: Request,
-    _token: dict = Depends(get_verified_token),
+    token: dict = Depends(require_reviewer_role),
 ) -> dict[str, Any]:
     """Resume a graph after human review (plan §9.1).
 
     Loads the pending doc-review interrupt stored by the workflow runner,
-    records the decision, and — on approval — resumes the paused graph
-    with the strands interrupt-response payload.
+    verifies the reviewer's organization, resumes the paused graph — and
+    only records the decision once the workflow reached the expected terminal
+    status. The shared resume service (plan §9.6) backs all platforms.
     """
     app_state = getattr(request.app.state, "draftly", None)
     if app_state is None:
@@ -464,79 +524,53 @@ async def resume_review(
 
     from draftly.review.service import ReviewService
 
-    service = ReviewService(repository=reviews_repo)
+    outcomes_repo = getattr(
+        getattr(app_state.dependencies, "repositories", None),
+        "feedback_outcomes",
+        None,
+    )
+    service = ReviewService(
+        repository=reviews_repo,
+        outcomes_repository=outcomes_repo,
+    )
     pending = await service.get_by_run_id(run_id)
     if pending is None:
         raise HTTPException(
             status_code=404,
             detail=f"No pending review for run {run_id}",
         )
-    # Trust the stored review identity over the client-supplied one.
-    decision.review_id = pending.review_id
+    org_id = str(token.get("org_id") or "")
+    if pending.org_id != org_id:
+        raise HTTPException(status_code=404, detail=f"No pending review for run {run_id}")
 
-    outcome = await service.decide(decision)
+    from draftly.review.resume import ReviewResumeError, resume_review_decision
 
-    from draftly.observability.metrics import metrics as _metrics
-
-    _metrics.increment("draftly_review_decisions_total")
-
-    if not decision.approved:
-        logger.info("review_rejected run_id=%s", run_id)
-        return {"status": "rejected", "run_id": run_id}
-
-    interrupt_id = pending.interrupt_id
-    if not interrupt_id:
-        raise HTTPException(
-            status_code=409,
-            detail="Review has no interrupt to resume",
-        )
-
-    context = getattr(app_state.workflows, "context", None)
-    surface = pending.workflow
-    if surface not in ("pull_request", "issue", "support"):
-        raise HTTPException(
-            status_code=409,
-            detail=f"Workflow {surface!r} is not resumable",
-        )
-
-    from draftly.integrations.strands.graph import build_graph_for_run
-    from draftly.models.router import ModelRouter
-
-    model = getattr(context, "model", None)
-    if isinstance(model, ModelRouter):
-        from draftly.integrations.strands.models import RoleAwareModelResolver
-
-        model = RoleAwareModelResolver(model)
-
-    graph = build_graph_for_run(
-        run_id,
-        surface=surface,
-        tools_registry=getattr(context, "tools", None),
-        model=model,
-        hooks=list(getattr(context, "hooks", []) or []),
-        storage_dir=getattr(context, "storage_dir", ".draftly/sessions"),
-        memory=getattr(context, "memory", None),
-    )
-    resume_input = service.approvals.build_resume_input(
-        interrupt_id,
-        {"approved": True, "comment": decision.comment},
-    )
     try:
-        result = await graph.invoke_async(
-            resume_input,
-            invocation_state={"run_id": run_id},
+        state = await resume_review_decision(
+            review_id=pending.review_id,
+            approved=bool(decision.approved),
+            reviewer_id=str(token.get("user_id") or token.get("sub") or ""),
+            comment=decision.comment,
+            app_state=app_state,
+            org_id=org_id,
         )
-    except RuntimeError as exc:
-        logger.warning("review_resume_failed run_id=%s: %s", run_id, exc)
-        raise HTTPException(
-            status_code=409,
-            detail=f"Run {run_id} could not be resumed: {exc}",
-        ) from exc
+    except ReviewResumeError as exc:
+        if "not pending" in str(exc) or "does not belong" in str(exc):
+            detail = f"No pending review for run {run_id}"
+            raise HTTPException(status_code=404, detail=detail) from exc
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
-    status = str(getattr(result, "status", result))
-    logger.info("review_resumed run_id=%s status=%s", run_id, status)
+    status = state.status.value
+    logger.info(
+        "review_resumed",
+        run_id=run_id,
+        status=status,
+        approved=bool(decision.approved),
+        reviewer_id=str(token.get("user_id") or token.get("sub") or ""),
+    )
     return {
-        "status": status,
+        "status": "resumed" if decision.approved else "rejected",
         "run_id": run_id,
-        "review": outcome.get("review") if isinstance(outcome, dict) else None,
+        "workflow_status": status,
+        "review": getattr(state, "decision_outcome", None),
     }

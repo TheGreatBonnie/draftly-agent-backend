@@ -108,10 +108,12 @@ class ChangelogEvaluatorNode(MultiAgentBase):
         raw_markdown = changelog_data.get("raw_markdown", "")
 
         score, reasons = compute_changelog_quality(raw_markdown)
-        passed = score >= 0.7 or self.iteration >= self.max_iterations
+        passed = score >= 0.7
 
         if not reasons:
             reasons.append(f"Score {score:.2f} (threshold: 0.70)")
+        if not passed and self.iteration >= self.max_iterations:
+            reasons.append(f"Quality threshold not met after {self.iteration} evaluations")
 
         return MultiAgentResult(
             status=Status.COMPLETED,

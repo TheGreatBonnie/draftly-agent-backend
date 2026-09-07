@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from typing import Any
 
 import structlog
@@ -134,9 +133,23 @@ async def _dispatch_message(event: dict, context: dict, deps: SlackAppDeps) -> N
         },
         "team_id": team_id,
     }
-    event = (await app_state.events.normalize_slack(payload)).model_dump()
+    event = await app_state.events.normalize_slack(payload)
 
-    asyncio.create_task(app_state.workflows.runner.run(event))
+    # Resolve the workspace to its linked organization before dispatching. A
+    # support workflow must never launch with a Slack team id as its tenant.
+    from draftly.support.identity import SupportIdentityError, enrich_support_event
+
+    try:
+        event = await enrich_support_event(event, db=deps.db)
+    except SupportIdentityError as exc:
+        logger.warning("slack_install_not_linked", team_id=team_id, reason=str(exc))
+        return
+
+    # Dispatch through the durable worker path (RQ when enabled, in-process
+    # task fallback otherwise) so the webhook ack stays fast.
+    from draftly.app.composition.rq_jobs import enqueue_support_event
+
+    await enqueue_support_event(event, app_state=app_state)
 
     logger.info(
         "slack_message_dispatched",
@@ -166,37 +179,35 @@ async def _handle_review_action(action: dict, action_id: str) -> None:
         logger.warning("slack_review_action_missing_review_id", action_id=action_id)
         return
 
-    decision_map = {
-        "approve_review": "approved",
-        "reject_review": "rejected",
-        "revise_review": "changes_requested",
-    }
-    decision = decision_map.get(action_id)
-    if not decision:
+    approved = action_id == "approve_review"
+    if action_id not in DECISION_MAP:
         return
 
     reviewer_id = action.get("user_id", action.get("user", {}).get("id", "unknown"))
 
     try:
-        # Get the ReviewDecisionService from the API app state
+        # Get the composed runtime from the API app state and resume the
+        # workflow through the shared review resume service (plan §9.6).
         from draftly.app.api.app import app as api_app
 
-        review_decision = getattr(
-            getattr(api_app.state, "draftly", None), "review_decision", None
-        )
-        if review_decision is None:
+        app_state = getattr(getattr(api_app, "state", None), "draftly", None)
+        if app_state is None:
             logger.error("review_decision_service_not_available")
             return
 
-        await review_decision.decide(
+        from draftly.review.resume import resume_review_decision
+
+        await resume_review_decision(
             review_id=review_id,
-            decision=decision,
+            approved=approved,
             reviewer_id=reviewer_id,
+            comment="",
+            app_state=app_state,
         )
         logger.info(
             "slack_review_decision_received",
             review_id=review_id,
-            decision=decision,
+            decision=DECISION_MAP.get(action_id),
             reviewer_id=reviewer_id,
         )
     except Exception as e:

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import pytest
-
 from strands.multiagent.base import Status
 
 from draftly.integrations.strands.graph import build_graph_for_run
@@ -33,6 +32,32 @@ async def test_issue_graph_answers_and_delivers(model, tools, tmp_sessions) -> N
     assert order[-1] == "deliver"
 
 
+def test_issue_and_support_writers_are_read_only(model, tools, tmp_sessions) -> None:
+    forbidden = {
+        "write_file",
+        "update_frontmatter",
+        "create_branch",
+        "create_commit",
+        "create_pull_request",
+    }
+    for surface, run_id in (("issue", "scope-issue"), ("support", "scope-support")):
+        graph = build_graph_for_run(
+            run_id,
+            surface=surface,
+            tools_registry=tools,
+            model=model,
+            storage_dir=tmp_sessions,
+        )
+        for node_id in ("update", "create"):
+            names = {
+                str(
+                    getattr(t, "name", None)
+                    or getattr(getattr(t, "fn", None), "__name__", None)
+                    or getattr(t, "__name__", None)
+                )
+                for t in graph.nodes[node_id].executor.tool_names
+            }
+            assert not names & forbidden
 async def test_support_graph_runs_through_triage(model, tools, tmp_sessions) -> None:
     graph = build_graph_for_run(
         "support-1",

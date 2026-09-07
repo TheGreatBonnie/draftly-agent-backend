@@ -11,10 +11,14 @@ SDK behavior verified against strands-agents 1.52.0:
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
-from strands.multiagent.base import Status
+from strands.multiagent.base import MultiAgentResult, NodeResult, Status
 
 from draftly.integrations.strands.graph import build_graph_for_run
+from draftly.orchestration.hooks.review_gate import ReviewGate
+from draftly.orchestration.nodes.base import agent_result
 from tests.graph.conftest import PR_TASK
 
 
@@ -134,3 +138,62 @@ async def test_interrupt_reason_carries_document_content(model, tools, tmp_sessi
     assert isinstance(files, list) and files, "document must carry the planned files"
     assert files[0]["path"] == "docs/widgets.md"
     assert files[0]["content"], "file content must not be empty"
+
+
+def test_risky_policy_reads_classification_from_graph_state() -> None:
+    """A resumed graph must not treat every missing invocation field as risky."""
+    event = SimpleNamespace(
+        node_id="deliver",
+        invocation_state={"review_policy": "risky"},
+        source=SimpleNamespace(
+            state=SimpleNamespace(
+                results={
+                    "classify": SimpleNamespace(
+                        result=agent_result(
+                            {"change_type": "routine", "urgency": "low"}
+                        )
+                    )
+                }
+            )
+        ),
+        interrupt=lambda *args, **kwargs: pytest.fail("routine work should not pause"),
+        cancel_node=None,
+    )
+
+    ReviewGate().gate(event)
+
+
+def test_interrupt_reason_includes_evaluation_result() -> None:
+    reasons: list[dict] = []
+    event = SimpleNamespace(
+        node_id="deliver",
+        invocation_state={"review_policy": "always", "run_id": "run-1"},
+        source=SimpleNamespace(
+            state=SimpleNamespace(
+                results={
+                    "evaluate": SimpleNamespace(
+                        result=MultiAgentResult(
+                            status=Status.COMPLETED,
+                            results={
+                                "evaluate": NodeResult(
+                                    result=agent_result(
+                                        {"passed": True, "score": 0.92, "reasons": ["grounded"]}
+                                    )
+                                )
+                            },
+                        )
+                    )
+                }
+            )
+        ),
+        interrupt=lambda _name, *, reason: reasons.append(reason) or {"approved": True},
+        cancel_node=None,
+    )
+
+    ReviewGate().gate(event)
+
+    assert reasons[0]["evaluation"] == {
+        "passed": True,
+        "score": 0.92,
+        "reasons": ["grounded"],
+    }

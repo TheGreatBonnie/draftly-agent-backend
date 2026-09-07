@@ -120,8 +120,51 @@ class TestEvaluatorNode:
         second_result = second.results["evaluate"].result
         assert isinstance(second_result, AgentResult)
         second_data = json.loads(second_result.message["content"][0]["text"])
-        assert second_data["passed"] is True  # iteration >= max_iterations
+        assert second_data["passed"] is False
         assert second_data["iteration"] == 2
+
+    @pytest.mark.asyncio
+    async def test_change_plan_files_are_scored_as_the_draft(self) -> None:
+        evidence = [{"id": "docs/auth.md", "topic": "authentication"}]
+        blocks = [
+            {"text": "Original Task: task"},
+            {"text": "\nInputs from previous nodes:"},
+            {"text": "\nFrom research:"},
+            {"text": f"  - ResearchAgent: {_json({'items': evidence})}"},
+            {"text": "\nFrom update:"},
+            {
+                "text": (
+                    "  - WriterAgent: "
+                    + _json(
+                        {
+                            "files": [
+                                {
+                                    "path": "docs/auth.md",
+                                    "content": "Authentication docs/auth.md " * 80,
+                                }
+                            ]
+                        }
+                    )
+                )
+            },
+        ]
+
+        result = await EvaluatorNode().invoke_async(blocks)
+        payload = json.loads(result.results["evaluate"].result.message["content"][0]["text"])
+        assert payload["passed"] is True
+        assert payload["score"] >= 0.7
+
+    @pytest.mark.asyncio
+    async def test_evidence_bundle_items_are_scored(self) -> None:
+        evidence = [{"id": "docs/auth.md", "topic": "authentication"}]
+        result = await EvaluatorNode().invoke_async(
+            _blocks(
+                {"items": evidence},
+                "Authentication docs/auth.md " * 80,
+            )
+        )
+        payload = json.loads(result.results["evaluate"].result.message["content"][0]["text"])
+        assert payload["score"] >= 0.7
 
     @pytest.mark.asyncio
     async def test_draft_from_answer_node(self) -> None:

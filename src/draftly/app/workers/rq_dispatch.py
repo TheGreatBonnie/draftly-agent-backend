@@ -28,6 +28,8 @@ from typing import Any
 
 import structlog
 
+from draftly.observability.workflow_logging import bind_workflow_context
+
 logger = structlog.get_logger(__name__)
 
 Handler = Callable[..., Awaitable[Any]]
@@ -77,7 +79,7 @@ def register_handlers(handlers: dict[str, Handler]) -> None:
     """Replace the global handler registry (called once by the worker at startup)."""
     _HANDLERS.clear()
     _HANDLERS.update(handlers)
-    logger.info("rq_handlers_registered count=%d", len(_HANDLERS))
+    logger.info("rq_handlers_registered", count=len(_HANDLERS))
 
 
 def get_handler(name: str) -> Handler | None:
@@ -94,4 +96,13 @@ def dispatch(name: str, **kwargs: Any) -> Any:
     handler = _HANDLERS.get(name)
     if handler is None:
         raise ValueError(f"Unknown Draftly task: {name}")
-    return run_on_loop(handler(**kwargs))
+    with bind_workflow_context(name, kwargs):
+        logger.info("task_started")
+        try:
+            result = run_on_loop(handler(**kwargs))
+        except Exception:
+            logger.exception("task_failed")
+            raise
+        status = getattr(getattr(result, "status", None), "value", None)
+        logger.info("task_completed", status=status)
+        return result

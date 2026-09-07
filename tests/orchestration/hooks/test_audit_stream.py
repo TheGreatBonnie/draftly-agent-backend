@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+
 from draftly.orchestration.hooks.audit import RunAuditLogger
 
 
@@ -18,7 +19,12 @@ class RecordingPublisher:
 def _event(node_id="doc_writer"):
     return SimpleNamespace(
         node_id=node_id,
-        invocation_state={"run_id": "evt-1", "project_id": "org-1", "source": "github"},
+        invocation_state={
+            "run_id": "evt-1",
+            "project_id": "org-1",
+            "source": "github",
+            "surface": "pull_request",
+        },
         result=SimpleNamespace(status="COMPLETED"),
     )
 
@@ -26,6 +32,11 @@ def _event(node_id="doc_writer"):
 def test_run_end_publishes_step_envelopes() -> None:
     pub = RecordingPublisher()
     logger = RunAuditLogger(audit_repo=None, publisher=pub)
+    logger.run_start(
+        SimpleNamespace(
+            invocation_state=_event().invocation_state,
+        )
+    )
     logger.node_start(_event())
     logger.node_end(_event())
     import asyncio
@@ -33,3 +44,4 @@ def test_run_end_publishes_step_envelopes() -> None:
     types = {e.type for e in pub.envelopes}
     assert {"node_start", "node_stop"} <= types
     assert all(e.run_id == "evt-1" for e in pub.envelopes)
+    assert all(e.surface == "pull_request" for e in pub.envelopes)

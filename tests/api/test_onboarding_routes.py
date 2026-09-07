@@ -226,7 +226,9 @@ class TestOnboardingRoutes:
         assert data["ticket"] == "test-ticket"
         release.assert_awaited_once()
 
-    def test_initialize_503_when_lock_still_contested_after_release(self, client: TestClient) -> None:
+    def test_initialize_503_when_lock_still_contested_after_release(
+        self, client: TestClient
+    ) -> None:
         state = client.app.state.draftly
         repos = state.dependencies.repositories
         repos.onboarding.get = AsyncMock(return_value={

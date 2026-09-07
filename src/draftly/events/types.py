@@ -17,6 +17,9 @@ class EventType(StrEnum):
     GITHUB_ISSUE = "issues"
     GITHUB_RELEASE = "release"
     GITHUB_PUSH = "push"
+    GITHUB_ISSUE_COMMENT = "issue_comment"
+    GITHUB_PULL_REQUEST_REVIEW = "pull_request_review"
+    GITHUB_PULL_REQUEST_REVIEW_COMMENT = "pull_request_review_comment"
     SLACK_SUPPORT = "slack"
     DISCORD_SUPPORT = "discord"
     DOCUMENTATION_CHANGED = "documentation.changed"
@@ -28,6 +31,7 @@ class EventType(StrEnum):
 SURFACE_PULL_REQUEST = "pull_request"
 SURFACE_ISSUE = "issue"
 SURFACE_SUPPORT = "support"
+SURFACE_CONTENT = "content"
 
 SURFACE_BY_EVENT_TYPE: dict[EventType, str] = {
     EventType.GITHUB_PULL_REQUEST: SURFACE_PULL_REQUEST,

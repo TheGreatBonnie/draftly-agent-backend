@@ -1,3 +1,7 @@
+from .content import ContentRepository
+from .documentation_gaps import DocumentationGapRepository
+from .feedback import FeedbackRepository
+from .feedback_outcomes import FeedbackOutcomeRepository
 from .github import (
     get_github_workflow_by_issue,
     get_github_workflow_by_run_id,
@@ -21,6 +25,10 @@ from .routing import PerformanceRepository, RoutingRepository
 
 __all__ = [
     "MemoryRepository",
+    "FeedbackRepository",
+    "DocumentationGapRepository",
+    "FeedbackOutcomeRepository",
+    "ContentRepository",
     "PerformanceRepository",
     "RoutingRepository",
     "get_org_by_github_org",

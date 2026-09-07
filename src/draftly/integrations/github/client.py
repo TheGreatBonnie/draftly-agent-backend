@@ -16,6 +16,7 @@ from .app_auth import (
     post_issue_comment,
 )
 from .auth import GitHubAuth
+from .runtime import current_installation_id
 
 logger = structlog.get_logger(__name__)
 
@@ -35,8 +36,13 @@ class GitHubClient:
         auth: GitHubAuth | None = None,
         timeout: float = 30.0,
         repository: str | None = None,
+        installation_id: int | None = None,
     ):
-        self.auth = auth or GitHubAuth()
+        self.installation_id = installation_id or current_installation_id()
+        # Installation credentials are acquired lazily in _request because
+        # token exchange is asynchronous. Standalone callers retain the
+        # existing GITHUB_TOKEN behavior.
+        self.auth = auth or (None if self.installation_id else GitHubAuth())
         self.timeout = timeout
         self.repository = repository
         self._shared_client: httpx.AsyncClient | None = None
@@ -54,14 +60,17 @@ class GitHubClient:
             await self._shared_client.aclose()
             self._shared_client = None
 
-    def _headers(self) -> dict[str, str]:
+    def _headers(self, token: str | None = None) -> dict[str, str]:
+        resolved_token = token or (self.auth.token if self.auth else None)
+        if not resolved_token:
+            raise RuntimeError("GitHub authentication is not configured.")
         return {
-            "Authorization": f"Bearer {self.auth.token}",
+            "Authorization": f"Bearer {resolved_token}",
             "Accept": "application/vnd.github+json",
             "X-GitHub-Api-Version": "2022-11-28",
         }
 
-    def create_pull_request(
+    async def create_pull_request(
         self,
         owner: str,
         repository: str,
@@ -71,23 +80,19 @@ class GitHubClient:
         body: str,
     ) -> dict:
 
-        url = f"{self.BASE_URL}/repos/{owner}/{repository}/pulls"
-
-        response = httpx.post(
-            url,
-            headers=self._headers(),
-            json={
-                "title": title,
-                "body": body,
-                "head": head,
-                "base": base,
-            },
-            timeout=30,
+        return cast(
+            dict,
+            await self._request(
+                "POST",
+                f"/repos/{owner}/{repository}/pulls",
+                json={
+                    "title": title,
+                    "body": body,
+                    "head": head,
+                    "base": base,
+                },
+            ),
         )
-
-        response.raise_for_status()
-
-        return cast(dict, response.json())
 
     def get_pull_request(
         self,
@@ -118,9 +123,10 @@ class GitHubClient:
         token: str | None = None,
     ) -> Any:
         url = f"{self.BASE_URL}{path}"
-        headers = self.auth.headers()
-        if token:
-            headers = {**headers, "Authorization": f"Bearer {token}"}
+        resolved_token = token
+        if resolved_token is None and self.installation_id is not None:
+            resolved_token = await get_installation_token(self.installation_id)
+        headers = self._headers(resolved_token)
 
         client = self._client()
         response = await client.request(

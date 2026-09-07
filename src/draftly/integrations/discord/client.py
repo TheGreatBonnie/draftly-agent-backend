@@ -14,9 +14,27 @@ class DiscordClient:
         self,
         auth: DiscordAuth | None = None,
         timeout: float = 30.0,
+        *,
+        allowed_guilds: set[str] | None = None,
     ):
-        self.auth = auth or DiscordAuth()
+        # Lazy auth: resolves to `auth` or the DISCORD_BOT_TOKEN env fallback.
+        self.auth = auth
         self.timeout = timeout
+        self.allowed_guilds = allowed_guilds
+
+    def _discord_auth(self) -> DiscordAuth:
+        if self.auth is None:
+            self.auth = DiscordAuth()
+        return self.auth
+
+    def _validate_target(self, guild_id: str | None) -> None:
+        """Refuse to send to a guild outside the resolved organization target."""
+        if self.allowed_guilds is None:
+            return
+        if guild_id is None or guild_id not in self.allowed_guilds:
+            raise PermissionError(
+                f"Discord guild {guild_id!r} is not an allowed delivery target"
+            )
 
     async def _request(
         self,
@@ -31,7 +49,7 @@ class DiscordClient:
             response = await client.request(
                 method,
                 f"{self.BASE_URL}{path}",
-                headers=self.auth.headers(),
+                headers=self._discord_auth().headers(),
                 params=params,
                 json=json,
             )
@@ -79,7 +97,10 @@ class DiscordClient:
         message: str,
         *,
         thread_id: str | None = None,
+        guild_id: str | None = None,
     ) -> dict[str, Any]:
+
+        self._validate_target(guild_id)
 
         target_channel = thread_id or channel_id
 
@@ -124,6 +145,53 @@ class DiscordClient:
             await self._request(
                 "GET",
                 f"/channels/{thread_id}",
+            ),
+        )
+
+    async def send_dm(
+        self,
+        user_id: str,
+        content: str,
+        *,
+        org_id: str | None = None,
+        guild_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Send a direct message to a user within a resolved organization's guild.
+
+        Resolves the organization's linked guild when only ``org_id`` is given,
+        refuses guilds outside the allowed target, verifies the user is a guild
+        member, then opens and sends the DM. All delivery stays within the
+        resolved organization.
+        """
+        if guild_id is None and org_id:
+            from draftly.persistence.repositories.organizations import (
+                get_discord_guild_id,
+            )
+
+            guild_id = await get_discord_guild_id(org_id=org_id)
+        if not guild_id:
+            raise RuntimeError(f"No Discord guild found for org {org_id}")
+
+        self._validate_target(guild_id)
+
+        # Membership check: 404 raises (handled as best-effort failure upstream).
+        await self._request("GET", f"/guilds/{guild_id}/members/{user_id}")
+
+        dm = await self._request(
+            "POST",
+            "/users/@me/channels",
+            json={"recipient_id": user_id},
+        )
+        channel_id = dm.get("id") if isinstance(dm, dict) else None
+        if not channel_id:
+            raise RuntimeError(f"Failed to open DM with user {user_id}")
+
+        return cast(
+            dict[str, Any],
+            await self._request(
+                "POST",
+                f"/channels/{channel_id}/messages",
+                json={"content": content},
             ),
         )
 

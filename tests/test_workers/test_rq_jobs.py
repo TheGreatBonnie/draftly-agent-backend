@@ -19,7 +19,10 @@ class TestGetQueueForTask:
 
     def test_webhook_tasks(self):
         assert get_queue_for_task("github_pr") == "webhooks"
+        assert get_queue_for_task("github_release.enqueue") == "webhooks"
         assert get_queue_for_task("slack_support") == "webhooks"
+        assert get_queue_for_task("slack_support.enqueue") == "webhooks"
+        assert get_queue_for_task("discord_support.enqueue") == "webhooks"
 
     def test_default_tasks(self):
         assert get_queue_for_task("onboarding.initialize") == "default"

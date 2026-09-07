@@ -7,6 +7,7 @@ from draftly.app.api.middleware.logging import RequestLoggingMiddleware
 from draftly.app.api.routes import (
     agents,
     clerk,
+    content,
     discord,
     documentation,
     evaluations,
@@ -73,6 +74,11 @@ def create_api_app() -> FastAPI:
 
     app.include_router(
         documentation.router,
+        prefix="/api",
+    )
+
+    app.include_router(
+        content.router,
         prefix="/api",
     )
 

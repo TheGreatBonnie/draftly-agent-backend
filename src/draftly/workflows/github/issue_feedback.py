@@ -9,12 +9,9 @@ from __future__ import annotations
 
 from typing import Any
 
-import structlog
-
 from draftly.workflows.context import WorkflowContext
-from draftly.workflows.state import WorkflowState, WorkflowStatus
-
-logger = structlog.get_logger(__name__)
+from draftly.workflows.github.feedback_ingestion import ingest_github_feedback
+from draftly.workflows.state import WorkflowState
 
 
 async def process_issue_feedback(
@@ -22,16 +19,4 @@ async def process_issue_feedback(
     event: dict[str, Any],
 ) -> WorkflowState:
     """Record an issue-derived feedback signal."""
-    del context  # persistence wiring lands with the feedback store
-    state = WorkflowState(run_id=str(event.get("event_id") or "issue-feedback"))
-    state.event = event
-
-    issue = event.get("issue") or {}
-    state.result = {
-        "topic": (issue.get("title") or "").strip().lower() or "general",
-        "question": issue.get("title", ""),
-        "source": "github_issue",
-        "state": issue.get("state", ""),
-    }
-    logger.info("issue_feedback_recorded run_id=%s", state.run_id)
-    return state.finish(WorkflowStatus.DELIVERED)
+    return await ingest_github_feedback(context, event)

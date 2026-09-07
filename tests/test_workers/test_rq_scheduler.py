@@ -14,7 +14,13 @@ class _FakeScheduler:
 
     def cron(self, schedule, func, kwargs, queue_name, id):
         self.cron_calls.append(
-            {"schedule": schedule, "func": func, "kwargs": kwargs, "queue_name": queue_name, "id": id}
+            {
+                "schedule": schedule,
+                "func": func,
+                "kwargs": kwargs,
+                "queue_name": queue_name,
+                "id": id,
+            }
         )
 
 
@@ -23,7 +29,6 @@ def setup_function() -> None:
 
 
 def test_scheduler_schedules_importable_dispatch_with_task_name():
-    from rq.utils import import_attribute
 
     fake = _FakeScheduler()
     handlers = {job["name"]: (lambda **kw: None) for job in SCHEDULED_JOBS}

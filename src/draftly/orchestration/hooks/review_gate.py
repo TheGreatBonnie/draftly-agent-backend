@@ -37,7 +37,25 @@ INTERRUPT_NAME = "doc-review"
 
 # Writer nodes whose structured output is the document under review,
 # in delivery order (first match wins — the winning plan).
-WRITER_NODE_IDS = ("update", "create", "answer")
+WRITER_NODE_IDS = (
+    "update",
+    "create",
+    "answer",
+    "content_blog",
+    "content_linkedin",
+    "content_x",
+)
+
+
+def _classification(source: Any, invocation_state: dict[str, Any]) -> dict[str, Any]:
+    """Resolve classification from invocation context or restored graph state."""
+    supplied = invocation_state.get("classification")
+    if isinstance(supplied, dict) and supplied:
+        return supplied
+
+    graph_state = getattr(source, "state", None)
+    classified = safe_node_data(graph_state, "classify")
+    return classified if isinstance(classified, dict) else {}
 
 
 def _collect_document(source: Any, state: dict[str, Any]) -> dict[str, Any] | None:
@@ -57,7 +75,17 @@ def _collect_document(source: Any, state: dict[str, Any]) -> dict[str, Any] | No
         data = safe_node_data(graph_state, node_id)
         if not data:
             continue
-        if node_id == "answer":
+        if node_id in {"content_blog", "content_linkedin", "content_x"}:
+            document = {
+                "kind": "content_variant",
+                "channel": node_id.removeprefix("content_"),
+                "title": data.get("title", ""),
+                "body": data.get("body", ""),
+                "evidence": data.get("evidence", []),
+                "feedback_ids": data.get("feedback_ids", []),
+                "gap_id": data.get("gap_id"),
+            }
+        elif node_id == "answer":
             content = data.get("content", "")
             document = {
                 "kind": "answer",
@@ -92,7 +120,7 @@ class ReviewGate(HookProvider):
 
         state = event.invocation_state or {}
         policy = state.get("review_policy", "always")
-        classification = state.get("classification") or {}
+        classification = _classification(event.source, state)
 
         if not should_review(policy, classification):
             logger.debug(
@@ -107,7 +135,8 @@ class ReviewGate(HookProvider):
             reason={
                 "run_id": state.get("run_id"),
                 "summary": state.get("delivery_summary", ""),
-                "evaluation": state.get("evaluation", {}),
+                "evaluation": safe_node_data(getattr(event.source, "state", None), "evaluate")
+                or state.get("evaluation", {}),
                 "evidence_count": state.get("evidence_count", 0),
                 "document": _collect_document(event.source, state),
             },

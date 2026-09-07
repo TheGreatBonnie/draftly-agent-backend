@@ -9,6 +9,20 @@ from typing import Any, cast
 from draftly.integrations.database.client import DatabaseClient
 
 
+class GitHubWorkflowRepository:
+    """Persistence adapter for the workflow identity/read-model row."""
+
+    def __init__(self, db: DatabaseClient) -> None:
+        self.db = db
+
+    async def update_status(self, *, workflow_id: str, status: str) -> None:
+        await update_github_workflow_status(
+            workflow_id=workflow_id,
+            status=status,
+            db=self.db,
+        )
+
+
 class GitHubInstallationsRepository:
     """Org-scoped access to github_installations for workflow contexts."""
 
@@ -214,6 +228,7 @@ async def save_github_workflow(
     run_id: str,
     title: str = "",
     actor: str = "",
+    event_type: str = "",
     db: DatabaseClient | None = None,
 ) -> str:
     """Save or update a GitHub workflow status."""
@@ -228,13 +243,19 @@ async def save_github_workflow(
     row = await db.fetch_one(
         """INSERT INTO github_workflows
            (org_id, workflow_id, installation_id, owner, repo, issue_number,
-            run_id, title, actor, status)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'pending')
+            run_id, title, actor, event_type, status)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'pending')
            ON CONFLICT (workflow_id) DO UPDATE SET
+               org_id = EXCLUDED.org_id,
+               installation_id = EXCLUDED.installation_id,
+               owner = EXCLUDED.owner,
+               repo = EXCLUDED.repo,
+               issue_number = EXCLUDED.issue_number,
                status = EXCLUDED.status,
                run_id = EXCLUDED.run_id,
                title = EXCLUDED.title,
                actor = EXCLUDED.actor,
+               event_type = EXCLUDED.event_type,
                updated_at = now()
            RETURNING id::text""",
         org_id,
@@ -246,6 +267,7 @@ async def save_github_workflow(
         run_id,
         title,
         actor,
+        event_type,
     )
     if row is None:
         raise RuntimeError("github workflow row missing after insert")
@@ -322,7 +344,8 @@ async def list_github_workflows_record(
 
     # Fetch all github_workflows for the org
     gw_rows = await db.fetch_all(
-        """SELECT workflow_id, run_id, title, owner, repo, issue_number, actor, status, created_at
+        """SELECT workflow_id, run_id, title, owner, repo, issue_number,
+                  actor, event_type, status, created_at
            FROM github_workflows
            WHERE org_id = $1
            ORDER BY created_at DESC""",
@@ -338,40 +361,43 @@ async def list_github_workflows_record(
         jobs_map: dict[str, dict] = {}
         events_by_run: dict[str, list[dict]] = {}
     else:
-        run_ids_str = ",".join(f"'{r}'" for r in run_ids)
-
         # Fetch jobs for all runs
         jobs_rows = await db.fetch_all(
-            f"""SELECT run_id, status, started_at, completed_at
+            """SELECT run_id, status, started_at, completed_at
                FROM jobs
-               WHERE run_id IN ({run_ids_str})"""
+               WHERE run_id = ANY($1::TEXT[])""",
+            run_ids,
         )
         jobs_map = {str(r["run_id"]): r for r in jobs_rows}
 
         # Fetch all workflow_events for those runs to derive terminal status and node states
         # (no DISTINCT ON — we need the full event history per run)
         events_rows = await db.fetch_all(
-            f"""SELECT run_id, payload, ts, type, node_id, seq
+            """SELECT run_id, payload, ts, type, node_id, seq
                FROM workflow_events
-               WHERE run_id IN ({run_ids_str})
-               ORDER BY run_id, seq ASC"""
+               WHERE run_id = ANY($1::TEXT[])
+               ORDER BY run_id, seq ASC""",
+            run_ids,
         )
         events_by_run = {}
         for r in events_rows:
             rid = str(r["run_id"])
             events_by_run.setdefault(rid, []).append(dict(r))
 
-    # Fixed topological order of graph nodes
-    stage_order = [
-        "classify", "context", "research", "impact",
-        "answer", "update", "create", "evaluate", "deliver"
-    ]
-
     result = []
     for gw in gw_rows:
         run_id = str(gw.get("run_id") or "")
         job = jobs_map.get(run_id)
         events = events_by_run.get(run_id, [])
+        event_type = str(gw.get("event_type") or "")
+        stage_order = (
+            ["classify", "context", "research", "impact", "changelog", "evaluate", "deliver"]
+            if event_type.startswith("release.")
+            else [
+                "classify", "context", "research", "impact", "answer",
+                "update", "create", "evaluate", "deliver",
+            ]
+        )
 
         # Determine status: prefer workflow_result, else jobs.status, else gw.status
         terminal_status = None
@@ -485,7 +511,12 @@ async def list_github_workflows_record(
                 m = int((delta.total_seconds() % 3600) // 60)
                 time_str = f"{h}h {m}m"
 
-        trigger = f"PR #{gw.get('issue_number', 0)}" if gw.get("issue_number") else "Unknown"
+        if event_type.startswith("release."):
+            trigger = gw.get("title") or "Release"
+        elif event_type.startswith("push."):
+            trigger = "Push"
+        else:
+            trigger = f"PR #{gw.get('issue_number', 0)}" if gw.get("issue_number") else "Unknown"
         result.append({
             "run_id": run_id,
             "title": gw.get("title", ""),

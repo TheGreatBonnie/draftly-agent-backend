@@ -8,6 +8,9 @@ do not accept routers (plan §13 risk).
 
 from __future__ import annotations
 
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import Any
 
 import structlog
@@ -15,6 +18,22 @@ import structlog
 from draftly.models.factory import build_model_router
 
 logger = structlog.get_logger(__name__)
+
+_routing_decision_sink: ContextVar[Callable[[str, Any], None] | None] = ContextVar(
+    "draftly_routing_decision_sink", default=None
+)
+
+
+@contextmanager
+def routing_decision_scope(
+    sink: Callable[[str, Any], None],
+) -> Iterator[None]:
+    """Collect role decisions only for the current graph-build context."""
+    token = _routing_decision_sink.set(sink)
+    try:
+        yield
+    finally:
+        _routing_decision_sink.reset(token)
 
 
 def build_model() -> Any:
@@ -50,8 +69,13 @@ def resolve_concrete_model(router: Any = None, *, index: int = 0) -> Any:
 class RoleAwareModelResolver:
     """Resolves a concrete Strands model PER AGENT ROLE via route()."""
 
-    def __init__(self, router: Any) -> None:
+    def __init__(
+        self,
+        router: Any,
+        decision_sink: Callable[[str, Any], None] | None = None,
+    ) -> None:
         self._router = router
+        self._decision_sink = decision_sink
 
     def for_role(
         self,
@@ -109,7 +133,14 @@ class RoleAwareModelResolver:
             config = replace(config, max_tokens=ROLE_OUTPUT_TOKENS[role])
 
         provider = self._router.registry.get_provider(decision.provider)
-        return provider.create_model(config), decision
+        model = provider.create_model(config)
+        sink = self._decision_sink or _routing_decision_sink.get()
+        if sink is not None:
+            try:
+                sink(role, decision)
+            except Exception:
+                logger.warning("routing_decision_sink_failed role=%s", role, exc_info=True)
+        return model, decision
 
 
 def _estimate_tokens(prompt_text: str | None) -> int:

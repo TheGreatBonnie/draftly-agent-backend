@@ -1,0 +1,66 @@
+[
+  {
+    "name": "content",
+    "description": "Content cases: release-to-blog/social authoring grounded in release notes, with one unsupported variant that should be blocked by the groundedness frontier.",
+    "surface": "content",
+    "required_tools": {
+      "context": [
+        "keyword_search",
+        "semantic_search",
+        "file_exists"
+      ],
+      "content_blog": [
+        "keyword_search"
+      ]
+    },
+    "cases": [
+      {
+        "name": "grounded_release_variants",
+        "input": "Release v2.0.0: BREAKING: Removed API key authentication. Migrate to OAuth. Added RBAC with organization scoping.",
+        "expected_output": "Blog and social variants announce the release, grounded in the release notes: API key authentication was removed and RFC-8252 authorization-code flows with RBAC organization scoping were added.",
+        "metadata": {
+          "surface": "content",
+          "event_type": "content.manual",
+          "source_event_type": "release",
+          "repository": "TheGreatBonnie/authly",
+          "project_id": "proj_demo",
+          "org_id": "org_3IfMDevV4Tg8DLD8Ljc0GG6c2GJ",
+          "repo_dir": "/Applications/Projects/hackathon/draftly-docs-engineer/authly-scenarios/003-api-key-deprecation",
+          "requested_channels": ["blog", "linkedin", "x"],
+          "audience": "developers",
+          "tone": "clear, practical, trustworthy",
+          "evidence": [
+            {
+              "id": "docs/how-to/configure-client",
+              "topic": "authentication",
+              "url": "docs/how-to/configure-client.md"
+            },
+            {
+              "id": "docs/explanation/authorization-model",
+              "topic": "rbac",
+              "url": "docs/explanation/authorization-model.md"
+            }
+          ],
+          "expected_tools": ["keyword_search"]
+        }
+      },
+      {
+        "name": "unsupported_variant_is_blocked",
+        "input": "Release v9.9.9: telemetry overhaul with a new OpenTelemetry exporter.",
+        "expected_output": "The unsupported variant must record authoring feedback and not publish content claiming telemetry behavior that has no supporting evidence.",
+        "metadata": {
+          "surface": "content",
+          "event_type": "content.manual",
+          "source_event_type": "release",
+          "repository": "TheGreatBonnie/authly",
+          "project_id": "proj_demo",
+          "org_id": "org_3IfMDevV4Tg8DLD8Ljc0GG6c2GJ",
+          "requested_channels": ["blog", "linkedin", "x"],
+          "audience": "developers",
+          "tone": "clear, practical, trustworthy",
+          "evidence": []
+        }
+      }
+    ]
+  }
+]

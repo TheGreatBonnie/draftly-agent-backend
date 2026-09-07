@@ -808,7 +808,8 @@ Output contract:
 {documentation_policy}
 """
 
-SUPPORT_TRIAGE_PROMPT = """You triage an incoming support question to determine the appropriate action.
+SUPPORT_TRIAGE_PROMPT = """You triage an incoming support question to determine
+the appropriate action.
 
 For support questions (usage questions, error explanations, how-to requests):
 - Set action to "answer" — the question can be answered using existing documentation
@@ -845,6 +846,18 @@ Output contract:
 DELIVERY_PROMPT = """You deliver the final output: open a docs PR, post a reply, or send a
 message, according to the surface. Respect repository rules and any human
 review gates before delivering.
+
+## Support delivery (Slack/Discord)
+
+- Direct answers return to the ORIGINATING thread only. Use the single
+  posting tool for the source platform; never post to another channel, DM, or
+  platform, and never mix POSTING tools across platforms.
+- A documentation gap (a generated change plan) is NOT a chat answer: route it
+  to the GitHub documentation-delivery path as a reviewed PR
+  (create_branch/create_commit/create_pull_request). Only deliver to a
+  repository target that was explicitly supplied in the task.
+- Never choose Slack/Discord for a GitHub-only documentation event without an
+  explicit support delivery target.
 
 ## Changelog deliveries
 

@@ -38,6 +38,19 @@ class TestStrandsEvalsRunner:
         for cases in datasets.values():
             assert all(isinstance(c, Case) for c in cases)
 
+    def test_loads_canonical_content_dataset_cases(self) -> None:
+        cases = StrandsEvalsRunner.load_dataset("content")
+
+        assert [case.name for case in cases] == [
+            "grounded_release_variants",
+            "unsupported_variant_is_blocked",
+        ]
+
+    def test_content_dataset_is_in_default_suite(self) -> None:
+        definitions = StrandsEvalsRunner().load_all_dataset_definitions()
+
+        assert "content" in {definition["name"] for definition in definitions}
+
     async def test_deterministic_evaluator_run_passes(self) -> None:
         runner = StrandsEvalsRunner()
         cases = [

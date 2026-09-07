@@ -36,7 +36,12 @@ _metrics: Metrics = _default_metrics
 class RunAuditLogger(HookProvider):
     """Persist per-step telemetry and audit rows for a run."""
 
-    def __init__(self, audit_repo: Any = None, publisher: Any = None, jobs_repo: Any = None) -> None:
+    def __init__(
+        self,
+        audit_repo: Any = None,
+        publisher: Any = None,
+        jobs_repo: Any = None,
+    ) -> None:
         self.audit_repo = audit_repo
         self.publisher = publisher
         self.jobs_repo = jobs_repo
@@ -64,6 +69,7 @@ class RunAuditLogger(HookProvider):
             "source": str(state.get("source", "github")),
             "event_type": str(state.get("event_type", "unknown")),
             "org_id": str(state.get("project_id", "")),
+            "surface": str(state.get("surface", "")),
         }
         if self.jobs_repo is not None:
             try:
@@ -80,7 +86,7 @@ class RunAuditLogger(HookProvider):
                         event_type=str(state.get("event_type", "unknown")),
                     )
                 )
-        logger.info("audit.run.start run_id=%s", run_id)
+        logger.info("audit_run_start", run_id=run_id)
 
     def node_start(self, event: BeforeNodeCallEvent) -> None:
         self._node_started_at[event.node_id] = time.monotonic()
@@ -94,7 +100,11 @@ class RunAuditLogger(HookProvider):
                 "payload": {"node_type": "agent"},
                 "seq": self._stream_seq,
             })
-            logger.info("audit.step.start run_id=%s node_id=%s", run_id, event.node_id)
+            logger.info(
+                "audit_step_start",
+                run_id=run_id,
+                node_id=event.node_id,
+            )
 
     def node_end(self, event: AfterNodeCallEvent) -> None:
         state = event.invocation_state or {}
@@ -120,10 +130,10 @@ class RunAuditLogger(HookProvider):
                 "seq": self._stream_seq,
             })
             logger.info(
-                "audit.step.end run_id=%s node_id=%s duration_ms=%s",
-                run_id,
-                event.node_id,
-                duration_ms,
+                "audit_step_end",
+                run_id=run_id,
+                node_id=event.node_id,
+                duration_ms=duration_ms,
             )
 
     def tool_end(self, event: AfterToolCallEvent) -> None:
@@ -150,7 +160,7 @@ class RunAuditLogger(HookProvider):
                 },
                 "seq": self._stream_seq,
             })
-            logger.info("audit.tool run_id=%s tool=%s", run_id, tool_name)
+            logger.info("audit_tool", run_id=run_id, tool=tool_name)
 
     def run_end(self, event: AfterInvocationEvent) -> None:
         state = event.invocation_state or {}
@@ -166,7 +176,7 @@ class RunAuditLogger(HookProvider):
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
-            logger.warning("audit_flush_skipped_no_loop run_id=%s", run_id)
+            logger.warning("audit_flush_skipped_no_loop", run_id=run_id)
             return
         if self.audit_repo is not None and steps:
             loop.create_task(_flush_run(self.audit_repo, str(run_id), meta, steps))
@@ -251,7 +261,7 @@ async def _flush_run(
             error=f"nodes failed: {failed}" if failed else None,
         )
     except Exception:
-        logger.exception("audit_flush_failed run_id=%s", run_id)
+        logger.exception("audit_flush_failed", run_id=run_id)
 
 
 async def _flush_stream(
@@ -272,7 +282,7 @@ async def _flush_stream(
                 )
             )
     except Exception:
-        logger.warning("audit_stream_flush_failed run_id=%s", run_id, exc_info=True)
+        logger.warning("audit_stream_flush_failed", run_id=run_id, exc_info=True)
 
 
 async def _upsert_job_row(
@@ -287,7 +297,7 @@ async def _upsert_job_row(
             status="running",
         )
     except Exception:
-        logger.warning("audit_job_row_upsert_failed run_id=%s", job_id, exc_info=True)
+        logger.warning("audit_job_row_upsert_failed", run_id=job_id, exc_info=True)
 
 
 def _status_of(event: AfterNodeCallEvent) -> str:

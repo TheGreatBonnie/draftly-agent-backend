@@ -35,6 +35,7 @@ class DiscordProcessor(BaseProcessor):
             actor=author.get("username", ""),
             source="discord",
             project_id=guild_id,
+            guild_id=guild_id,
             source_message_id=f"{channel_id}:{message_id}",
             question=payload.get("content", ""),
             channel=channel_id,

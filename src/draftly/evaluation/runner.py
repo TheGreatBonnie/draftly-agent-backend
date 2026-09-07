@@ -30,17 +30,37 @@ class StrandsEvalsRunner:
         repository: Any = None,
         org_id: str = "",
         evaluation_type: str = "documentation",
+        evaluation_data_store: Any = None,
     ) -> None:
         self.repository = repository
         self.org_id = org_id
         self.evaluation_type = evaluation_type
+        self.evaluation_data_store = evaluation_data_store
 
     # --------------------------------------------------------------
     # Dataset loading
     # --------------------------------------------------------------
 
     @staticmethod
-    def load_dataset(name: str) -> list[Case]:
+    def load_dataset_definitions(name: str) -> list[dict[str, Any]]:
+        """Load and validate every dataset definition in one JSON file."""
+        path = DATASET_DIR / f"{name}.json"
+        if not path.exists():
+            raise FileNotFoundError(f"dataset not found: {path}")
+        raw = json.loads(path.read_text())
+        blocks = raw if isinstance(raw, list) else [raw]
+        definitions: list[dict[str, Any]] = []
+        for index, block in enumerate(blocks):
+            if not isinstance(block, dict):
+                raise ValueError(f"dataset block {index} in {path} must be an object")
+            cases = block.get("cases")
+            if not isinstance(cases, list):
+                raise ValueError(f"dataset block {index} in {path} must contain a cases list")
+            definitions.append(block)
+        return definitions
+
+    @classmethod
+    def load_dataset(cls, name: str) -> list[Case]:
         """Load a golden dataset JSON file into Case objects.
 
         Handles both file shapes:
@@ -52,13 +72,8 @@ class StrandsEvalsRunner:
 
         When the file is a list, cases are the union across all dataset dicts.
         """
-        path = DATASET_DIR / f"{name}.json"
-        if not path.exists():
-            raise FileNotFoundError(f"dataset not found: {path}")
-        raw = json.loads(path.read_text())
-        blocks = raw if isinstance(raw, list) else [raw]
         cases: list[Case] = []
-        for block in blocks:
+        for block in cls.load_dataset_definitions(name):
             for case in block.get("cases", []):
                 cases.append(
                     Case(
@@ -75,10 +90,29 @@ class StrandsEvalsRunner:
         )
         return cases
 
+    def load_all_dataset_definitions(self) -> list[dict[str, Any]]:
+        """Load dataset definitions without dropping dataset-level metadata."""
+        definitions: list[dict[str, Any]] = []
+        for path in sorted(DATASET_DIR.glob("*.json")):
+            try:
+                definitions.extend(
+                    definition
+                    for definition in self.load_dataset_definitions(path.stem)
+                    if definition.get("enabled", True)
+                )
+            except Exception:
+                logger.exception("dataset_definition_load_failed name=%s", path.stem)
+        return definitions
+
     def load_all_datasets(self) -> dict[str, list[Case]]:
         datasets: dict[str, list[Case]] = {}
         for path in sorted(DATASET_DIR.glob("*.json")):
             try:
+                definitions = self.load_dataset_definitions(path.stem)
+                if definitions and not any(
+                    definition.get("enabled", True) for definition in definitions
+                ):
+                    continue
                 datasets[path.stem] = self.load_dataset(path.stem)
             except Exception:
                 logger.exception("dataset_load_failed name=%s", path.stem)
@@ -106,7 +140,10 @@ class StrandsEvalsRunner:
             evaluators=len(evaluators),
         )
         experiment = Experiment(cases=cases, evaluators=evaluators)
-        report = await experiment.run_evaluations_async(get_response)
+        report = await experiment.run_evaluations_async(
+            get_response,
+            evaluation_data_store=self.evaluation_data_store,
+        )
         logger.info(
             "runner_experiment_complete",
             cases=len(cases),
@@ -942,6 +979,7 @@ async def run_dataset_live(
     judge_model: Any = None,
     surface_required_tools: dict[str, list[str]] | None = None,
     run_id_prefix: str = "evaluation",
+    evaluation_data_store: Any = None,
 ) -> list[dict[str, Any]]:
     """Run a dataset with live agent invocation and full evaluator suite.
 
@@ -988,8 +1026,11 @@ async def run_dataset_live(
     )
 
     experiment = Experiment(cases=cases, evaluators=evaluators)
-    task = build_online_task(client)
-    report = await experiment.run_evaluations_async(task)
+    task = build_online_task(client, run_id_prefix=run_id_prefix)
+    report = await experiment.run_evaluations_async(
+        task,
+        evaluation_data_store=evaluation_data_store,
+    )
 
     return _report_rows(dataset.get("name", "dataset"), report)
 
@@ -998,6 +1039,9 @@ async def run_dataset_online(
     client: Any,
     dataset: dict[str, Any],
     evaluators: list[Any] | None = None,
+    *,
+    run_id_prefix: str = "eval",
+    evaluation_data_store: Any = None,
 ) -> list[dict[str, Any]]:
     """Run a dataset with live agent invocation using the provided client.
 
@@ -1007,22 +1051,25 @@ async def run_dataset_online(
 
     from draftly.evaluation.online import build_online_task
 
-    if evaluators is None:
-        cases = []
-        for index, raw_case in enumerate(dataset.get("cases", [])):
-            case = Case(
-                name=raw_case.get("name", f"case-{index + 1}"),
-                input=raw_case.get("input", ""),
-                expected_output=raw_case.get("expected_output", ""),
-                metadata=raw_case.get("metadata", {}),
-            )
-            cases.append(case)
+    cases = []
+    for index, raw_case in enumerate(dataset.get("cases", [])):
+        case = Case(
+            name=raw_case.get("name", f"case-{index + 1}"),
+            input=raw_case.get("input", ""),
+            expected_output=raw_case.get("expected_output", ""),
+            metadata=raw_case.get("metadata", {}),
+        )
+        cases.append(case)
 
+    if evaluators is None:
         evaluators = [ExpectedContains()]
 
     experiment = Experiment(cases=cases, evaluators=evaluators)
-    task = build_online_task(client)
-    report = await experiment.run_evaluations_async(task)
+    task = build_online_task(client, run_id_prefix=run_id_prefix)
+    report = await experiment.run_evaluations_async(
+        task,
+        evaluation_data_store=evaluation_data_store,
+    )
 
     return _report_rows(dataset.get("name", "dataset"), report)
 

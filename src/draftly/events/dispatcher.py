@@ -16,6 +16,7 @@ import structlog
 
 from draftly.events.types import (
     SURFACE_BY_EVENT_TYPE,
+    SURFACE_CONTENT,
     SURFACE_ISSUE,
     SURFACE_PULL_REQUEST,
     SURFACE_SUPPORT,
@@ -36,6 +37,7 @@ SURFACE_BY_PREFIX: dict[str, str] = {
     EventType.GITHUB_ISSUE.value: SURFACE_ISSUE,
     EventType.SLACK_SUPPORT.value: SURFACE_SUPPORT,
     EventType.DISCORD_SUPPORT.value: SURFACE_SUPPORT,
+    "content": SURFACE_CONTENT,
 }
 
 
@@ -55,6 +57,9 @@ class EventDispatcher:
 
     def route(self, event: dict[str, Any]) -> str | None:
         """Map a normalized event to its graph surface (None if unknown)."""
+        body = event.get("release") or event.get("pull_request") or {}
+        if event.get("content_relevant") or body.get("content_relevant"):
+            return "content"
         event_type = str(event.get("event_type", ""))
         prefix = event_prefix(event_type)
         if prefix in SURFACE_BY_PREFIX:

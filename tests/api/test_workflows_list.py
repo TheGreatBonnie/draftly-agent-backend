@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -42,7 +42,17 @@ def test_list_workflows_returns_items_with_expected_shape(monkeypatch) -> None:
             "trigger_label": "PR #482",
             "status": "running",
             "current_stage": "research",
-            "stages": ["done", "running", "queued", "queued", "queued", "queued", "queued", "queued", "queued"],
+            "stages": [
+                "done",
+                "running",
+                "queued",
+                "queued",
+                "queued",
+                "queued",
+                "queued",
+                "queued",
+                "queued",
+            ],
             "current_stage_color": "blue",
             "time": "18.4s",
         }

@@ -73,19 +73,35 @@ class SlackInstallationStore(AsyncInstallationStore):
                 installation.token_type,
             )
 
-    async def async_find_installation(
-        self,
-        enterprise_id: str | None,
-        team_id: str | None,
-        user_id: str | None = None,
-        is_enterprise_install: bool | None = False,
-    ) -> Installation | None:
-        if team_id is None:
+    async def async_get_by_team(self, team_id: str) -> Installation | None:
+        """Return the installation for a team, or ``None`` when uninstalled.
+
+        Used for event-scoped delivery so outbound replies use the workspace's
+        own bot token instead of guessing from a global token.
+        """
+        if not team_id:
             return None
         row = await self.db.fetch_one(
             "SELECT * FROM slack_installations WHERE team_id = $1",
             team_id,
         )
+        return self._row_to_installation(row)
+
+    async def async_get_by_org(self, org_id: str) -> Installation | None:
+        """Return the installation bound to a Clerk org, or ``None``.
+
+        Used for organization-scoped background delivery (reviewer
+        notifications, delivery routers) where no inbound event exists.
+        """
+        if not org_id:
+            return None
+        row = await self.db.fetch_one(
+            "SELECT * FROM slack_installations WHERE org_id = $1 LIMIT 1",
+            org_id,
+        )
+        return self._row_to_installation(row)
+
+    def _row_to_installation(self, row: Any) -> Installation | None:
         if not row:
             return None
         return Installation(
@@ -99,6 +115,21 @@ class SlackInstallationStore(AsyncInstallationStore):
             user_scopes=_split_scopes(row.get("user_scopes")),
             token_type=row.get("token_type"),
         )
+
+    async def async_find_installation(
+        self,
+        enterprise_id: str | None,
+        team_id: str | None,
+        user_id: str | None = None,
+        is_enterprise_install: bool | None = False,
+    ) -> Installation | None:
+        if team_id is None:
+            return None
+        row = await self.db.fetch_one(
+            "SELECT * FROM slack_installations WHERE team_id = $1",
+            team_id,
+        )
+        return self._row_to_installation(row)
 
     async def async_find_bot(
         self,

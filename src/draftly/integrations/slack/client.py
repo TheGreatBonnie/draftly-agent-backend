@@ -13,10 +13,73 @@ class SlackClient:
     def __init__(
         self,
         auth: SlackAuth | None = None,
+        *,
+        installation_store: Any | None = None,
         timeout: float = 30.0,
     ):
-        self.auth = auth or SlackAuth()
+        # Lazy auth: resolves to `auth`, an event-scoped per-team token, or the
+        # SLACK_BOT_TOKEN env fallback at request time.
+        self.auth = auth
+        self.installation_store = installation_store
         self.timeout = timeout
+        self.last_token: str | None = None
+
+    def _resolved_token(self) -> str:
+        if self.last_token:
+            return self.last_token
+        if self.auth is not None and getattr(self.auth, "token", None):
+            return self.auth.token
+        return SlackAuth().token  # raises when SLACK_BOT_TOKEN is not configured
+
+    def _headers(self) -> dict[str, str]:
+        return {
+            "Authorization": f"Bearer {self._resolved_token()}",
+            "Content-Type": "application/json; charset=utf-8",
+        }
+
+    async def _resolve_installation_token(self, team_id: str | None) -> None:
+        """Resolve the bot token for a team from the installation store.
+
+        ``SLACK_BOT_TOKEN`` remains only an explicit single-tenant fallback;
+        event-scoped delivery always prefers the workspace's own installation.
+        """
+        if not team_id:
+            self.last_token = None
+            return
+        store = self.installation_store
+        if store is None:
+            from draftly.integrations.support.runtime import (
+                default_slack_installation_store,
+            )
+
+            store = default_slack_installation_store()
+        installation = await store.async_get_by_team(team_id)
+        if installation is None:
+            raise RuntimeError(f"No Slack installation found for team {team_id}")
+        token = getattr(installation, "bot_token", None)
+        if not token:
+            raise RuntimeError(f"Slack installation for team {team_id} has no bot token")
+        self.last_token = token
+
+    async def _resolve_installation_for_org(self, org_id: str | None) -> None:
+        """Resolve the bot token for a linked organization's workspace."""
+        if not org_id:
+            self.last_token = None
+            return
+        store = self.installation_store
+        if store is None or not hasattr(store, "async_get_by_org"):
+            from draftly.integrations.support.runtime import (
+                default_slack_installation_store,
+            )
+
+            store = default_slack_installation_store()
+        installation = await store.async_get_by_org(org_id)
+        if installation is None:
+            raise RuntimeError(f"No Slack installation found for org {org_id}")
+        token = getattr(installation, "bot_token", None)
+        if not token:
+            raise RuntimeError(f"Slack installation for org {org_id} has no bot token")
+        self.last_token = token
 
     async def _request(
         self,
@@ -31,7 +94,7 @@ class SlackClient:
             response = await client.request(
                 method,
                 f"{self.BASE_URL}/{endpoint}",
-                headers=self.auth.headers(),
+                headers=self._headers(),
                 params=params,
                 json=json,
             )
@@ -78,7 +141,10 @@ class SlackClient:
         message: str,
         *,
         thread_id: str | None = None,
+        team_id: str | None = None,
     ) -> dict[str, Any]:
+
+        await self._resolve_installation_token(team_id)
 
         payload = {
             "channel": channel_id,
@@ -113,8 +179,19 @@ class SlackClient:
         text: str,
         *,
         blocks: list[dict[str, Any]] | None = None,
+        org_id: str | None = None,
+        team_id: str | None = None,
     ) -> dict[str, Any]:
-        """Send a direct message to a user."""
+        """Send a direct message to a user within a resolved organization.
+
+        Resolves the linked workspace installation for ``org_id`` (or
+        ``team_id``) before opening the DM so delivery stays within the
+        organization's own Slack workspace.
+        """
+        if org_id:
+            await self._resolve_installation_for_org(org_id)
+        elif team_id:
+            await self._resolve_installation_token(team_id)
         # First open DM channel
         dm_channel = await self._request(
             "POST",

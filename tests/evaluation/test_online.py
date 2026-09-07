@@ -474,6 +474,21 @@ async def test_build_online_task_uses_unique_run_id_per_invocation() -> None:
     assert client.calls[0]["invocation_state"]["repo_dir"] == "/tmp/001"
 
 
+async def test_build_online_task_prefixes_case_runs_with_parent_run_id() -> None:
+    client = FakeClient()
+    task = build_online_task(client, run_id_prefix="evaluation-parent-42")
+    case = _case(
+        "oauth-auth",
+        "PR: add OAuth",
+        "ok",
+        {"surface": "pull_request"},
+    )
+
+    await task(case)
+
+    assert client.calls[0]["run_id"].startswith("evaluation-parent-42-oauth-auth-")
+
+
 # ---------------------------------------------------------------------------
 # NodeToolCalled + build_live_evaluators
 # ---------------------------------------------------------------------------
@@ -1717,6 +1732,34 @@ def test_build_live_evaluators_wires_feedback_evaluators() -> None:
     assert "no_false_positive_gap" in names
 
 
+async def test_build_online_task_feedback_decodes_json_list_input() -> None:
+    """Feedback cases (e.g. feedback.json) ship ``questions`` as a JSON-encoded
+    list string; the online task must decode it back into a real list so the
+    deterministic feedback graph can cluster it. Regression: the graph
+    previously iterated the encoded string char-by-char and raised
+    ``AttributeError: 'str' object has no attribute 'get'``."""
+
+    class NoopClient:
+        async def invoke(self, **kwargs):  # pragma: no cover - must not be called
+            raise AssertionError("feedback surface must not invoke the client")
+
+    task = build_online_task(NoopClient())
+    case = _case(
+        "feedback_json_list_input",
+        '[{"topic": "oauth", "question": "How do I set up OAuth?"}, '
+        '{"topic": "oauth", "question": "OAuth redirect fails"}, '
+        '{"topic": "keyboards", "question": "unrelated"}]',
+        "exactly one oauth gap",
+        {"surface": "feedback", "gap_threshold": 2},
+    )
+
+    result = await task(case)
+
+    feedback = next(e for e in result["environment_state"] if e.name == "feedback")
+    assert feedback.state["gap_count"] == 1
+    assert feedback.state["prioritized_gaps"][0]["topic"] == "oauth"
+
+
 def test_build_live_evaluators_skips_feedback_when_not_present() -> None:
     from draftly.evaluation.runner import build_live_evaluators
 
@@ -1730,6 +1773,245 @@ def test_build_live_evaluators_skips_feedback_when_not_present() -> None:
     assert "expected_gap_detected" not in names
     assert "expected_gap_count" not in names
     assert "no_false_positive_gap" not in names
+
+
+# ---------------------------------------------------------------------------
+# Content surface (live manifold for the re-enabled content dataset)
+# ---------------------------------------------------------------------------
+
+
+def test_build_event_content_surface_shape() -> None:
+    """build_event must render a ``content`` surface as a release-manifold
+    event that the content graph's ``_request_from_event`` can consume.
+
+    The content manifold re-uses the ``release`` payload slot, carrying the
+    original release event type, title, and declared evidence so groundedness
+    judges and the keyword_search eligibility gate see the source material.
+    """
+    case = _case(
+        "grounded_release_variants",
+        "Release v2.0.0: BREAKING - removed API key authentication. Migrate to OAuth.",
+        "Blog and social variants grounded in the release notes",
+        {
+            "surface": "content",
+            "event_type": "content.manual",
+            "source_event_type": "release",
+            "repository": "TheGreatBonnie/authly",
+            "project_id": "proj_demo",
+            "org_id": "org_demo",
+            "requested_channels": ["blog", "linkedin", "x"],
+            "evidence": [{"id": "release-notes", "topic": "oauth"}],
+            "audience": "developers",
+            "tone": "practical",
+        },
+    )
+
+    event = build_event(case, "content")
+
+    assert event["event_type"] == "content.manual"
+    assert event["content_relevant"] is True
+    assert event["org_id"] == "org_demo"
+    assert event["repository"] == "TheGreatBonnie/authly"
+    assert event["project_id"] == "proj_demo"
+    assert event["requested_channels"] == ["blog", "linkedin", "x"]
+    assert event["audience"] == "developers"
+    assert event["tone"] == "practical"
+    release = event["release"]
+    assert release["source_event_type"] == "release"
+    assert release["source_evidence"] == [{"id": "release-notes", "topic": "oauth"}]
+    assert (
+        release["source_title"]
+        == "Release v2.0.0: BREAKING - removed API key authentication. Migrate to OAuth."
+    )
+    assert release["source_summary"] == case.input
+
+
+def test_build_event_content_unsupported_variant_has_empty_evidence() -> None:
+    """An unsupported content variant must ship with empty evidence so the
+    groundedness frontier treats it as unsupported (no release notes to ground
+    against) while still carrying the same source-event provenance."""
+    case = _case(
+        "unsupported_variant_is_blocked",
+        "Release v9.9.9: telemetry overhaul",
+        "The unsupported variant must record authoring feedback",
+        {
+            "surface": "content",
+            "event_type": "content.manual",
+            "source_event_type": "release",
+            "repository": "TheGreatBonnie/authly",
+            "org_id": "org_demo",
+            "requested_channels": ["blog", "linkedin", "x"],
+            "evidence": [],
+        },
+    )
+
+    event = build_event(case, "content")
+
+    assert event["release"]["source_evidence"] == []
+    assert event["release"]["source_event_type"] == "release"
+
+
+def test_extract_authored_content_reads_content_writer_nodes() -> None:
+    """Content runs author via content_blog (ContentDraftOutput) and
+    content_linkedin / content_x (ContentSocialOutput); the titled variants
+    must be part of the scored output, not an empty string."""
+    from draftly.agents.content.schemas import ContentDraftOutput, ContentSocialOutput
+
+    graph = StubGraphResult(
+        [
+            StubNode(
+                "content_blog",
+                [
+                    StubAgentResult(
+                        [],
+                        structured_output=ContentDraftOutput(
+                            title="v2.0.0 release",
+                            summary="summary",
+                            body=(
+                                "Migration guide: OAuth authorization-code flow "
+                                "replaces API key authentication (BREAKING)."
+                            ),
+                        ),
+                    )
+                ],
+            ),
+            StubNode(
+                "content_linkedin",
+                [
+                    StubAgentResult(
+                        [],
+                        structured_output=ContentSocialOutput(
+                            channel="linkedin",
+                            title="v2.0.0",
+                            body="The v2.0.0 release removes API key authentication.",
+                        ),
+                    )
+                ],
+            ),
+            StubNode(
+                "content_x",
+                [
+                    StubAgentResult(
+                        [],
+                        structured_output=ContentSocialOutput(
+                            channel="x",
+                            title="v2.0.0",
+                            body="v2.0.0 drops API keys: migrate to OAuth with RBAC.",
+                        ),
+                    )
+                ],
+            ),
+        ]
+    )
+
+    text = extract_authored_content(graph)
+
+    assert "v2.0.0" in text
+    assert "OAuth authorization-code flow" in text
+    assert "removes API key authentication" in text
+    assert "drops API keys: migrate to OAuth with RBAC" in text
+
+
+def test_extract_authored_content_content_only_brief_is_empty() -> None:
+    """A content run that produced no authored nodes must not crash and must
+    yield an empty string (nothing to verbatim-score)."""
+    from draftly.evaluation.online import extract_authored_content
+
+    graph = StubGraphResult(
+        [StubNode("content_brief", [StubAgentResult(["keyword_search"])])]
+    )
+
+    assert extract_authored_content(graph) == ""
+
+
+async def test_build_online_task_content_surface_routes_and_grounds() -> None:
+    """The content surface must be routed to the graph and its authored blog +
+    social variants become the scored output, with the declared evidence in
+    environment_state for the live groundedness/quality judges."""
+    from draftly.agents.content.schemas import ContentDraftOutput, ContentSocialOutput
+
+    class ContentClient:
+        def __init__(self):
+            self.calls = []
+
+        async def invoke(self, **kwargs):
+            self.calls.append(kwargs)
+            return StubGraphResult(
+                [
+                    StubNode(
+                        "content_blog",
+                        [
+                            StubAgentResult(
+                                [],
+                                structured_output=ContentDraftOutput(
+                                    title="v2.0.0",
+                                    summary="summary",
+                                    body="OAuth migration and RBAC organization scoping.",
+                                ),
+                            )
+                        ],
+                    ),
+                    StubNode(
+                        "content_linkedin",
+                        [
+                            StubAgentResult(
+                                [],
+                                structured_output=ContentSocialOutput(
+                                    channel="linkedin",
+                                    title="v2.0.0",
+                                    body="LinkedIn post: OAuth and RBAC in v2.0.0.",
+                                ),
+                            )
+                        ],
+                    ),
+                    StubNode(
+                        "content_x",
+                        [StubAgentResult([], text="x-only draft text")],
+                    ),
+                    StubNode("deliver", [StubAgentResult([], text="approved")]),
+                ]
+            )
+
+    client = ContentClient()
+    task = build_online_task(client)
+    case = _case(
+        "grounded_release_variants",
+        "Release v2.0.0: BREAKING - removed API key authentication. Migrate to OAuth.",
+        "Blog and social variants announce the release, grounded in release notes",
+        {
+            "surface": "content",
+            "event_type": "content.manual",
+            "source_event_type": "release",
+            "repository": "TheGreatBonnie/authly",
+            "org_id": "org_123",
+            "requested_channels": ["blog", "linkedin", "x"],
+            "evidence": [{"id": "release-notes", "topic": "oauth"}],
+        },
+    )
+
+    result = await task(case)
+
+    assert client.calls[0]["surface"] == "content"
+    event = json.loads(client.calls[0]["task"])
+    assert event["event_type"] == "content.manual"
+    assert event["content_relevant"] is True
+    assert event["release"]["source_evidence"] == [
+        {"id": "release-notes", "topic": "oauth"}
+    ]
+    # Blog + LinkedIn bodies must be surfaced for verbatim scoring; the raw
+    # content_x text node is not a structured writer output and is skipped.
+    assert "OAuth migration and RBAC organization scoping." in result["output"]
+    assert "LinkedIn post: OAuth and RBAC in v2.0.0." in result["output"]
+    assert "x-only draft text" not in result["output"]  # raw text node is skipped
+    env = result["environment_state"]
+    by_name = {
+        (e["name"] if isinstance(e, dict) else e.name): (
+            e.get("state") if isinstance(e, dict) else e.state
+        )
+        for e in env
+    }
+    assert "evidence" in by_name
+    assert by_name["evidence"] == [{"id": "release-notes", "topic": "oauth"}]
 
 
 # -- Feedback dataset shape --

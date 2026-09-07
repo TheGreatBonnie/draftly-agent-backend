@@ -51,6 +51,7 @@ class TestRunAuditLoggerFlush:
             "source": "github",
             "event_type": "pull_request.opened",
             "project_id": "org-1",
+            "surface": "pull_request",
         }
         hook.run_start(_ev(BeforeInvocationEvent, invocation_state=state))
 

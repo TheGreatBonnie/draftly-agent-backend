@@ -20,6 +20,7 @@ class ReleaseProcessor(BaseProcessor):
         repo = (payload.get("repository") or {}).get("full_name", "")
         sender = (payload.get("sender") or {}).get("login", "")
         action = self._action(payload, default="published")
+        content_relevant = action == "published" and not bool(release.get("draft"))
 
         return ProcessedEvent(
             event_id=event_id or self._derive_id(payload, release, action),
@@ -35,6 +36,13 @@ class ReleaseProcessor(BaseProcessor):
                 "prerelease": bool(release.get("prerelease", False)),
                 "html_url": release.get("html_url", ""),
                 "action": action,
+                "content_relevant": content_relevant,
+                "source_event_type": "release",
+                "source_event_id": str(release.get("id") or event_id or ""),
+                "source_title": release.get("name") or release.get("tag_name", ""),
+                "source_summary": release.get("body") or release.get("name") or "",
+                "source_evidence": ([{"source_id": release.get("html_url")}]
+                                     if release.get("html_url") else []),
             },
         )
 

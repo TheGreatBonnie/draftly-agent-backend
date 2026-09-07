@@ -15,8 +15,13 @@ from draftly.review.rejection import RejectionHandler
 class ReviewService:
     """High-level review API: queue inspection + decisions."""
 
-    def __init__(self, repository: ReviewsRepository | None = None) -> None:
+    def __init__(
+        self,
+        repository: ReviewsRepository | None = None,
+        outcomes_repository: Any | None = None,
+    ) -> None:
         self.repository = repository or ReviewsRepository()
+        self.outcomes = outcomes_repository
         self.queue = ReviewQueue(self.repository)
         self.approvals = ApprovalHandler(self.repository)
         self.rejections = RejectionHandler(self.repository)
@@ -40,20 +45,66 @@ class ReviewService:
     async def decide(self, decision: ReviewDecision) -> dict[str, Any]:
         """Apply an approve/reject decision and return resume info."""
         if decision.approved:
-            return await self.approvals.approve(
+            result = await self.approvals.approve(
                 review_id=decision.review_id,
                 reviewer_id=decision.reviewer_id,
                 comment=decision.comment,
             )
-        return await self.rejections.reject(
-            review_id=decision.review_id,
-            reviewer_id=decision.reviewer_id,
-            comment=decision.comment,
-        )
+        else:
+            result = await self.rejections.reject(
+                review_id=decision.review_id,
+                reviewer_id=decision.reviewer_id,
+                comment=decision.comment,
+            )
+        if self.outcomes is not None:
+            record = result.get("review")
+            if record is not None:
+                try:
+                    await self.outcomes.save_outcome(
+                        record.org_id,
+                        "human_review",
+                        record.id,
+                        {
+                            "decision": record.decision,
+                            "comment": record.decision_comment,
+                            "run_id": record.thread_id,
+                            "workflow": record.workflow,
+                        },
+                    )
+                except Exception:
+                    # Review delivery must not fail because learning telemetry is unavailable.
+                    pass
+        return result
 
     async def expire_stale(self) -> int:
         expired = await self.queue.expire_stale()
         return len(expired)
+
+    async def resume_review_decision(
+        self,
+        *,
+        review_id: str,
+        approved: bool,
+        reviewer_id: str,
+        comment: str,
+        app_state: Any,
+        org_id: str | None = None,
+    ):
+        """Resume the paused workflow and record the decision (plan §9.6).
+
+        Thin wrapper over the shared service so platform routes keep one
+        entry point; see ``draftly.review.resume`` for semantics.
+        """
+        from draftly.review.resume import resume_review_decision as _resume
+
+        return await _resume(
+            review_id=review_id,
+            approved=approved,
+            reviewer_id=reviewer_id,
+            comment=comment,
+            app_state=app_state,
+            org_id=org_id,
+        )
 
     @staticmethod
     def _to_request(record: Any) -> ReviewRequest:

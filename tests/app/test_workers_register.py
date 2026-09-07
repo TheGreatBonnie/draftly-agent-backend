@@ -14,6 +14,12 @@ def test_pr_enqueue_task_in_registry() -> None:
     assert TASK_REGISTRY["github_pr.enqueue"] == "github_pr"
 
 
+def test_release_enqueue_task_in_registry() -> None:
+    from draftly.app.composition.workers import TASK_REGISTRY
+
+    assert TASK_REGISTRY["github_release.enqueue"] == "github_release"
+
+
 def test_pr_enqueue_task_buildable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

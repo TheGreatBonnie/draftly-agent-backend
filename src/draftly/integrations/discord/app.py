@@ -193,6 +193,21 @@ async def _dispatch_to_event_bus(
         "mentions": data.get("mentions", []),
         "thread_ts": thread_id,
     }
-    event = (await app_state.events.normalize_discord(payload)).model_dump()
+    event = await app_state.events.normalize_discord(payload)
 
-    asyncio.create_task(app_state.workflows.runner.run(event))
+    # Resolve the guild to its linked organization before dispatching. A support
+    # workflow must never launch with a Discord guild id as its tenant.
+    from draftly.support.identity import SupportIdentityError, enrich_support_event
+
+    db = app_state.dependencies.integrations.database
+    try:
+        event = await enrich_support_event(event, db=db)
+    except SupportIdentityError as exc:
+        logger.warning("discord_guild_not_linked", guild_id=guild_id, reason=str(exc))
+        return
+
+    # Dispatch through the durable worker path (RQ when enabled, in-process
+    # task fallback otherwise) so the gateway stays responsive.
+    from draftly.app.composition.rq_jobs import enqueue_support_event
+
+    await enqueue_support_event(event, app_state=app_state)

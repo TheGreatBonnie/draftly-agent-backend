@@ -53,7 +53,10 @@ def stub_model() -> StubModel:
                 "urgency": "medium",
                 "reason": "code changed",
             },
-            EvidenceBundle: {"items": [], "summary": "no prior evidence"},
+            EvidenceBundle: {
+                "items": [{"id": "docs/widgets.md", "topic": "widgets"}],
+                "summary": "widgets documentation evidence",
+            },
             ImpactAnalysis: {
                 "action": "update",
                 "affected_documents": ["docs/widgets.md"],
@@ -65,13 +68,13 @@ def stub_model() -> StubModel:
                 "files": [
                     {
                         "path": "docs/widgets.md",
-                        "content": "x" * 600,
+                        "content": "widgets docs/widgets.md " * 40,
                         "action": "update",
                     }
                 ],
             },
             AnswerDraft: {
-                "content": "y" * 600,
+                "content": "widgets docs/widgets.md " * 40,
                 "sources": ["docs/widgets.md"],
             },
             DeliveryReceipt: {

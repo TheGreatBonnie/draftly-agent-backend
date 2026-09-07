@@ -21,8 +21,18 @@ from uuid import uuid4
 import structlog
 from strands.multiagent.base import Status
 
+from draftly.delivery.models import PullRequestResult, SupportDeliveryReceipt
 from draftly.events.dispatcher import EventDispatcher
 from draftly.events.stream_envelope import StreamEnvelope, filter_graph_event
+from draftly.integrations.github.runtime import (
+    reset_installation_id,
+    set_installation_id,
+)
+from draftly.integrations.support.runtime import (
+    reset_support_runtime,
+    set_support_runtime,
+    support_runtime_for,
+)
 from draftly.observability.metrics import Metrics
 from draftly.observability.metrics import metrics as _default_metrics
 from draftly.workflows.context import WorkflowContext
@@ -85,13 +95,17 @@ def _default_graph_factory(context: WorkflowContext) -> GraphFactory:
             run_id,
             surface=surface,
             tools_registry=context.tools,
+            agents=context.agents,
             model=context.model,
             hooks=context.hooks,
             storage_dir=context.storage_dir,
             audit_repo=context.audit_repo,
-            memory=getattr(context, "memory", None),
+            memory=context.memory_bundle(),
             publisher=getattr(context, "publisher", None),
             jobs_repo=jobs_repo,
+            content_repository=getattr(
+                getattr(context, "repositories", None), "content", None
+            ),
             **context.graph_limits(),
         )
 
@@ -124,8 +138,19 @@ class WorkflowRunner:
 
         surface = self.dispatcher.route(event)
         if surface is None:
+            logger.warning(
+                "workflow_skipped_unknown_surface",
+                run_id=run_id,
+                event_type=event.get("event_type"),
+            )
             return state.finish(WorkflowStatus.SKIPPED)
         state.surface = surface
+        logger.info(
+            "workflow_started",
+            run_id=run_id,
+            event_type=event.get("event_type"),
+            surface=surface,
+        )
 
         # Only merged PRs run the documentation graph; other PR actions skip
         # before the idempotency claim so they leave no audit/duplicate record.
@@ -135,6 +160,12 @@ class WorkflowRunner:
         if event_type.split(".")[0] == "pull_request" and not event_type.endswith(
             ".merged"
         ):
+            logger.info(
+                "workflow_skipped_pr_not_merged",
+                run_id=run_id,
+                event_type=event_type,
+                surface=surface,
+            )
             return state.finish(WorkflowStatus.SKIPPED)
 
         # 1. Idempotency: claim the event before touching the graph.
@@ -145,11 +176,39 @@ class WorkflowRunner:
                 state.errors.append(f"event already recorded: {existing}")
             else:
                 state.status = WorkflowStatus.DUPLICATE
-            logger.info("runner_duplicate run_id=%s", run_id)
+            logger.info(
+                "workflow_duplicate",
+                run_id=run_id,
+                event_type=event_type,
+            )
+            return state
+
+        existing = await self._existing_support_delivery(event)
+        if existing is not None:
+            state.status = WorkflowStatus.DUPLICATE
+            state.result = {"receipt": existing}
+            logger.info(
+                "support_delivery_already_exists",
+                run_id=run_id,
+                surface=surface,
+            )
             return state
 
         # 2. One session + one graph for this run's surface.
-        graph = self._graph_factory(run_id, surface)
+        routing_decisions: dict[str, Any] = {}
+
+        def collect_routing_decision(role: str, decision: Any) -> None:
+            routing_decisions[role] = decision
+
+        from draftly.integrations.strands.models import routing_decision_scope
+
+        build_token = set_support_runtime(support_runtime_for(event))
+        try:
+            with routing_decision_scope(collect_routing_decision):
+                graph = self._graph_factory(run_id, surface)
+        finally:
+            reset_support_runtime(build_token)
+        await self._persist_lifecycle(event, "running", run_id=run_id)
         await self._broadcast_lifecycle(
             org_id=str(event.get("project_id") or ""),
             run_id=run_id,
@@ -160,8 +219,147 @@ class WorkflowRunner:
         # 3. Invoke; runtime context rides in invocation_state, never in
         #    the prompt. ReviewGate reads review_policy before delivering.
         started = time.monotonic()
-        invocation_state = {
-            "run_id": run_id,
+        invocation_state = self._invocation_state(event, surface)
+        installation_token = set_installation_id(event.get("installation_id"))
+        support_token = set_support_runtime(support_runtime_for(event))
+        try:
+            if self.publisher is not None:
+                result = await self._invoke_streaming(
+                    graph, json.dumps(event), invocation_state, surface
+                )
+            else:
+                result = await graph.invoke_async(
+                    json.dumps(event), invocation_state=invocation_state
+                )
+        finally:
+            reset_support_runtime(support_token)
+            reset_installation_id(installation_token)
+        await self._record_routing_outcome(
+            run_id=run_id,
+            success=result.status == Status.COMPLETED,
+            latency_ms=(time.monotonic() - started) * 1000.0,
+            decisions=routing_decisions,
+            organization_id=str(event.get("project_id") or "") or None,
+        )
+        try:
+            extract_token_usage(
+                result, model=str(getattr(self.context, "model", "unknown") or "unknown")
+            )
+        except Exception:
+            logger.warning(
+                "token_usage_extract_failed",
+                run_id=run_id,
+                exc_info=True,
+            )
+        state.result = result
+
+        # 4. Handle the outcome.
+        return await self._finish_result(event, surface, result, state)
+
+    async def resume_review(
+        self,
+        *,
+        event: dict[str, Any],
+        interrupt_id: str,
+        response: dict[str, Any],
+    ) -> WorkflowState:
+        """Resume a paused graph through the same lifecycle as a fresh run."""
+        event = dict(event)
+        run_id = str(event.get("event_id") or "")
+        surface = self.dispatcher.route(event)
+        if not run_id or surface is None:
+            raise ValueError("Cannot resume a workflow without a valid run and surface")
+
+        routing_decisions: dict[str, Any] = {}
+
+        def collect_routing_decision(role: str, decision: Any) -> None:
+            routing_decisions[role] = decision
+
+        from draftly.integrations.strands.models import routing_decision_scope
+
+        with routing_decision_scope(collect_routing_decision):
+            graph = self._graph_factory(run_id, surface)
+        invocation_state = self._invocation_state(event, surface)
+        resume_input = [{
+            "interruptResponse": {
+                "interruptId": interrupt_id,
+                "response": response,
+            }
+        }]
+        state = WorkflowState(run_id=run_id, event=event, surface=surface)
+        started = time.monotonic()
+        installation_token = set_installation_id(event.get("installation_id"))
+        support_token = set_support_runtime(support_runtime_for(event))
+        try:
+            if self.publisher is not None:
+                result = await self._invoke_streaming(
+                    graph, resume_input, invocation_state, surface
+                )
+            else:
+                result = await graph.invoke_async(
+                    resume_input,
+                    invocation_state=invocation_state,
+                )
+            await self._record_routing_outcome(
+                run_id=run_id,
+                success=result.status == Status.COMPLETED,
+                latency_ms=(time.monotonic() - started) * 1000.0,
+                decisions=routing_decisions,
+                organization_id=str(event.get("project_id") or "") or None,
+            )
+        except Exception as exc:
+            state.errors.append(str(exc))
+            if response.get("approved") is True:
+                # Keep the review actionable when an approval cannot be
+                # resumed (for example, a transient graph/session failure).
+                # The route must not record an approval for work that did not
+                # reach delivery.
+                await self._mark(event, "pending_review")
+                await self._persist_lifecycle(
+                    event,
+                    "pending_review",
+                    run_id=run_id,
+                    error=str(exc),
+                    result={"status": "RESUME_FAILED", "error": str(exc)},
+                )
+                await self._broadcast_lifecycle(
+                    org_id=str(event.get("project_id") or ""),
+                    run_id=run_id,
+                    status="pending_review",
+                    surface=surface,
+                )
+                await self._notify_reviewers(run_id)
+                logger.warning(
+                    "workflow_review_approval_resume_failed",
+                    run_id=run_id,
+                    error=str(exc),
+                )
+                return state.finish(WorkflowStatus.PENDING_REVIEW)
+            await self._mark(event, "failed")
+            await self._persist_lifecycle(
+                event,
+                "failed",
+                run_id=run_id,
+                error=str(exc),
+                result={"status": "FAILED", "error": str(exc)},
+            )
+            await self._broadcast_lifecycle(
+                org_id=str(event.get("project_id") or ""),
+                run_id=run_id,
+                status="failed",
+                surface=surface,
+            )
+            logger.warning("workflow_review_resume_failed", run_id=run_id, error=str(exc))
+            return state.finish(WorkflowStatus.FAILED)
+        finally:
+            reset_support_runtime(support_token)
+            reset_installation_id(installation_token)
+
+        return await self._finish_result(event, surface, result, state)
+
+    def _invocation_state(self, event: dict[str, Any], surface: str) -> dict[str, Any]:
+        return {
+            "run_id": str(event.get("event_id") or ""),
             "review_policy": self.context.review_policy(),
             "delivery_summary": "",
             "evaluation": {},
@@ -169,42 +367,61 @@ class WorkflowRunner:
             "source": str(event.get("source") or "github"),
             "event_type": str(event.get("event_type") or "unknown"),
             "project_id": str(event.get("project_id") or ""),
+            "surface": surface,
+            "installation_id": event.get("installation_id"),
         }
-        if self.publisher is not None:
-            result = await self._invoke_streaming(
-                graph, json.dumps(event), invocation_state, surface
-            )
-        else:
-            result = await graph.invoke_async(
-                json.dumps(event), invocation_state=invocation_state
-            )
-        await self._record_routing_outcome(
-            run_id=run_id,
-            success=result.status == Status.COMPLETED,
-            latency_ms=(time.monotonic() - started) * 1000.0,
-        )
-        try:
-            extract_token_usage(
-                result, model=str(getattr(self.context, "model", "unknown") or "unknown")
-            )
-        except Exception:
-            logger.warning("token_usage_extract_failed run_id=%s", run_id, exc_info=True)
-        state.result = result
 
-        # 4. Handle the outcome.
+    async def _notify_reviewers(self, run_id: str) -> None:
+        """Best-effort Slack/Discord notifications on a pending-review transition.
+
+        Failures are caught and logged without affecting run status.
+        """
+        notifier = getattr(self.context, "notifier", None)
+        if notifier is None or getattr(notifier, "notify_reviewers", None) is None:
+            return
+        try:
+            await notifier.notify_reviewers(run_id)
+        except Exception:
+            logger.warning("review_notify_dispatch_failed", run_id=run_id, exc_info=True)
+
+    async def _finish_result(
+        self,
+        event: dict[str, Any],
+        surface: str,
+        result: Any,
+        state: WorkflowState,
+    ) -> WorkflowState:
+        run_id = state.run_id
+        state.result = result
         if result.status == Status.INTERRUPTED:
             await self._store_interrupts(run_id, surface, result, state)
             await self._mark(event, "pending_review")
+            await self._persist_lifecycle(event, "pending_review", run_id=run_id)
             await self._broadcast_lifecycle(
                 org_id=str(event.get("project_id") or ""),
                 run_id=run_id,
                 status="pending_review",
                 surface=surface,
             )
+            await self._notify_reviewers(run_id)
             return state.finish(WorkflowStatus.PENDING_REVIEW)
 
         if result.status == Status.COMPLETED:
+            evaluation = self._node_payload(result, "evaluate")
+            lifecycle_result: dict[str, Any] = {"status": "COMPLETED"}
+            if evaluation:
+                lifecycle_result["evaluation"] = evaluation
+            await self._persist_document_changes(event, run_id, result)
+            delivered_receipt = await self._persist_delivery_result(event, run_id, result)
+            if delivered_receipt is not None:
+                await self._resolve_support_thread(state, delivered_receipt)
             await self._mark(event, "completed")
+            await self._persist_lifecycle(
+                event,
+                "completed",
+                run_id=run_id,
+                result=lifecycle_result,
+            )
             await _post_run_memory(self.context, state, surface)
             await self._broadcast_lifecycle(
                 org_id=str(event.get("project_id") or ""),
@@ -216,7 +433,18 @@ class WorkflowRunner:
 
         failed = self._failed_node_ids(result)
         state.errors.extend(failed)
+        evaluation = self._node_payload(result, "evaluate")
+        lifecycle_result = {"status": "FAILED", "failed_nodes": failed}
+        if evaluation:
+            lifecycle_result["evaluation"] = evaluation
         await self._mark(event, "failed")
+        await self._persist_lifecycle(
+            event,
+            "failed",
+            run_id=run_id,
+            error="; ".join(failed) or "workflow failed",
+            result=lifecycle_result,
+        )
         await self._broadcast_lifecycle(
             org_id=str(event.get("project_id") or ""),
             run_id=run_id,
@@ -281,9 +509,9 @@ class WorkflowRunner:
             await self.publisher.publish(envelope)
         except Exception:
             logger.warning(
-                "runner_publish_failed run_id=%s seq=%s",
-                envelope.run_id,
-                envelope.seq,
+                "runner_publish_failed",
+                run_id=envelope.run_id,
+                seq=envelope.seq,
                 exc_info=True,
             )
 
@@ -306,41 +534,51 @@ class WorkflowRunner:
             )
 
     async def _record_routing_outcome(
-        self, *, run_id: str, success: bool, latency_ms: float
+        self,
+        *,
+        run_id: str,
+        success: bool,
+        latency_ms: float,
+        decisions: dict[str, Any] | None = None,
+        organization_id: str | None = None,
     ) -> None:
         """Best-effort telemetry: never fail the workflow over bookkeeping."""
-        decision = getattr(self.context, "routing_decision", None)
-        if decision is None:
+        if decisions is None:
+            decision = getattr(self.context, "routing_decision", None)
+            decisions = {"workflow": decision} if decision is not None else {}
+        if not decisions:
             return
         try:
             repositories = getattr(self.context, "repositories", None)
             if repositories is None:
                 return
-            # Telemetry aggregates are keyed by TASK type; profile is only a
-            # display label (e.g. research tasks run on the reasoning profile).
-            task_type = decision.task_type or decision.profile
-            await repositories.routing.record({
-                "request_id": run_id,
-                "organization_id": None,
-                "task_type": task_type,
-                "selected_model": decision.selected_model,
-                "provider": decision.provider,
-                "score": decision.score,
-                "candidates_considered": decision.candidates_considered,
-                "profile": decision.profile,
-                "reason_codes": list(decision.reason_codes),
-                "fallback_chain": list(decision.fallback_chain),
-                "estimated_cost": decision.estimated_cost,
-                "estimated_latency_ms": decision.estimated_latency_ms,
-                "latency_ms": latency_ms,
-                "success": success,
-            })
-            await repositories.performance.record_outcome(
-                task_type=task_type,
-                model_name=decision.selected_model,
-                success=success,
-                latency_ms=latency_ms,
-            )
+            for role, decision in decisions.items():
+                # Telemetry aggregates are keyed by TASK type; profile is only
+                # a display label (e.g. research tasks run on the reasoning profile).
+                task_type = decision.task_type or decision.profile
+                await repositories.routing.record({
+                    "request_id": run_id,
+                    "organization_id": organization_id,
+                    "task_type": task_type,
+                    "selected_model": decision.selected_model,
+                    "provider": decision.provider,
+                    "score": decision.score,
+                    "candidates_considered": decision.candidates_considered,
+                    "profile": decision.profile,
+                    "reason_codes": list(decision.reason_codes),
+                    "fallback_chain": list(decision.fallback_chain),
+                    "estimated_cost": decision.estimated_cost,
+                    "estimated_latency_ms": decision.estimated_latency_ms,
+                    "latency_ms": latency_ms,
+                    "success": success,
+                    "metadata": {"role": role},
+                })
+                await repositories.performance.record_outcome(
+                    task_type=task_type,
+                    model_name=decision.selected_model,
+                    success=success,
+                    latency_ms=latency_ms,
+                )
         except Exception:
             logger.warning("routing_telemetry_failed", exc_info=True)
 
@@ -366,9 +604,258 @@ class WorkflowRunner:
             return []
         return sorted(getattr(node, "node_id", "?") for node in (raw or ()))
 
+    @staticmethod
+    def _node_payload(result: Any, node_id: str) -> dict[str, Any]:
+        """Extract a custom node's JSON payload from a graph result."""
+        for node in getattr(result, "execution_order", None) or []:
+            if getattr(node, "node_id", None) != node_id:
+                continue
+            node_result = getattr(node, "result", None)
+            nested = getattr(node_result, "result", None)
+            results = getattr(nested, "results", None)
+            if isinstance(results, dict) and node_id in results:
+                node_result = getattr(results[node_id], "result", None)
+            else:
+                node_result = nested or node_result
+
+            structured = getattr(node_result, "structured_output", None)
+            if isinstance(structured, dict):
+                return structured
+            dump = getattr(structured, "model_dump", None)
+            if callable(dump):
+                value = dump()
+                if isinstance(value, dict):
+                    return value
+
+            message = getattr(node_result, "message", None)
+            content = message.get("content", []) if isinstance(message, dict) else []
+            for block in content:
+                if not isinstance(block, dict) or "text" not in block:
+                    continue
+                try:
+                    value = json.loads(block["text"])
+                except (TypeError, json.JSONDecodeError):
+                    continue
+                if isinstance(value, dict):
+                    return value
+        return {}
+
     # ========================================================
     # Persistence helpers (duck-typed repositories)
     # ========================================================
+
+    async def _persist_lifecycle(
+        self,
+        event: dict[str, Any],
+        status: str,
+        *,
+        run_id: str,
+        error: str | None = None,
+        result: dict[str, Any] | None = None,
+    ) -> None:
+        """Keep the job and workflow identity rows in sync with execution."""
+        repositories = getattr(self.context, "repositories", None)
+        jobs = getattr(repositories, "jobs", None)
+        if jobs is not None:
+            try:
+                await jobs.update_status(
+                    job_id=run_id,
+                    status=status,
+                    error=error,
+                    result=result,
+                )
+            except Exception:
+                logger.exception("workflow_job_status_persist_failed", run_id=run_id, status=status)
+
+        workflows = getattr(repositories, "github_workflows", None)
+        if workflows is not None:
+            try:
+                await workflows.update_status(workflow_id=run_id, status=status)
+            except Exception:
+                logger.exception(
+                    "github_workflow_status_persist_failed",
+                    run_id=run_id,
+                    status=status,
+                )
+
+    async def _persist_delivery_result(
+        self,
+        event: dict[str, Any],
+        run_id: str,
+        graph_result: Any,
+    ) -> SupportDeliveryReceipt | None:
+        """Persist a delivery receipt emitted by the delivery node.
+
+        GitHub PR references go to the delivery repository; Slack/Discord
+        replies write a ``SupportDeliveryReceipt`` to the platform workflow
+        row (``delivered``/``failed``). Returns the persisted support receipt
+        so the caller can resolve the support thread only after durability.
+        """
+        repositories = getattr(self.context, "repositories", None)
+
+        receipt: dict[str, Any] | None = None
+        for node in getattr(graph_result, "execution_order", []) or []:
+            if str(getattr(node, "node_id", "")) != "deliver":
+                continue
+            node_result = getattr(node, "result", None)
+            structured = getattr(node_result, "structured_output", None)
+            if hasattr(structured, "model_dump"):
+                structured = structured.model_dump()
+            if isinstance(structured, dict):
+                receipt = structured
+                break
+        if not receipt:
+            return None
+        surface = str(receipt.get("surface") or "").lower()
+
+        if surface in {"slack", "discord"}:
+            return await self._persist_support_delivery(
+                event, run_id, repositories, surface, receipt
+            )
+
+        delivery = getattr(repositories, "delivery", None)
+        if delivery is None:
+            return None
+        if surface != "github":
+            return None
+        if str(receipt.get("status") or "completed").lower() != "completed":
+            return None
+
+        reference = str(receipt.get("reference") or "")
+        number: int | None = None
+        if "/pull/" in reference:
+            try:
+                number = int(reference.rsplit("/pull/", 1)[1].split("/", 1)[0])
+            except ValueError:
+                number = None
+        elif reference.isdigit():
+            number = int(reference)
+        if number is None:
+            return None
+
+        repository = str(receipt.get("delivered_to") or event.get("repository") or "")
+        owner, separator, name = repository.partition("/")
+        if not separator or not owner or not name:
+            return None
+        try:
+            await delivery.save_pull_request(
+                PullRequestResult(
+                    repository_id=repository,
+                    owner=owner,
+                    repository=name,
+                    number=number,
+                    url=reference if reference.startswith("http") else None,
+                    title=str(receipt.get("title") or ""),
+                    org_id=str(event.get("project_id") or "") or None,
+                    run_id=run_id,
+                )
+            )
+        except Exception:
+            logger.exception("delivery_receipt_persist_failed", run_id=run_id)
+        return None
+
+    async def _resolve_support_thread(
+        self, state: WorkflowState, receipt: SupportDeliveryReceipt
+    ) -> None:
+        """Mark a support thread resolved once its reply is durably persisted."""
+        try:
+            from draftly.workflows.support import resolve_support_thread
+
+            await resolve_support_thread(self.context, state, receipt=receipt)
+        except Exception:
+            logger.exception(
+                "support_thread_resolution_failed",
+                run_id=state.run_id,
+                receipt_id=receipt.provider_message_id,
+            )
+
+    async def _persist_support_delivery(
+        self,
+        event: dict[str, Any],
+        run_id: str,
+        repositories: Any,
+        surface: str,
+        receipt: dict[str, Any],
+    ) -> SupportDeliveryReceipt | None:
+        """Persist a Slack/Discord delivery receipt to the platform row."""
+        platform_repo = getattr(
+            repositories,
+            "slack_workflows" if surface == "slack" else "discord_workflows",
+            None,
+        )
+        if platform_repo is None:
+            return None
+
+        delivered = str(receipt.get("status") or "completed").lower() in {
+            "completed",
+            "delivered",
+        }
+        support_receipt = SupportDeliveryReceipt(
+            run_id=run_id,
+            org_id=str(event.get("project_id") or "") or None,
+            platform=surface,
+            channel_id=str(receipt.get("delivered_to") or event.get("channel") or "")
+            or None,
+            thread_id=str(event.get("thread_ts") or receipt.get("thread_id") or "")
+            or None,
+            source_message_id=str(event.get("source_message_id") or "") or None,
+            provider_message_id=str(receipt.get("reference") or "") or None,
+            status="delivered" if delivered else "failed",
+            error=None if delivered else str(receipt.get("error") or ""),
+        )
+        try:
+            await platform_repo.save_support_delivery(support_receipt)
+        except Exception:
+            logger.exception(
+                "support_delivery_receipt_persist_failed",
+                run_id=run_id,
+                platform=surface,
+            )
+            return None
+        return support_receipt
+
+    async def _persist_document_changes(
+        self,
+        event: dict[str, Any],
+        run_id: str,
+        graph_result: Any,
+    ) -> None:
+        """Index concrete files from a completed documentation change plan."""
+        documents = getattr(getattr(self.context, "repositories", None), "documents", None)
+        if documents is None:
+            return
+        repository = str(event.get("repository") or "")
+        for node in getattr(graph_result, "execution_order", []) or []:
+            if str(getattr(node, "node_id", "")) not in {"update", "create"}:
+                continue
+            structured = getattr(getattr(node, "result", None), "structured_output", None)
+            if hasattr(structured, "model_dump"):
+                structured = structured.model_dump()
+            if not isinstance(structured, dict):
+                continue
+            repository = str(structured.get("repository") or repository)
+            for file in structured.get("files") or []:
+                if (
+                    not isinstance(file, dict)
+                    or not file.get("path")
+                    or not isinstance(file.get("content"), str)
+                ):
+                    continue
+                try:
+                    await documents.upsert(
+                        org_id=str(event.get("project_id") or "") or None,
+                        repository=repository,
+                        path=str(file["path"]),
+                        content=file["content"],
+                        status="delivered",
+                        metadata={"run_id": run_id, "source": "github_workflow"},
+                    )
+                except Exception:
+                    logger.exception(
+                        "document_persistence_failed",
+                        run_id=run_id,
+                        path=file.get("path"),
+                    )
 
     async def _claim(self, event: dict[str, Any], run_id: str) -> bool:
         events = self.context.events
@@ -385,7 +872,7 @@ class WorkflowRunner:
                 org_id=event.get("project_id"),
             )
         except Exception:
-            logger.exception("runner_claim_failed run_id=%s", run_id)
+            logger.exception("runner_claim_failed", run_id=run_id)
             raise
 
     async def _existing(self, event_id: str) -> str | None:
@@ -397,6 +884,47 @@ class WorkflowRunner:
             return None
         row = await finder(event_id)
         return str(row.get("status")) if isinstance(row, dict) else None
+
+    async def _existing_support_delivery(
+        self, event: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        """Return an already-delivered receipt for a Slack/Discord source event."""
+        source = str(event.get("source") or "")
+        if source not in ("slack", "discord"):
+            return None
+        if not event.get("source_message_id"):
+            return None
+        repositories = getattr(self.context, "repositories", None)
+        support = getattr(repositories, "support", None)
+        finder = getattr(support, "get_support_delivery_by_source", None)
+        if finder is not None:
+            kwargs = {
+                "org_id": str(event.get("project_id") or ""),
+                "platform": source,
+                "source_message_id": str(event.get("source_message_id") or ""),
+            }
+        else:
+            platform_repo = getattr(
+                repositories,
+                "slack_workflows" if source == "slack" else "discord_workflows",
+                None,
+            )
+            finder = getattr(platform_repo, "get_support_delivery_by_source", None)
+            kwargs = {
+                "org_id": str(event.get("project_id") or ""),
+                "source_message_id": str(event.get("source_message_id") or ""),
+            }
+        if finder is None:
+            return None
+        try:
+            return await finder(**kwargs)
+        except Exception:
+            logger.exception(
+                "support_delivery_lookup_failed",
+                run_id=event.get("event_id"),
+                source=source,
+            )
+            return None
 
     async def _mark(self, event: dict[str, Any], status: str) -> None:
         events = self.context.events
@@ -432,4 +960,4 @@ class WorkflowRunner:
                     org_id=str(state.event.get("project_id") or ""),
                 )
             except Exception:
-                logger.exception("store_interrupt_failed run_id=%s", run_id)
+                logger.exception("store_interrupt_failed", run_id=run_id)

@@ -27,6 +27,12 @@ class PullRequestProcessor(BaseProcessor):
         action = self._action(payload, default="updated")
         if action == "closed" and pr.get("merged"):
             action = "merged"
+        labels = {
+            str(label.get("name", "")).lower()
+            for label in (pr.get("labels") or [])
+            if isinstance(label, dict)
+        }
+        content_relevant = action == "merged" and "content-relevant" in labels
 
         return ProcessedEvent(
             event_id=event_id or self._derive_id(payload, pr, action),
@@ -42,6 +48,13 @@ class PullRequestProcessor(BaseProcessor):
                 "base": (pr.get("base") or {}).get("ref", ""),
                 "html_url": pr.get("html_url", ""),
                 "action": action,
+                "content_relevant": content_relevant,
+                "source_event_type": "pull_request",
+                "source_event_id": str(pr.get("id") or event_id or ""),
+                "source_title": pr.get("title", ""),
+                "source_summary": pr.get("body") or pr.get("title", ""),
+                "source_evidence": ([{"source_id": pr.get("html_url")}]
+                                     if pr.get("html_url") else []),
             },
         )
 

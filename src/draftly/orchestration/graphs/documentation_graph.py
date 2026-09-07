@@ -31,6 +31,12 @@ from strands.multiagent import GraphBuilder
 from strands.session.session_manager import SessionManager
 
 from draftly.integrations.strands.models import resolve_model_for_role
+from draftly.orchestration.graphs.tool_scoping import (
+    scope_read_only_tools as _scope_read_only_tools,
+)
+from draftly.orchestration.graphs.tool_scoping import (
+    scope_writer_tools as _scope_writer_tools,
+)
 from draftly.orchestration.hooks.audit import RunAuditLogger
 from draftly.orchestration.hooks.review_gate import ReviewGate
 from draftly.orchestration.nodes.evaluate import EvaluatorNode
@@ -76,44 +82,13 @@ def _dedupe(*groups: list[Any]) -> list[Any]:
     return tools
 
 
-# Tool names the doc writer must NOT have. The writer only authors a
-# ``DocChangePlan``; the delivery node applies it. Giving the writer
-# mutation/delivery tools (``write_file``, ``create_branch``/``commit``/``pr``)
-# makes it thrash the worktree and loop rereading files, burning the live-run
-# time budget and risking truncated oversized plan emissions for zero benefit.
-_WRITER_EXCLUDED_TOOLS = frozenset(
-    {
-        "write_file",
-        "update_frontmatter",
-        "create_branch",
-        "create_commit",
-        "create_pull_request",
-    }
-)
-
-
-def _scope_writer_tools(*groups: list[Any]) -> list[Any]:
-    """Restrict writer tools to read/analyze only (drop mutation/delivery)."""
-    out: list[Any] = []
-    for t in _dedupe(*groups):
-        name = (
-            getattr(t, "name", None)
-            or getattr(getattr(t, "fn", None), "__name__", None)
-            or getattr(t, "__name__", None)
-        )
-        if name in _WRITER_EXCLUDED_TOOLS:
-            continue
-        out.append(t)
-    return out
-
-
-
 def build_documentation_graph(
     session_manager: SessionManager | None,
     tools_registry: Any,
     model: Any,
     hooks: list[Any] | None = None,
     *,
+    agents: Any = None,
     graph_id: str = DEFAULT_GRAPH_ID,
     audit_repo: Any = None,
     memory: Any = None,
@@ -145,11 +120,13 @@ def build_documentation_graph(
     intelligence_model = resolve_model_for_role(model, "github_intelligence")
     delivery_model = resolve_model_for_role(model, "github_delivery")
 
-    classifier = build_classifier(classifier_model)
-    context_agent = build_doc_context_agent(
+    registry = agents
+    classifier = (getattr(registry, "classifier", None) or build_classifier)(classifier_model)
+    context_builder = getattr(registry, "documentation_context", None) or build_doc_context_agent
+    context_agent = context_builder(
         context_model,
         _dedupe(
-            reg.documentation_engineer,
+            _scope_read_only_tools(reg.documentation_engineer),
             reg.semantic_search,
             reg.keyword_search,
             reg.hybrid_search,
@@ -159,18 +136,22 @@ def build_documentation_graph(
             reg.discord_get_thread,
         ),
     )
-    research_swarm = build_doc_research_swarm(
+    research_builder = (
+        getattr(registry, "documentation_research_swarm", None) or build_doc_research_swarm
+    )
+    research_swarm = research_builder(
         research_model,
         reg,
         local_tools=_dedupe(
-            reg.documentation_engineer,
+            _scope_read_only_tools(reg.documentation_engineer),
             reg.semantic_search,
             reg.keyword_search,
             reg.hybrid_search,
             _LOCAL_CODE_SEARCH,
         ),
     )
-    impact_agent = build_impact_agent(
+    impact_builder = getattr(registry, "impact_agent", None) or build_impact_agent
+    impact_agent = impact_builder(
         intelligence_model,
         _dedupe(
             reg.semantic_search,
@@ -179,7 +160,8 @@ def build_documentation_graph(
             reg.documentation,
         ),
     )
-    answer_agent = build_answer_writer(
+    answer_builder = getattr(registry, "answer_writer", None) or build_answer_writer
+    answer_agent = answer_builder(
         support_model,
         _dedupe(reg.semantic_search, reg.keyword_search),
     )
@@ -188,14 +170,17 @@ def build_documentation_graph(
     # resolver is wired in; concrete/shared models pass through verbatim.
     writer_model = resolve_model_for_role(model, "documentation_engineer")
     writer_tools = _scope_writer_tools(reg.documentation_engineer, reg.documentation)
-    update_writer = build_writer_agent(writer_model, writer_tools)
-    create_writer = build_writer_agent(writer_model, writer_tools)
-    delivery_agent = build_delivery_agent(
+    writer_builder = getattr(registry, "writer_agent", None) or build_writer_agent
+    update_writer = writer_builder(writer_model, writer_tools)
+    create_writer = writer_builder(writer_model, writer_tools)
+    delivery_builder = getattr(registry, "delivery_agent", None) or build_delivery_agent
+    delivery_agent = delivery_builder(
         delivery_model,
         _dedupe(reg.github_delivery, reg.slack_post_message, reg.discord_post_message),
         hitl=False,  # the graph-level ReviewGate owns human approval
     )
-    changelog_agent = build_changelog_agent(
+    changelog_builder = getattr(registry, "changelog_agent", None) or build_changelog_agent
+    changelog_agent = changelog_builder(
         writer_model,
         _scope_writer_tools(reg.documentation_engineer, reg.documentation),
     )
@@ -241,6 +226,12 @@ def build_documentation_graph(
     builder.add_edge("answer", "evaluate", condition=generated)
     builder.add_edge("update", "evaluate", condition=generated)
     builder.add_edge("create", "evaluate", condition=generated)
+    # The writer edge makes evaluation ready; this conditional edge also
+    # supplies the completed research payload as an evaluator dependency.
+    # It is false when research completes (before a writer exists), so it
+    # cannot trigger evaluation prematurely.
+    builder.add_edge("context", "evaluate", condition=generated)
+    builder.add_edge("research", "evaluate", condition=generated)
 
     # Revise loop — scoped to whichever generation node actually ran
     builder.add_edge("evaluate", "answer", condition=needs_revision_of("answer"))

@@ -8,6 +8,8 @@ from typing import Any
 
 import structlog
 
+from draftly.observability.workflow_logging import bind_workflow_context
+
 logger = structlog.get_logger(__name__)
 
 
@@ -74,24 +76,14 @@ class TaskRunner:
                 f"Unknown Draftly task: {name}",
             )
 
-        logger.info(
-            "Running Draftly task",
-            task=name,
-        )
+        with bind_workflow_context(name, kwargs):
+            logger.info("task_started")
+            try:
+                result = await handler(**kwargs)
+            except Exception:
+                logger.exception("task_failed")
+                raise
 
-        try:
-            result = await handler(**kwargs)
-
-        except Exception:
-            logger.exception(
-                "Draftly task failed",
-                task=name,
-            )
-            raise
-
-        logger.info(
-            "Draftly task completed",
-            task=name,
-        )
-
-        return result
+            status = getattr(getattr(result, "status", None), "value", None)
+            logger.info("task_completed", status=status)
+            return result

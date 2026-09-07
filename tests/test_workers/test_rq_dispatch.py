@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 
 import fakeredis
+import structlog
 
 from draftly.app.composition.rq_jobs import JOB_TIMEOUT_NONE, build_rq_queues, enqueue_job
 from draftly.app.workers.rq_dispatch import (
@@ -36,11 +37,30 @@ def setup_function() -> None:
 
 
 def test_dispatch_runs_registered_async_handler():
-    register_handlers({TASK: _fake_onboarding})
+    seen: dict[str, object] = {}
 
-    result = dispatch(name=TASK, org_id="org-1", run_id="run-1")
+    async def handler(**kwargs: object) -> dict[str, object]:
+        seen.update(structlog.contextvars.get_contextvars())
+        return {"status": "executed", **kwargs}
 
-    assert result == {"status": "executed", "org_id": "org-1", "run_id": "run-1"}
+    register_handlers({TASK: handler})
+
+    result = dispatch(
+        name=TASK,
+        org_id="org-1",
+        run_id="run-1",
+        event={
+            "event_id": "event-1",
+            "event_type": "onboarding.initialize",
+            "repository": "acme/api",
+            "project_id": "org-1",
+        },
+    )
+
+    assert result["status"] == "executed"
+    assert seen["task_name"] == TASK
+    assert seen["run_id"] == "run-1"
+    assert seen["event_type"] == "onboarding.initialize"
 
 
 def test_dispatch_reuses_a_persistent_loop_across_calls():

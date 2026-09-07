@@ -28,6 +28,7 @@ SURFACE_EVENT_TYPES = {
     "discord": "discord.message",
     "release": "release.published",
     "feedback": "feedback",
+    "content": "content.manual",
 }
 
 DEFAULT_PROJECT_ID = "eval-project"
@@ -302,6 +303,35 @@ def build_event(case: Any, surface: str) -> dict[str, Any]:
                 f["path"] if isinstance(f, dict) else str(f) for f in changed_paths
             ]
         base["release"] = release
+    elif surface == "content":
+        # Content manifold: a release snippet drives the blog/social writers.
+        # The payload reuses the ``release`` slot so the content graph's
+        # ``_request_from_event`` resolves the EVENT_MANIFESTS contract, but
+        # carries the original release provenance (source_event_type / title /
+        # evidence) for the groundedness frontier and quality judges.
+        release = {
+            "source_event_type": metadata.get("source_event_type", "release"),
+            "source_event_id": str(uuid.uuid4()),
+            "source_title": question,
+            "source_summary": question,
+            "source_evidence": list(metadata.get("evidence") or []),
+        }
+        repo_dir = metadata.get("repo_dir")
+        if repo_dir:
+            release["repo_dir"] = repo_dir
+        base["content_relevant"] = True
+        base["requested_channels"] = metadata.get("requested_channels") or [
+            "blog",
+            "linkedin",
+            "x",
+        ]
+        if metadata.get("audience"):
+            base["audience"] = metadata["audience"]
+        if metadata.get("tone"):
+            base["tone"] = metadata["tone"]
+        if metadata.get("org_id"):
+            base["org_id"] = metadata["org_id"]
+        base["release"] = release
     elif surface == "feedback":
         # Feedback surface: pass the question list directly as the event
         # input.  The feedback graph consumes a JSON-encoded question list,
@@ -398,14 +428,16 @@ def _model_dump(value: Any) -> dict | None:
 
 def extract_authored_content(graph_result: Any) -> str:
     """Extract documentation content authored by the ``update``/``create``
-    writers and the release ``changelog`` node.
+    writers, the release ``changelog`` node, and the content ``content_*``
+    writers.
 
-    Writer nodes emit a ``DocChangePlan`` ``structured_output``
+    Doc writers emit a ``DocChangePlan`` ``structured_output``
     (``files: [{path, content, action}]``); the changelog node emits a
-    ``ChangelogEntry`` with a ``raw_markdown`` rendering. This returns the
-    joined content so evaluation scores the authored documentation (docs +
-    changelog) rather than an answer message. Returns "" when no authoring
-    node produced content.
+    ``ChangelogEntry`` with a ``raw_markdown`` rendering; the content
+    writers emit ``ContentDraftOutput``/``ContentSocialOutput`` with
+    ``title`` + ``body``. This returns the joined content so evaluation
+    scores the authored documentation / variants rather than an answer
+    message. Returns "" when no authoring node produced content.
     """
     chunks: list[str] = []
     for node_id in ("update", "create"):
@@ -456,6 +488,26 @@ def extract_authored_content(graph_result: Any) -> str:
             text = _structured_text(agent_result) or str(agent_result)
             if text.strip():
                 chunks.append(text.strip())
+    for node_id in ("content_blog", "content_linkedin", "content_x"):
+        node = next(
+            (
+                n
+                for n in getattr(graph_result, "execution_order", [])
+                if getattr(n, "node_id", "") == node_id
+            ),
+            None,
+        )
+        if not node:
+            continue
+        for agent_result in node_agent_results(node):
+            payload = _model_dump(getattr(agent_result, "structured_output", None))
+            if payload is None:
+                continue
+            title = str(payload.get("title") or "").strip()
+            body = str(payload.get("body") or payload.get("summary") or "").strip()
+            variant = "\n".join(part for part in (title, body) if part)
+            if variant:
+                chunks.append(variant)
     return "\n\n".join(chunks).strip()
 
 
@@ -482,7 +534,7 @@ def extract_delivery_summary(graph_result: Any) -> str:
     return ""
 
 
-def build_online_task(client: StrandsClient):
+def build_online_task(client: StrandsClient, *, run_id_prefix: str = "eval"):
     """Build an async task function that invokes the real Strands graph per case."""
 
     async def task(case: Any) -> dict[str, Any]:
@@ -491,7 +543,8 @@ def build_online_task(client: StrandsClient):
         # manager from restoring a stale conversation from a prior live run
         # (the same `eval-<slug>` id previously carried the old fabricated
         # `acme/eval` event). Fresh id => fresh graph, no resurrected context.
-        run_id = f"eval-{_slug(case.name)}-{uuid.uuid4().hex[:8]}"
+        prefix = _slug(run_id_prefix) or "eval"
+        run_id = f"{prefix}-{_slug(case.name)}-{uuid.uuid4().hex[:8]}"
         event = build_event(case, surface)
 
         # Reconcile the declared ground truth against the real worktree: when a
@@ -527,6 +580,12 @@ def build_online_task(client: StrandsClient):
             gap_threshold = event.get("gap_threshold", 2)
             fb_graph = build_feedback_graph(gap_threshold=gap_threshold)
             if isinstance(questions_input, str):
+                try:
+                    decoded = json.loads(questions_input)
+                    if isinstance(decoded, list):
+                        questions_input = decoded
+                except (json.JSONDecodeError, TypeError):
+                    pass
                 questions_payload = json.dumps({"questions": questions_input})
             else:
                 questions_payload = json.dumps(questions_input)
@@ -540,7 +599,9 @@ def build_online_task(client: StrandsClient):
             for node in getattr(fb_result, "execution_order", []):
                 if getattr(node, "node_id", "") == "prioritize":
                     for ar in node_agent_results(node):
-                        prioritized = _model_dump(getattr(ar, "structured_output", None)) or {}
+                        prioritized = _model_dump(getattr(ar, "structured_output", None))
+                        if not prioritized:
+                            prioritized = _model_dump(str(ar)) or {}
 
             env_state = [
                 EnvironmentState(
@@ -679,15 +740,15 @@ def build_online_task(client: StrandsClient):
                 },
             ),
         ]
-        if surface in ("issue", "support", "slack", "discord", "release"):
+        if surface in ("issue", "support", "slack", "discord", "release", "content"):
             # Carry repo scope + relevant authly doc evidence into
             # <ActualEnvironmentState> so groundedness/correctness/completeness
             # verify claims against real source instead of an empty env. Issue,
-            # support, and release surfaces all back their cases with a local
-            # checkout (repo_dir) and declared evidence docs.
+            # support, release, and content surfaces all back their cases with
+            # a local checkout (repo_dir) and declared evidence docs.
             surface_payload = (
                 event.get("release")
-                if surface == "release"
+                if surface in ("release", "content")
                 else issue
                 if surface == "issue"
                 else support
@@ -695,9 +756,12 @@ def build_online_task(client: StrandsClient):
             repo_dir = surface_payload.get("repo_dir")
             if repo_dir:
                 env_state.append(EnvironmentState(name="repo_dir", state=repo_dir))
-            evidence = surface_payload.get("evidence") or surface_payload.get(
-                "related_docs"
-            ) or []
+            evidence = (
+                surface_payload.get("evidence")
+                or surface_payload.get("source_evidence")
+                or surface_payload.get("related_docs")
+                or []
+            )
             if evidence:
                 env_state.append(EnvironmentState(name="evidence", state=evidence))
                 # Surface the actual doc file contents so the LLM judges can
