@@ -161,3 +161,84 @@ async def test_unparseable_output_returns_candidates_to_pending(monkeypatch):
     pending = await svc.store.list_by_status("pending")
     assert summary["claimed"] == 1
     assert len(pending) == 1
+
+
+@pytest.mark.asyncio
+async def test_empty_batch_logs_skip_no_candidates(monkeypatch):
+    import structlog
+    from structlog.testing import capture_logs
+
+    import draftly.workflows.memory.curation_workflow as cw
+
+    class FakeContext:
+        candidates = CandidateService(store=FakeCandidatesStore())
+        model = object()
+
+    with capture_logs() as logs:
+        monkeypatch.setattr(
+            cw, "logger", structlog.get_logger("test.memory_curation_empty")
+        )
+        await cw.run_memory_curation(FakeContext())
+
+    markers = [line for line in logs if line.get("event") == "memory_curation_skip"]
+    assert [m.get("reason") for m in markers] == ["no_candidates"]
+
+
+@pytest.mark.asyncio
+async def test_offline_model_logs_skip_no_routed_model(monkeypatch):
+    import structlog
+    from structlog.testing import capture_logs
+
+    import draftly.workflows.memory.curation_workflow as cw
+
+    store = FakeCandidatesStore()
+    svc = CandidateService(store=store)
+    await svc.enqueue(MemoryCandidate(org_id="org1", candidate_type="fact", payload={}))
+
+    class FakeContext:
+        candidates = svc
+        model = _OfflineRoleResolver()
+
+    with capture_logs() as logs:
+        monkeypatch.setattr(
+            cw, "logger", structlog.get_logger("test.memory_curation_offline")
+        )
+        await cw.run_memory_curation(FakeContext())
+
+    markers = [line for line in logs if line.get("event") == "memory_curation_skip"]
+    assert [m.get("reason") for m in markers] == ["no_routed_model"]
+    pending = await svc.store.list_by_status("pending")
+    assert len(pending) == 1
+
+
+@pytest.mark.asyncio
+async def test_unusable_output_logs_skip_no_usable_decisions(monkeypatch):
+    import structlog
+    from structlog.testing import capture_logs
+
+    import draftly.workflows.memory.curation_workflow as cw
+
+    store = FakeCandidatesStore()
+    svc = CandidateService(store=store)
+    await svc.enqueue(MemoryCandidate(org_id="org1", candidate_type="fact", payload={}))
+
+    class Garbled:
+        async def invoke_async(self, prompt):
+            return StubResult("I could not decide.")
+
+    monkeypatch.setattr(cw, "build_memory_curator", lambda model, tools=None: Garbled())
+
+    class FakeContext:
+        candidates = svc
+        model = object()
+
+    with capture_logs() as logs:
+        monkeypatch.setattr(
+            cw, "logger", structlog.get_logger("test.memory_curation_garbled")
+        )
+        await cw.run_memory_curation(FakeContext())
+
+    markers = [line for line in logs if line.get("event") == "memory_curation_skip"]
+    assert [m.get("reason") for m in markers] == ["no_usable_decisions"]
+    pending = await svc.store.list_by_status("pending")
+    assert len(pending) == 1

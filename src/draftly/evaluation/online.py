@@ -319,6 +319,12 @@ def build_event(case: Any, surface: str) -> dict[str, Any]:
         repo_dir = metadata.get("repo_dir")
         if repo_dir:
             release["repo_dir"] = repo_dir
+            # Carry the declared evidence FILE CONTENTS so the in-graph
+            # grounding judge can verify draft claims against the real source
+            # (the strategist's manufactured evidence echo is not trustworthy).
+            release["source_evidence_content"] = _load_evidence_content(
+                repo_dir, list(metadata.get("evidence") or [])
+            )
         base["content_relevant"] = True
         base["requested_channels"] = metadata.get("requested_channels") or [
             "blog",
@@ -426,6 +432,58 @@ def _model_dump(value: Any) -> dict | None:
     return None
 
 
+def _node_payload(graph_result: Any, node_id: str) -> dict:
+    """Extract a structured payload produced by a graph node.
+
+    Deterministic nodes carry either a ``structured_output`` (when a schema
+    was set) or the JSON-encoded message text on the ``AgentResult``; the
+    feedback graph uses the latter. Returns {} when the node never ran or
+    the payload cannot be parsed.
+    """
+    for node in getattr(graph_result, "execution_order", []):
+        if getattr(node, "node_id", "") != node_id:
+            continue
+        for ar in node_agent_results(node):
+            payload = _model_dump(getattr(ar, "structured_output", None))
+            if not payload:
+                payload = _model_dump(str(ar)) or {}
+            if payload:
+                return payload
+    return {}
+
+
+def render_feedback_report(clusters: list[dict], gaps: list[dict], threshold: int) -> str:
+    """Render a human-readable gap-analysis report from the feedback graph.
+
+    The feedback graph's terminal nodes are ``prioritize``/``enqueue``, not
+    ``answer``/``deliver``, so :func:`extract_output_text` returns ``""`` for
+    it. ``clusters`` are the summarize-node topic clusters (used to report
+    reviewed topics when nothing qualifies) and ``gaps`` the prioritized
+    gaps (already ranked by frequency). The rendered text is what live
+    evaluation scores with expected_contains / expected_gap_detected and the
+    LLM output judges.
+    """
+    if not gaps:
+        lines = [f"No gaps detected; all topics are below the threshold of {threshold}:"]
+        lines.extend(f"- {c.get('topic', '')} ({c.get('count', 0)})" for c in clusters)
+        return "\n".join(lines)
+
+    lines = [f"{len(gaps)} gap{'s' if len(gaps) != 1 else ''} detected"]
+    if len(gaps) == 1:
+        g = gaps[0]
+        lines[-1] += f" for topic {g.get('topic', '')} with count {g.get('count', 0)}"
+    else:
+        lines[-1] += ":"
+        for g in gaps:
+            lines.append(f"- topic: {g.get('topic', '')}, count {g.get('count', 0)}")
+    for g in gaps:
+        questions = g.get("sample_questions") or [g.get("sample_question", "")]
+        questions = [str(q) for q in questions if q]
+        if questions:
+            lines.append(f"  sample questions: {' | '.join(questions)}")
+    return "\n".join(lines)
+
+
 def extract_authored_content(graph_result: Any) -> str:
     """Extract documentation content authored by the ``update``/``create``
     writers, the release ``changelog`` node, and the content ``content_*``
@@ -511,6 +569,73 @@ def extract_authored_content(graph_result: Any) -> str:
     return "\n\n".join(chunks).strip()
 
 
+def _content_evaluation_payload(agent_result: Any) -> dict | None:
+    """The evaluate node's payload when it judged a content run, else None.
+
+    The content ``evaluate`` node emits ``{"passed", "variants", "issues"}``;
+    docs/issue/support ``evaluate`` nodes emit ``{"score", "reasons", ...}``
+    and never carry a ``variants`` key, so presence of ``variants`` cleanly
+    discriminates content runs without colliding with the others.
+    """
+    payload = _model_dump(getattr(agent_result, "structured_output", None))
+    if payload is None:
+        payload = _model_dump(str(agent_result))
+    if not isinstance(payload, dict) or not isinstance(payload.get("variants"), list):
+        return None
+    return payload
+
+
+def extract_content_review_feedback(graph_result: Any) -> str:
+    """Extract the content evaluate node's blocking issues as authoring feedback.
+
+    When a content run is blocked (deterministic evidence gate or the in-graph
+    grounding judge), the scored output must describe WHY the draft was rejected
+    so ``ExpectedDelivered``/groundedness judges see feedback rather than an
+    unapproved draft. Returns "" when the run passed evaluation, produced a
+    non-content evaluation, or never reached the evaluate node.
+    """
+    node = next(
+        (
+            n
+            for n in getattr(graph_result, "execution_order", [])
+            if getattr(n, "node_id", "") == "evaluate"
+        ),
+        None,
+    )
+    if not node:
+        return ""
+    for agent_result in node_agent_results(node):
+        payload = _content_evaluation_payload(agent_result)
+        if payload is None:
+            continue
+        if payload.get("passed") is True:
+            return ""
+        issues = [str(i) for i in (payload.get("issues") or []) if str(i).strip()]
+        if not issues:
+            return ""
+        lines = [
+            "Authoring feedback: this draft was not published because review found blocking issues."
+        ]
+        lines.extend(f"- {issue}" for issue in issues)
+        lines.append("Do not publish content claiming behavior that has no supporting evidence.")
+        return "\n".join(lines)
+    return ""
+
+
+def compose_content_output(graph_result: Any) -> str:
+    """Compose a content run's scored output.
+
+    Preference order: (1) authoring feedback when evaluation blocked the run,
+    (2) the authored variants when evaluation passed, (3) the answer/deliver
+    node text as a last resort. A blocked run must never surface the draft it
+    rejected.
+    """
+    feedback = extract_content_review_feedback(graph_result)
+    if feedback:
+        return feedback
+    return extract_authored_content(graph_result) or extract_output_text(graph_result)
+
+
 def extract_delivery_summary(graph_result: Any) -> str:
     """Extract the delivery receipt text from the ``deliver`` node.
 
@@ -594,7 +719,6 @@ def build_online_task(client: StrandsClient, *, run_id_prefix: str = "eval"):
                 invocation_state={"run_id": run_id},
             )
 
-            output_text = extract_output_text(fb_result)
             prioritized = {}
             for node in getattr(fb_result, "execution_order", []):
                 if getattr(node, "node_id", "") == "prioritize":
@@ -603,12 +727,23 @@ def build_online_task(client: StrandsClient, *, run_id_prefix: str = "eval"):
                         if not prioritized:
                             prioritized = _model_dump(str(ar)) or {}
 
+            clusters = _node_payload(fb_result, "summarize").get("clusters", [])
+
+            output_text = render_feedback_report(
+                clusters,
+                prioritized.get("prioritized_gaps")
+                or _node_payload(fb_result, "detect_gaps").get("gaps", []),
+                gap_threshold,
+            )
+
             env_state = [
                 EnvironmentState(
                     name="feedback",
                     state={
                         "gap_count": prioritized.get("total", 0),
                         "prioritized_gaps": prioritized.get("prioritized_gaps", []),
+                        "clusters": clusters,
+                        "threshold": gap_threshold,
                         "output": output_text,
                     },
                 ),
@@ -670,8 +805,9 @@ def build_online_task(client: StrandsClient, *, run_id_prefix: str = "eval"):
 
         # Documentation-authoring runs score the writers' DocChangePlan
         # content; answer-style runs (QA/issue/support) fall back to the
-        # answer/deliver node text.
-        output_text = extract_authored_content(graph_result) or extract_output_text(graph_result)
+        # answer/deliver node text. Content runs prefer authoring feedback
+        # when evaluation blocked the draft, then the approved variants.
+        output_text = compose_content_output(graph_result)
         trajectories = extract_trajectories(graph_result)
         flat_trajectory = flatten_trajectory(trajectories)
 

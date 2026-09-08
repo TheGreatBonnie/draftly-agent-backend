@@ -13,6 +13,7 @@ from draftly.agents.prompts import (
     CLASSIFIER_PROMPT,
     CONTEXT_PROMPT,
     DELIVERY_PROMPT,
+    DOC_CONTEXT_PROMPT,
     IMPACT_PROMPT,
     ISSUE_ANALYZER_PROMPT,
     ISSUE_LOCAL_RESEARCHER_PROMPT,
@@ -169,6 +170,43 @@ class TestGuardrailsPresent:
         assert "roles.list_for_user" in flat
         assert "if they appear verbatim" in flat
 
+    def test_writer_prompt_has_revision_feedback_block(self) -> None:
+        rendered = build_prompt(WRITER_PROMPT, output_model=DocChangePlan)
+
+        assert "Revision pass" in rendered
+        assert "evaluate reasons" in rendered or "reasons" in rendered
+
+    def test_writer_revision_handles_deterministic_gate_reasons(self) -> None:
+        rendered = build_prompt(WRITER_PROMPT, output_model=DocChangePlan)
+        flat = " ".join(rendered.split())
+
+        assert "Grounded in" in flat
+        assert "Covers" in flat
+        assert "deterministic gate" in flat
+
+    def test_writer_revision_acts_on_missing_topics_feedback(self) -> None:
+        """The deterministic gate now names uncovered topics via a
+        ``Missing topics: ...`` reason; the writer must be told to author a
+        real section for each named topic, or the feedback has no teeth."""
+        rendered = build_prompt(WRITER_PROMPT, output_model=DocChangePlan)
+        flat = " ".join(rendered.split())
+
+        assert "Missing topics" in flat
+        assert "each named" in flat
+        assert "real section" in flat
+
+    def test_evaluation_rules_match_deterministic_weights(self) -> None:
+        rendered = build_prompt(
+            REVIEWER_PROMPT,
+            output_model=EvaluationResult,
+            evaluation_rules="evaluation_rules",
+        )
+
+        assert "# Evaluation Rules" in rendered
+        flat = " ".join(prompts.EVALUATION_RULES.split())
+        assert "0.4" in flat
+        assert "0.3" in flat
+
 
 class TestImpactPromptGrounding:
     def test_doc_impact_prompt_requires_search_before_verdict(self) -> None:
@@ -228,6 +266,42 @@ class TestSupportLocalResearcherPrompt:
         assert "semantic_search" in flat
         assert "keyword_search" in flat
         assert "code_search" in flat
+
+
+class TestLocalRepoNoteConditional:
+    def test_default_still_injects_local_repo_note(self) -> None:
+        rendered = build_prompt(
+            DOC_CONTEXT_PROMPT,
+            output_model=EvidenceBundle,
+            documentation_policy="documentation_policy",
+            repository_rules="repository_rules",
+        )
+
+        assert "LOCAL checkout" in rendered
+
+    def test_empty_note_omits_local_repo_note(self) -> None:
+        rendered = build_prompt(
+            DOC_CONTEXT_PROMPT,
+            output_model=EvidenceBundle,
+            documentation_policy="documentation_policy",
+            repository_rules="repository_rules",
+            local_repo_note="",
+        )
+
+        assert "LOCAL checkout" not in rendered
+
+
+class TestLocalRepoNoteFor:
+    def test_no_checkout_renders_empty(self) -> None:
+        from draftly.agents.prompts import local_repo_note_for
+
+        assert local_repo_note_for(None) == ""
+
+    def test_concrete_checkout_path_is_substituted(self) -> None:
+        from draftly.agents.prompts import local_repo_note_for
+
+        assert "repo_dir=/data/authly" in local_repo_note_for("/data/authly")
+        assert "<local checkout path>" not in local_repo_note_for("/data/authly")
 
 
 class TestBuildPromptHardening:

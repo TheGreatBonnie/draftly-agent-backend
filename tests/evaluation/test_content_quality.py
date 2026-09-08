@@ -25,6 +25,22 @@ def test_missing_evidence_blocks_approval():
     assert result["passed"] is False
 
 
+def test_empty_evidence_variant_is_blocked_with_missing_references():
+    result = evaluate_content_variant(
+        variant(
+            evidence=[],
+            evaluation={
+                "groundedness": 0.95,
+                "completeness": 0.9,
+                "relevance": 0.9,
+                "channel_fit": 0.9,
+            },
+        )
+    )
+    assert result["passed"] is False
+    assert "missing evidence references" in result["issues"]
+
+
 def test_low_groundedness_is_reported():
     result = evaluate_content_variant(
         variant(

@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
+import structlog
 from strands.multiagent.base import (
     MultiAgentBase,
     MultiAgentResult,
@@ -13,6 +14,9 @@ from strands.multiagent.base import (
 )
 
 from draftly.orchestration.nodes.base import agent_result, parse_node_input
+from draftly.orchestration.nodes.evaluate import _research_evidence
+
+logger = structlog.get_logger(__name__)
 
 _VALID_CATEGORIES = {"added", "changed", "deprecated", "removed", "fixed", "security"}
 _VERSION_RE = re.compile(r"^## \[[^\]]+\] - \d{4}-\d{2}-\d{2}", re.MULTILINE)
@@ -90,10 +94,20 @@ class ChangelogEvaluatorNode(MultiAgentBase):
         self,
         name: str = "changelog_evaluate",
         max_iterations: int = 2,
+        *,
+        rubric_grader: Any,
     ) -> None:
+        if rubric_grader is None:
+            raise TypeError(
+                "ChangelogEvaluatorNode requires a rubric_grader; the LLM "
+                "grader is mandatory production wiring (the deterministic "
+                "format gate stays the pass/fail signal, the grader enriches "
+                "reasons on failures)."
+            )
         self.name = name
         self.iteration = 0
         self.max_iterations = max_iterations
+        self.rubric_grader = rubric_grader
 
     async def invoke_async(
         self,
@@ -109,11 +123,53 @@ class ChangelogEvaluatorNode(MultiAgentBase):
 
         score, reasons = compute_changelog_quality(raw_markdown)
         passed = score >= 0.7
+        escalated = False
 
         if not reasons:
             reasons.append(f"Score {score:.2f} (threshold: 0.70)")
+
+        # Mandatory rubric grader: an LLM judge enriches reasons on a failed
+        # changelog entry (e.g. naming the missing Keep a Changelog sections)
+        # so the changelog revision pass can act on specifics. Runs whenever
+        # the gate fails and is always wired. Exceptions degrade to the
+        # deterministic verdict rather than crashing the run.
+        if not passed:
+            evidence: list[dict] = []
+            for evidence_source in ("context", "research"):
+                evidence = _research_evidence(deps.get(evidence_source))
+                if evidence:
+                    break
+            try:
+                grade = await self.rubric_grader.grade(
+                    draft=raw_markdown, evidence=evidence
+                )
+                for reason in grade.reasons:
+                    if reason and reason not in reasons:
+                        reasons.append(f"[rubric] {reason}")
+            except Exception:
+                logger.warning("changelog_rubric_grader_failed", exc_info=True)
+
         if not passed and self.iteration >= self.max_iterations:
-            reasons.append(f"Quality threshold not met after {self.iteration} evaluations")
+            # Escalate to the human ReviewGate (mirror of the docs evaluator)
+            # so the graph routes toward deliver instead of looping on the
+            # changelog revision edge and burning the node budget.
+            passed = True
+            escalated = True
+            reasons.append(
+                f"Quality threshold not met after {self.iteration} evaluations; "
+                "escalated to human review"
+            )
+
+        logger.info(
+            "changelog_evaluate_verdict",
+            run_id=(invocation_state or {}).get("run_id"),
+            passed=passed,
+            score=score,
+            iteration=self.iteration,
+            escalated=escalated,
+            changelog_chars=len(raw_markdown),
+            reasons=reasons,
+        )
 
         return MultiAgentResult(
             status=Status.COMPLETED,
@@ -125,6 +181,7 @@ class ChangelogEvaluatorNode(MultiAgentBase):
                             "score": score,
                             "reasons": reasons,
                             "iteration": self.iteration,
+                            "escalated": escalated,
                         }
                     )
                 )

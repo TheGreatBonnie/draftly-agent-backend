@@ -12,8 +12,10 @@ with store_interrupt) and test-injectable via ``graph_factory``.
 from __future__ import annotations
 
 import json
+import re
 import time
 from collections.abc import Callable
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any
 from uuid import uuid4
@@ -36,6 +38,12 @@ from draftly.integrations.support.runtime import (
 from draftly.observability.metrics import Metrics
 from draftly.observability.metrics import metrics as _default_metrics
 from draftly.workflows.context import WorkflowContext
+from draftly.workflows.grounding import (
+    repo_checkout_for,
+    reset_grounding,
+    resolve_grounding,
+    set_grounding,
+)
 from draftly.workflows.state import WorkflowState, WorkflowStatus
 
 logger = structlog.get_logger(__name__)
@@ -44,6 +52,14 @@ GraphFactory = Callable[[str, str], Any]
 
 # Injectable registry (tests swap this for an isolated instance).
 _metrics: Metrics = _default_metrics
+
+_NODE_TIMEOUT_RE = re.compile(r"Node '([^']+)' execution timed out after (\d+)s")
+
+
+def _node_timeout_node_id(exc: Exception) -> str | None:
+    """Return the node id from a Strands node-timeout exception, or None."""
+    match = _NODE_TIMEOUT_RE.search(str(exc))
+    return match.group(1) if match is not None else None
 
 
 def extract_token_usage(graph_result: Any, *, model: str) -> dict[str, int]:
@@ -89,6 +105,9 @@ def _default_graph_factory(context: WorkflowContext) -> GraphFactory:
 
     def factory(run_id: str, surface: str) -> Any:
         from draftly.integrations.strands.graph import build_graph_for_run
+        from draftly.workflows.grounding import current_grounding
+
+        grounding = current_grounding()
 
         jobs_repo = getattr(getattr(context, "repositories", None), "jobs", None)
         return build_graph_for_run(
@@ -103,9 +122,8 @@ def _default_graph_factory(context: WorkflowContext) -> GraphFactory:
             memory=context.memory_bundle(),
             publisher=getattr(context, "publisher", None),
             jobs_repo=jobs_repo,
-            content_repository=getattr(
-                getattr(context, "repositories", None), "content", None
-            ),
+            grounding=grounding.get("mode", "local"),
+            repo_dir=grounding.get("repo_dir"),
             **context.graph_limits(),
         )
 
@@ -152,13 +170,14 @@ class WorkflowRunner:
             surface=surface,
         )
 
-        # Only merged PRs run the documentation graph; other PR actions skip
-        # before the idempotency claim so they leave no audit/duplicate record.
-        # Gate on the event prefix (not the surface) so push/release events that
-        # share the "pull_request" surface still run.
+        # Only merged and opened PRs run the documentation graph; other PR
+        # actions skip before the idempotency claim so they leave no
+        # audit/duplicate record. Gate on the event prefix (not the surface)
+        # so push/release events that share the "pull_request" surface still
+        # run.
         event_type = str(event.get("event_type") or "")
         if event_type.split(".")[0] == "pull_request" and not event_type.endswith(
-            ".merged"
+            (".merged", ".opened")
         ):
             logger.info(
                 "workflow_skipped_pr_not_merged",
@@ -202,11 +221,25 @@ class WorkflowRunner:
 
         from draftly.integrations.strands.models import routing_decision_scope
 
+        repo_dir = repo_checkout_for(event)
+        if repo_dir and not event.get("repo_dir"):
+            # Surface the discovered checkout into the task so the LOCAL note
+            # can point evidence agents at the real path (never a guess).
+            event["repo_dir"] = repo_dir
+        grounding = {
+            "mode": resolve_grounding(
+                repo_dir=repo_dir,
+                installation_id=event.get("installation_id"),
+            ),
+            "repo_dir": event.get("repo_dir"),
+        }
         build_token = set_support_runtime(support_runtime_for(event))
+        grounding_token = set_grounding(grounding)
         try:
             with routing_decision_scope(collect_routing_decision):
                 graph = self._graph_factory(run_id, surface)
         finally:
+            reset_grounding(grounding_token)
             reset_support_runtime(build_token)
         await self._persist_lifecycle(event, "running", run_id=run_id)
         await self._broadcast_lifecycle(
@@ -228,9 +261,27 @@ class WorkflowRunner:
                     graph, json.dumps(event), invocation_state, surface
                 )
             else:
-                result = await graph.invoke_async(
-                    json.dumps(event), invocation_state=invocation_state
-                )
+                try:
+                    result = await graph.invoke_async(
+                        json.dumps(event), invocation_state=invocation_state
+                    )
+                except Exception as exc:
+                    node_id = _node_timeout_node_id(exc)
+                    if node_id is None:
+                        raise
+                    _metrics.increment("draftly_node_timeouts_total")
+                    logger.warning(
+                        "workflow_node_timeout",
+                        run_id=run_id,
+                        node_id=node_id,
+                        error=str(exc),
+                    )
+                    result = SimpleNamespace(
+                        status=Status.FAILED,
+                        interrupts=[],
+                        execution_order=[],
+                        failed_nodes=[SimpleNamespace(node_id=node_id)],
+                    )
         finally:
             reset_support_runtime(support_token)
             reset_installation_id(installation_token)
@@ -270,6 +321,8 @@ class WorkflowRunner:
         if not run_id or surface is None:
             raise ValueError("Cannot resume a workflow without a valid run and surface")
 
+        logger.info("workflow_resume_started", run_id=run_id, surface=surface)
+
         routing_decisions: dict[str, Any] = {}
 
         def collect_routing_decision(role: str, decision: Any) -> None:
@@ -277,15 +330,31 @@ class WorkflowRunner:
 
         from draftly.integrations.strands.models import routing_decision_scope
 
-        with routing_decision_scope(collect_routing_decision):
-            graph = self._graph_factory(run_id, surface)
+        repo_dir = repo_checkout_for(event)
+        if repo_dir and not event.get("repo_dir"):
+            event["repo_dir"] = repo_dir
+        grounding = {
+            "mode": resolve_grounding(
+                repo_dir=repo_dir,
+                installation_id=event.get("installation_id"),
+            ),
+            "repo_dir": event.get("repo_dir"),
+        }
+        grounding_token = set_grounding(grounding)
+        try:
+            with routing_decision_scope(collect_routing_decision):
+                graph = self._graph_factory(run_id, surface)
+        finally:
+            reset_grounding(grounding_token)
         invocation_state = self._invocation_state(event, surface)
-        resume_input = [{
-            "interruptResponse": {
-                "interruptId": interrupt_id,
-                "response": response,
+        resume_input = [
+            {
+                "interruptResponse": {
+                    "interruptId": interrupt_id,
+                    "response": response,
+                }
             }
-        }]
+        ]
         state = WorkflowState(run_id=run_id, event=event, surface=surface)
         started = time.monotonic()
         installation_token = set_installation_id(event.get("installation_id"))
@@ -355,7 +424,9 @@ class WorkflowRunner:
             reset_support_runtime(support_token)
             reset_installation_id(installation_token)
 
-        return await self._finish_result(event, surface, result, state)
+        resumed = await self._finish_result(event, surface, result, state)
+        logger.info("workflow_resume_done", run_id=run_id, status=resumed.status.value)
+        return resumed
 
     def _invocation_state(self, event: dict[str, Any], surface: str) -> dict[str, Any]:
         return {
@@ -369,6 +440,7 @@ class WorkflowRunner:
             "project_id": str(event.get("project_id") or ""),
             "surface": surface,
             "installation_id": event.get("installation_id"),
+            "repo_dir": event.get("repo_dir"),
         }
 
     async def _notify_reviewers(self, run_id: str) -> None:
@@ -378,11 +450,28 @@ class WorkflowRunner:
         """
         notifier = getattr(self.context, "notifier", None)
         if notifier is None or getattr(notifier, "notify_reviewers", None) is None:
+            logger.info("review_notify_skipped", run_id=run_id, reason="notifier_unavailable")
             return
         try:
-            await notifier.notify_reviewers(run_id)
+            sent = await notifier.notify_reviewers(run_id)
         except Exception:
             logger.warning("review_notify_dispatch_failed", run_id=run_id, exc_info=True)
+            return
+        totals = {
+            platform: len(recipients) for platform, recipients in (sent or {}).items()
+        }
+        total = sum(totals.values())
+        if total == 0:
+            logger.info("review_notify_skipped", run_id=run_id, reason="no_recipients")
+            return
+        logger.info(
+            "review_notify_dispatched",
+            run_id=run_id,
+            total=total,
+            slack_count=totals.get("slack", 0),
+            discord_count=totals.get("discord", 0),
+            email_count=totals.get("email", 0),
+        )
 
     async def _finish_result(
         self,
@@ -395,8 +484,17 @@ class WorkflowRunner:
         state.result = result
         if result.status == Status.INTERRUPTED:
             await self._store_interrupts(run_id, surface, result, state)
+            evaluation = self._node_payload(result, "evaluate")
+            pending_result: dict[str, Any] = {"status": "PENDING_REVIEW"}
+            if evaluation:
+                pending_result["evaluation"] = evaluation
+            await self._persist_lifecycle(
+                event,
+                "pending_review",
+                run_id=run_id,
+                result=pending_result,
+            )
             await self._mark(event, "pending_review")
-            await self._persist_lifecycle(event, "pending_review", run_id=run_id)
             await self._broadcast_lifecycle(
                 org_id=str(event.get("project_id") or ""),
                 run_id=run_id,
@@ -415,13 +513,14 @@ class WorkflowRunner:
             delivered_receipt = await self._persist_delivery_result(event, run_id, result)
             if delivered_receipt is not None:
                 await self._resolve_support_thread(state, delivered_receipt)
-            await self._mark(event, "completed")
             await self._persist_lifecycle(
                 event,
                 "completed",
                 run_id=run_id,
                 result=lifecycle_result,
             )
+            await self._persist_evaluation_outcome(event, run_id, evaluation)
+            await self._mark(event, "completed")
             await _post_run_memory(self.context, state, surface)
             await self._broadcast_lifecycle(
                 org_id=str(event.get("project_id") or ""),
@@ -437,7 +536,6 @@ class WorkflowRunner:
         lifecycle_result = {"status": "FAILED", "failed_nodes": failed}
         if evaluation:
             lifecycle_result["evaluation"] = evaluation
-        await self._mark(event, "failed")
         await self._persist_lifecycle(
             event,
             "failed",
@@ -445,6 +543,8 @@ class WorkflowRunner:
             error="; ".join(failed) or "workflow failed",
             result=lifecycle_result,
         )
+        await self._persist_evaluation_outcome(event, run_id, evaluation)
+        await self._mark(event, "failed")
         await self._broadcast_lifecycle(
             org_id=str(event.get("project_id") or ""),
             run_id=run_id,
@@ -470,37 +570,68 @@ class WorkflowRunner:
         result: Any = None
         started_at = time.monotonic()
         ttft_recorded = False
-        async for raw in graph.stream_async(task, invocation_state=invocation_state):
-            shaped = raw if isinstance(raw, dict) else {}
-            envelope = filter_graph_event(
-                shaped,
-                run_id=invocation_state["run_id"],
-                surface=surface,
+        run_id = invocation_state["run_id"]
+        try:
+            async for raw in graph.stream_async(task, invocation_state=invocation_state):
+                shaped = raw if isinstance(raw, dict) else {}
+                envelope = filter_graph_event(
+                    shaped,
+                    run_id=run_id,
+                    surface=surface,
+                )
+                if envelope is not None:
+                    if not ttft_recorded and envelope.type == "text_delta":
+                        ttft_recorded = True
+                        _metrics.observe("draftly_run_ttft_ms", time.monotonic() - started_at)
+                    seq += 1
+                    envelope.seq = seq
+                    await self._safe_publish(envelope)
+                if isinstance(raw, dict):
+                    if "result" in raw:
+                        result = raw["result"]
+                    elif raw.get("force_stop"):
+                        _metrics.increment("draftly_limit_hits_total")
+                        result = SimpleNamespace(
+                            status=Status.FAILED,
+                            interrupts=[],
+                            execution_order=[],
+                            failed_nodes=0,
+                        )
+        except Exception as exc:
+            node_id = _node_timeout_node_id(exc)
+            if node_id is None:
+                raise
+            _metrics.increment("draftly_node_timeouts_total")
+            logger.warning(
+                "workflow_node_timeout",
+                run_id=run_id,
+                node_id=node_id,
+                error=str(exc),
             )
-            if envelope is not None:
-                if not ttft_recorded and envelope.type == "text_delta":
-                    ttft_recorded = True
-                    _metrics.observe(
-                        "draftly_run_ttft_ms", time.monotonic() - started_at
-                    )
-                seq += 1
-                envelope.seq = seq
-                await self._safe_publish(envelope)
-            if isinstance(raw, dict):
-                if "result" in raw:
-                    result = raw["result"]
-                elif raw.get("force_stop"):
-                    _metrics.increment("draftly_limit_hits_total")
-                    result = SimpleNamespace(
-                        status=Status.FAILED,
-                        interrupts=[],
-                        execution_order=[],
-                        failed_nodes=0,
-                    )
+            result = SimpleNamespace(
+                status=Status.FAILED,
+                interrupts=[],
+                execution_order=[],
+                failed_nodes=[SimpleNamespace(node_id=node_id)],
+            )
+            seq += 1
+            await self._safe_publish(
+                StreamEnvelope(
+                    type="workflow_result",
+                    run_id=run_id,
+                    surface=surface,
+                    seq=seq,
+                    node_id=node_id,
+                    payload={
+                        "status": "FAILED",
+                        "reason": f"node {node_id} timed out",
+                        "interrupts": [],
+                    },
+                )
+            )
         if result is None:
             raise RuntimeError(
-                "stream ended without a result event "
-                f"run_id={invocation_state['run_id']}"
+                f"stream ended without a result event run_id={run_id}"
             )
         return result
 
@@ -530,7 +661,9 @@ class WorkflowRunner:
         except Exception:
             logger.warning(
                 "runner_broadcast_failed run_id=%s status=%s",
-                run_id, status, exc_info=True,
+                run_id,
+                status,
+                exc_info=True,
             )
 
     async def _record_routing_outcome(
@@ -556,23 +689,25 @@ class WorkflowRunner:
                 # Telemetry aggregates are keyed by TASK type; profile is only
                 # a display label (e.g. research tasks run on the reasoning profile).
                 task_type = decision.task_type or decision.profile
-                await repositories.routing.record({
-                    "request_id": run_id,
-                    "organization_id": organization_id,
-                    "task_type": task_type,
-                    "selected_model": decision.selected_model,
-                    "provider": decision.provider,
-                    "score": decision.score,
-                    "candidates_considered": decision.candidates_considered,
-                    "profile": decision.profile,
-                    "reason_codes": list(decision.reason_codes),
-                    "fallback_chain": list(decision.fallback_chain),
-                    "estimated_cost": decision.estimated_cost,
-                    "estimated_latency_ms": decision.estimated_latency_ms,
-                    "latency_ms": latency_ms,
-                    "success": success,
-                    "metadata": {"role": role},
-                })
+                await repositories.routing.record(
+                    {
+                        "request_id": run_id,
+                        "organization_id": organization_id,
+                        "task_type": task_type,
+                        "selected_model": decision.selected_model,
+                        "provider": decision.provider,
+                        "score": decision.score,
+                        "candidates_considered": decision.candidates_considered,
+                        "profile": decision.profile,
+                        "reason_codes": list(decision.reason_codes),
+                        "fallback_chain": list(decision.fallback_chain),
+                        "estimated_cost": decision.estimated_cost,
+                        "estimated_latency_ms": decision.estimated_latency_ms,
+                        "latency_ms": latency_ms,
+                        "success": success,
+                        "metadata": {"role": role},
+                    }
+                )
                 await repositories.performance.record_outcome(
                     task_type=task_type,
                     model_name=decision.selected_model,
@@ -677,6 +812,65 @@ class WorkflowRunner:
                     run_id=run_id,
                     status=status,
                 )
+
+    async def _persist_evaluation_outcome(
+        self,
+        event: dict[str, Any],
+        run_id: str,
+        evaluation: dict[str, Any],
+    ) -> None:
+        """Write the live evaluation-gate verdict to the first-class stores.
+
+        Mirrors the scheduled evaluation loop's persistence (evaluations
+        table + feedback_outcomes) for the live PR path so gate telemetry is
+        queryable per run instead of only embedded in jobs.result. Fail-open:
+        a missing store must never fail the run.
+        """
+        if not evaluation:
+            return
+        org_id = str(event.get("project_id") or "") or None
+        if not org_id:
+            return
+        repositories = getattr(self.context, "repositories", None)
+        if repositories is None:
+            return
+        score = float(evaluation.get("score") or 0.0)
+        passed = bool(evaluation.get("passed"))
+        reasons = [str(r) for r in (evaluation.get("reasons") or [])]
+        payload = {
+            "passed": passed,
+            "score": score,
+            "reasons": reasons,
+            "status": "passed" if passed else "failed",
+        }
+
+        outcomes = getattr(repositories, "feedback_outcomes", None)
+        if outcomes is not None and getattr(outcomes, "save_outcome", None) is not None:
+            try:
+                await outcomes.save_outcome(org_id, "evaluation_gate", run_id, payload)
+            except Exception:
+                logger.exception("evaluation_outcome_persist_failed", run_id=run_id)
+
+        evals = getattr(repositories, "evaluations", None)
+        if evals is not None and getattr(evals, "create", None) is not None:
+            try:
+                now = datetime.now(UTC)
+                await evals.create(
+                    org_id=org_id,
+                    evaluation_type="evaluation_gate",
+                    run_id=run_id,
+                    target_id=None,
+                    score=round(score * 100.0, 2),
+                    passed=passed,
+                    status="passed" if passed else "failed",
+                    metrics={"reasons": reasons},
+                    failures=[{"reason": r} for r in reasons] if not passed else [],
+                    trace_id=run_id,
+                    started_at=now,
+                    completed_at=now,
+                )
+            except Exception:
+                logger.exception("evaluation_record_persist_failed", run_id=run_id)
 
     async def _persist_delivery_result(
         self,
@@ -794,10 +988,8 @@ class WorkflowRunner:
             run_id=run_id,
             org_id=str(event.get("project_id") or "") or None,
             platform=surface,
-            channel_id=str(receipt.get("delivered_to") or event.get("channel") or "")
-            or None,
-            thread_id=str(event.get("thread_ts") or receipt.get("thread_id") or "")
-            or None,
+            channel_id=str(receipt.get("delivered_to") or event.get("channel") or "") or None,
+            thread_id=str(event.get("thread_ts") or receipt.get("thread_id") or "") or None,
             source_message_id=str(event.get("source_message_id") or "") or None,
             provider_message_id=str(receipt.get("reference") or "") or None,
             status="delivered" if delivered else "failed",
@@ -885,9 +1077,7 @@ class WorkflowRunner:
         row = await finder(event_id)
         return str(row.get("status")) if isinstance(row, dict) else None
 
-    async def _existing_support_delivery(
-        self, event: dict[str, Any]
-    ) -> dict[str, Any] | None:
+    async def _existing_support_delivery(self, event: dict[str, Any]) -> dict[str, Any] | None:
         """Return an already-delivered receipt for a Slack/Discord source event."""
         source = str(event.get("source") or "")
         if source not in ("slack", "discord"):
@@ -933,7 +1123,15 @@ class WorkflowRunner:
         marker = getattr(events, "mark_status", None)
         if marker is None:
             return
-        await marker(str(event.get("event_id")), status)
+        try:
+            await marker(str(event.get("event_id")), status)
+        except Exception:
+            logger.warning(
+                "event_status_persist_failed",
+                event_id=str(event.get("event_id")),
+                status=status,
+                exc_info=True,
+            )
 
     async def _store_interrupts(
         self,

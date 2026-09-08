@@ -370,19 +370,36 @@ async def list_github_workflows_record(
         )
         jobs_map = {str(r["run_id"]): r for r in jobs_rows}
 
-        # Fetch all workflow_events for those runs to derive terminal status and node states
-        # (no DISTINCT ON — we need the full event history per run)
-        events_rows = await db.fetch_all(
-            """SELECT run_id, payload, ts, type, node_id, seq
+        # Lightweight event listing: only routing/minimal columns. The dashboard
+        # polls this endpoint continuously, so the fat JSON `payload` column must
+        # not be transferred for every event — only the event types that actually
+        # consume it (workflow_result status, node_stop status) fetch payloads,
+        # in a separate targeted query.
+        event_rows = await db.fetch_all(
+            """SELECT run_id, seq, type, node_id
                FROM workflow_events
-               WHERE run_id = ANY($1::TEXT[])
-               ORDER BY run_id, seq ASC""",
+               WHERE run_id = ANY($1::TEXT[])""",
             run_ids,
         )
+        payload_rows = await db.fetch_all(
+            """SELECT run_id, seq, type, node_id, payload
+               FROM workflow_events
+               WHERE run_id = ANY($1::TEXT[])
+                 AND type IN ('workflow_result', 'node_stop')""",
+            run_ids,
+        )
+        payloads_by_key = {
+            (str(r["run_id"]), r["seq"]): r.get("payload") for r in payload_rows
+        }
+
         events_by_run = {}
-        for r in events_rows:
+        for r in event_rows:
             rid = str(r["run_id"])
-            events_by_run.setdefault(rid, []).append(dict(r))
+            event = dict(r)
+            payload = payloads_by_key.get((rid, r["seq"]))
+            if payload is not None:
+                event["payload"] = payload
+            events_by_run.setdefault(rid, []).append(event)
 
     result = []
     for gw in gw_rows:

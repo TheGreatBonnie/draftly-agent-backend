@@ -122,14 +122,24 @@ class ReviewGate(HookProvider):
         policy = state.get("review_policy", "always")
         classification = _classification(event.source, state)
 
+        classification = _classification(event.source, state)
+        policy = state.get("review_policy", "always")
+
         if not should_review(policy, classification):
             logger.debug(
-                "node_id=<%s>, policy=<%s> | review skipped",
-                event.node_id,
-                policy,
+                "review_gate_skip",
+                run_id=state.get("run_id"),
+                node_id=event.node_id,
+                policy=policy,
             )
             return
 
+        logger.info(
+            "review_gate_pause",
+            run_id=state.get("run_id"),
+            node_id=event.node_id,
+            policy=policy,
+        )
         decision = event.interrupt(
             INTERRUPT_NAME,
             reason={
@@ -150,4 +160,17 @@ class ReviewGate(HookProvider):
             comment = ""
 
         if not approved:
+            logger.info(
+                "review_gate_decision",
+                run_id=state.get("run_id"),
+                approved=False,
+                comment=comment,
+            )
             event.cancel_node = f"Rejected by reviewer: {comment}"
+        else:
+            logger.info(
+                "review_gate_decision",
+                run_id=state.get("run_id"),
+                approved=True,
+                comment=comment,
+            )

@@ -11,6 +11,13 @@ from strands.multiagent.base import MultiAgentBase, MultiAgentResult, NodeResult
 from strands.session.session_manager import SessionManager
 
 from draftly.agents.content.blog_writer import build_blog_writer
+from draftly.agents.content.judge import (
+    DEFAULT_BLOCKING_MESSAGE,
+    Judge,
+    build_content_grounding_judge,
+    make_grounding_judge,
+)
+from draftly.agents.content.schemas import ContentJudgeVerdict
 from draftly.agents.content.social_adapter import build_social_adapter
 from draftly.agents.content.strategist import build_content_strategist
 from draftly.content.models import (
@@ -31,7 +38,7 @@ from draftly.orchestration.graphs.documentation_graph import (
 from draftly.orchestration.graphs.tool_scoping import scope_read_only_tools
 from draftly.orchestration.hooks.review_gate import ReviewGate
 from draftly.orchestration.nodes.base import agent_result, parse_node_input
-from draftly.orchestration.routing.conditions import all_dependencies_complete
+from draftly.orchestration.routing.conditions import all_dependencies_complete, eval_passed
 
 CONTENT_GRAPH_ID = "draftly-content-graph"
 
@@ -88,8 +95,20 @@ def _request_from_event(event: dict[str, Any]) -> ContentRequest:
 class ContentEvaluationNode(MultiAgentBase):
     name = "evaluate"
 
-    async def invoke_async(self, task: Any, **_: Any) -> MultiAgentResult:
+    def __init__(self, judge: Judge | None = None) -> None:
+        self.judge = judge
+
+    async def invoke_async(
+        self,
+        task: Any,
+        invocation_state: dict[str, Any] | None = None,
+        **_: Any,
+    ) -> MultiAgentResult:
         deps = parse_node_input(task)
+        event = _original_task(task)
+        source_evidence_content = list(
+            ((event.get("release") or {}).get("source_evidence_content") or [])
+        )
         variants: list[dict[str, Any]] = []
         for node_id, channel in (
             ("content_blog", ContentChannel.BLOG),
@@ -105,10 +124,25 @@ class ContentEvaluationNode(MultiAgentBase):
                 body=str(payload.get("body") or ""), evidence=list(payload.get("evidence") or []),
                 evaluation={},
             )
+            evaluation = evaluate_content_variant(variant)
+            if evaluation["passed"] and self.judge is not None:
+                # Frontier check: the deterministic gate only verifies that
+                # claims cite evidence, not that the evidence supports them.
+                try:
+                    verdict = await self.judge(variant, source_evidence_content)
+                except Exception:
+                    verdict = ContentJudgeVerdict(grounded=True)
+                if not verdict.grounded:
+                    blocking = list(verdict.blocking_issues) or [DEFAULT_BLOCKING_MESSAGE]
+                    evaluation = {
+                        **evaluation,
+                        "passed": False,
+                        "issues": list(evaluation["issues"]) + blocking,
+                    }
             variants.append({
                 "channel": channel.value,
                 "payload": payload,
-                "evaluation": evaluate_content_variant(variant),
+                "evaluation": evaluation,
             })
         output = {
             "passed": bool(variants) and all(item["evaluation"]["passed"] for item in variants),
@@ -196,7 +230,12 @@ class ContentApprovalNode(MultiAgentBase):
     def __init__(self, repository: Any) -> None:
         self.repository = repository
 
-    async def invoke_async(self, task: Any, **_: Any) -> MultiAgentResult:
+    async def invoke_async(
+        self,
+        task: Any,
+        invocation_state: dict[str, Any] | None = None,
+        **_: Any,
+    ) -> MultiAgentResult:
         deps = parse_node_input(task)
         package_id = str((deps.get("persist") or {}).get("package_id") or "")
         event = _original_task(task)
@@ -261,6 +300,9 @@ def build_content_graph(
         resolve_model_for_role(model, "content_social_adapter"),
         scope_read_only_tools(content_tools),
     )
+    judge_agent = (getattr(registry, "content_grounding_judge", None) or build_content_grounding_judge)(
+        resolve_model_for_role(model, "content_judge")
+    )
 
     builder = GraphBuilder()
     builder.set_graph_id(graph_id)
@@ -272,15 +314,15 @@ def build_content_graph(
     builder.add_node(x_writer, "content_x")
     builder.add_edge("content_blog", "content_linkedin")
     builder.add_edge("content_blog", "content_x")
-    evaluator = ContentEvaluationNode()
+    evaluator = ContentEvaluationNode(judge=make_grounding_judge(judge_agent))
     builder.add_node(evaluator, "evaluate")
     both_social = all_dependencies_complete(["content_linkedin", "content_x"])
     builder.add_edge("content_linkedin", "evaluate", condition=both_social)
     builder.add_edge("content_x", "evaluate", condition=both_social)
     builder.add_node(ContentPersistNode(content_repository), "persist")
-    builder.add_edge("evaluate", "persist")
+    builder.add_edge("evaluate", "persist", condition=eval_passed)
     builder.add_node(ContentApprovalNode(content_repository), "deliver")
-    builder.add_edge("persist", "deliver")
+    builder.add_edge("persist", "deliver", condition=eval_passed)
     builder.set_max_node_executions(max_node_executions)
     builder.set_execution_timeout(execution_timeout)
     builder.set_node_timeout(node_timeout)

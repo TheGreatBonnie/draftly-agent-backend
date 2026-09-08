@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Any, cast
 
 from draftly.integrations.database.client import DatabaseClient
@@ -33,6 +35,25 @@ async def test_save_outcome_is_idempotent_by_source() -> None:
 
     assert outcome_id == "outcome-1"
     assert "ON CONFLICT (org_id, source_type, source_id)" in db.calls[0][1]
+
+
+async def test_save_outcome_serializes_nested_datetimes() -> None:
+    db = FakeDb(responses=[{"outcome_id": "outcome-1"}])
+    repo = FeedbackOutcomeRepository(database=cast(DatabaseClient, db))
+
+    await repo.save_outcome(
+        "org-a",
+        "evaluation",
+        "run-1",
+        {
+            "status": "completed",
+            "evaluation": {"id": "e-1", "created_at": datetime.now(UTC)},
+        },
+    )
+
+    payload = json.loads(db.calls[0][2][3])
+    assert payload["status"] == "completed"
+    assert payload["evaluation"]["created_at"]
 
 
 async def test_list_unresolved_is_organization_scoped() -> None:

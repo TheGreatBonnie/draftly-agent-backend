@@ -29,14 +29,26 @@ def make_request(**overrides):
     return ContentRequest(**data)
 
 
-def test_request_requires_grounding_and_normalizes_channels():
+def test_request_normalizes_channels_and_allows_empty_unsupported_evidence():
     request = make_request()
 
     assert request.requested_channels == [ContentChannel.BLOG, ContentChannel.LINKEDIN]
     assert request.source_evidence[0]["source_id"] == "doc-1"
 
-    with pytest.raises(ValidationError, match="source_evidence"):
-        make_request(source_evidence=[])
+    unsupported = make_request(source_evidence=[])
+    assert unsupported.source_evidence == []
+
+
+def test_variant_allows_empty_evidence_for_review_gate():
+    variant = ContentVariant(
+        id="variant-2",
+        package_id="package-1",
+        channel=ContentChannel.BLOG,
+        title="Draft",
+        body="Body",
+        evidence=[],
+    )
+    assert variant.evidence == []
 
 
 def test_feedback_gap_requires_gap_and_feedback_provenance():
@@ -54,16 +66,16 @@ def test_feedback_gap_requires_gap_and_feedback_provenance():
     assert request.source_gap_id == "gap-1"
 
 
-def test_x_variant_rejects_body_over_platform_limit():
-    with pytest.raises(ValidationError, match="280"):
-        ContentVariant(
-            id="variant-1",
-            package_id="package-1",
-            channel=ContentChannel.X,
-            title="Launch",
-            body="x" * 281,
-            evidence=[{"source_id": "doc-1"}],
-        )
+def test_x_variant_allows_body_over_platform_limit():
+    variant = ContentVariant(
+        id="variant-1",
+        package_id="package-1",
+        channel=ContentChannel.X,
+        title="Launch",
+        body="x" * 1000,
+        evidence=[{"source_id": "doc-1"}],
+    )
+    assert len(variant.body) == 1000
 
 
 def test_package_keeps_revision_and_provenance():

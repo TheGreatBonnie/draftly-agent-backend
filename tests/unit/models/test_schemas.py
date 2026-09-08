@@ -26,6 +26,8 @@ def test_role_map_covers_all_agent_roles():
         # Onboarding init stages (Task 4)
         "knowledge_extractor", "initial_evaluator", "recommender",
         "content_strategist", "content_blog_writer", "content_social_adapter",
+        # In-graph grounding judge (content surface)
+        "content_judge",
     }
     assert set(ROLE_TO_TASK_TYPE) == expected_roles
     # Sensible mappings per reference §34 / existing role policies

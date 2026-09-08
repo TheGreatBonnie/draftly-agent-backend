@@ -1,0 +1,83 @@
+{
+  "action": "opened",
+  "number": 1,
+  "pull_request": {
+    "id": 123456,
+    "number": 1,
+    "state": "open",
+    "title": "feat: add OAuth login with authorization-code exchange",
+    "body": "Adds OAuth authorization-code exchange (OAuthClient.exchange_code) with a deterministic per-provider identity user, plus an OAuth-backed login path (AuthService.login_with_oauth).",
+    "html_url": "https://github.com/TheGreatBonnie/authly/pull/1",
+    "head": {
+      "ref": "feat/001-oauth-login",
+      "sha": "b0d7fb8"
+    },
+    "base": {
+      "ref": "master",
+      "sha": "9a8581c"
+    },
+    "labels": [],
+    "merged": false,
+    "user": {
+      "login": "scenario-bot"
+    },
+    "changed_files": [
+      ".gitignore",
+      "CHANGELOG.md",
+      "src/authly/auth.py",
+      "src/authly/oauth.py",
+      "tests/test_auth.py",
+      "tests/test_oauth.py"
+    ],
+    "changed_file_details": [
+      {
+        "path": ".gitignore",
+        "change": "Ignored generated files",
+        "action": "update"
+      },
+      {
+        "path": "CHANGELOG.md",
+        "change": "Added v0.1.0 changelog for OAuth login",
+        "action": "create"
+      },
+      {
+        "path": "src/authly/auth.py",
+        "change": "Added AuthService.login_with_oauth identity path",
+        "action": "update"
+      },
+      {
+        "path": "src/authly/oauth.py",
+        "change": "Added OAuthClient.exchange_code authorization-code exchange",
+        "action": "update"
+      },
+      {
+        "path": "tests/test_auth.py",
+        "change": "Added OAuth login tests",
+        "action": "update"
+      },
+      {
+        "path": "tests/test_oauth.py",
+        "change": "Added authorization-code exchange tests",
+        "action": "update"
+      }
+    ],
+    "file_actions": {
+      ".gitignore": "update",
+      "CHANGELOG.md": "create",
+      "src/authly/auth.py": "update",
+      "src/authly/oauth.py": "update",
+      "tests/test_auth.py": "update",
+      "tests/test_oauth.py": "update"
+    },
+    "diff": "diff --git a/.gitignore b/.gitignore\nindex ca11fbc..7a13a2b 100644\n--- a/.gitignore\n+++ b/.gitignore\n@@ -9,4 +9,6 @@ build/\n *.egg-info/\n .DS_Store\n \n-# docs/\n\\ No newline at end of file\n+# docs/\n+\n+simulation/\ndiff --git a/CHANGELOG.md b/CHANGELOG.md\nnew file mode 100644\nindex 0000000..40e9028\n--- /dev/null\n+++ b/CHANGELOG.md\n@@ -0,0 +1,16 @@\n+# Changelog\n+\n+All notable changes to this project will be documented in this file.\n+\n+The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),\n+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).\n+\n+## [Unreleased]\n+\n+### Added\n+\n+- OAuth authorization-code exchange (`OAuthClient.exchange_code`) with a\n+  deterministic, per-provider/code identity user.\n+- OAuth-backed login path (`AuthService.login_with_oauth`).\n+- Input validation for `provider`, `code`, and `redirect_uri` in the OAuth\n+  exchange.\ndiff --git a/src/authly/auth.py b/src/authly/auth.py\nindex b3fa243..f759821 100644\n--- a/src/authly/auth.py\n+++ b/src/authly/auth.py\n@@ -18,3 +18,19 @@ class AuthService:\n             raise AuthenticationError(\"invalid email or password\")\n \n         return self.client.sessions.create(user_id=user.id)\n+\n+    def login_with_oauth(\n+        self,\n+        *,\n+        provider: str,\n+        code: str,\n+        redirect_uri: str,\n+    ) -> Session:\n+        \"\"\"Complete the OAuth login flow: exchange a code for a token, then\n+        start a session for the OAuth identity.\"\"\"\n+        token = self.client.oauth.exchange_code(\n+            provider=provider,\n+            code=code,\n+            redirect_uri=redirect_uri,\n+        )\n+        return self.client.sessions.create(user_id=token.user_id)\ndiff --git a/src/authly/oauth.py b/src/authly/oauth.py\nindex 3eccc23..da06e21 100644\n--- a/src/authly/oauth.py\n+++ b/src/authly/oauth.py\n@@ -1,13 +1,19 @@\n-\"\"\"OAuth URL construction.\n+\"\"\"OAuth login.\n \n-This initial version intentionally implements only authorization URL\n-construction. Token exchange and PKCE are reserved for later simulation\n-scenarios.\n+First-class OAuth support: building authorization URLs *and* exchanging\n+an authorization code for an access token (with an OAuth-backed login\n+path on :class:`AuthService`). PKCE is added in a later simulation\n+scenario.\n \"\"\"\n \n from dataclasses import dataclass\n+from hashlib import sha256\n+from secrets import token_urlsafe\n from urllib.parse import urlencode\n \n+from .errors import ValidationError\n+from .tokens import Token\n+\n \n @dataclass(slots=True)\n class OAuthClient:\n@@ -30,3 +36,39 @@ class OAuthClient:\n             }\n         )\n         return f\"https://auth.example.test/oauth/authorize?{params}\"\n+\n+    def exchange_code(\n+        self,\n+        *,\n+        provider: str,\n+        code: str,\n+        redirect_uri: str,\n+    ) -> Token:\n+        \"\"\"Exchange an OAuth authorization ``code`` for an access token.\n+\n+        A reproducible identity user is created per ``provider``/``code``\n+        (keyed by a digest of the code, never the raw code itself) so token\n+        issuance is deterministic and reversible within a client lifetime.\n+        The OAuth code is single-purpose: it is not reused as a credential.\n+        \"\"\"\n+        if not provider:\n+            raise ValidationError(\"provider is required\")\n+        if not code:\n+            raise ValidationError(\"authorization code is required\")\n+        if not redirect_uri:\n+            raise ValidationError(\"redirect_uri is required\")\n+\n+        digest = sha256(code.encode(\"utf-8\")).hexdigest()[:12]\n+        email = f\"{provider}:{digest}@oauth.example.test\"\n+        user = next(\n+            (u for u in self.client._users.values() if u.email == email),\n+            None,\n+        )\n+        if user is None:\n+            user = self.client.users.create(\n+                email=email,\n+                name=provider.capitalize(),\n+                password=token_urlsafe(24),\n+            )\n+\n+        return self.client.tokens.create(user_id=user.id)\ndiff --git a/tests/test_auth.py b/tests/test_auth.py\nindex ca7b7b6..cde1e91 100644\n--- a/tests/test_auth.py\n+++ b/tests/test_auth.py\n@@ -37,3 +37,16 @@ def test_invalid_password_fails():\n             email=\"alice@example.com\",\n             password=\"wrong\",\n         )\n+\n+\n+def test_oauth_login_creates_session():\n+    authly = client()\n+\n+    session = authly.auth.login_with_oauth(\n+        provider=\"github\",\n+        code=\"auth_code_123\",\n+        redirect_uri=\"https://app.example.com/callback\",\n+    )\n+\n+    assert session.active is True\n+    assert session.user_id in authly._users\ndiff --git a/tests/test_oauth.py b/tests/test_oauth.py\nindex dff696d..c78e5f2 100644\n--- a/tests/test_oauth.py\n+++ b/tests/test_oauth.py\n@@ -1,4 +1,7 @@\n-from authly import Authly\n+import pytest\n+\n+from authly import Authly, Token\n+from authly.errors import ValidationError\n \n \n def test_oauth_authorization_url_contains_required_parameters():\n@@ -14,3 +17,78 @@ def test_oauth_authorization_url_contains_required_parameters():\n     assert \"provider=github\" in url\n     assert \"state=state123\" in url\n     assert \"response_type=code\" in url\n+\n+\n+def test_oauth_exchange_code_returns_access_token():\n+    client = Authly(project_id=\"proj_demo\", api_key=\"key\")\n+\n+    token = client.oauth.exchange_code(\n+        provider=\"github\",\n+        code=\"auth_code_123\",\n+        redirect_uri=\"https://app.example.com/callback\",\n+    )\n+\n+    assert isinstance(token, Token)\n+    assert token.token_type == \"access\"\n+    assert token.user_id in client._users\n+\n+\n+def test_oauth_exchange_code_creates_oauth_identity_user():\n+    client = Authly(project_id=\"proj_demo\", api_key=\"key\")\n+\n+    token = client.oauth.exchange_code(\n+        provider=\"github\",\n+        code=\"auth_code_123\",\n+        redirect_uri=\"https://app.example.com/callback\",\n+    )\n+    user = client.users.get(token.user_id)\n+\n+    assert user.email.startswith(\"github:\")\n+    assert user.email.endswith(\"@oauth.example.test\")\n+    assert \"auth_code_123\" not in user.email\n+\n+\n+def test_oauth_exchange_code_does_not_reuse_code_as_password():\n+    client = Authly(project_id=\"proj_demo\", api_key=\"key\")\n+\n+    token = client.oauth.exchange_code(\n+        provider=\"github\",\n+        code=\"auth_code_123\",\n+        redirect_uri=\"https://app.example.com/callback\",\n+    )\n+    user = client.users.get(token.user_id)\n+\n+    assert user.password != \"auth_code_123\"\n+\n+\n+def test_oauth_exchange_code_rejects_empty_code():\n+    client = Authly(project_id=\"proj_demo\", api_key=\"key\")\n+\n+    with pytest.raises(ValidationError, match=\"authorization code is required\"):\n+        client.oauth.exchange_code(\n+            provider=\"github\",\n+            code=\"\",\n+            redirect_uri=\"https://app.example.com/callback\",\n+        )\n+\n+\n+def test_oauth_exchange_code_rejects_missing_redirect_uri():\n+    client = Authly(project_id=\"proj_demo\", api_key=\"key\")\n+\n+    with pytest.raises(ValidationError, match=\"redirect_uri is required\"):\n+        client.oauth.exchange_code(\n+            provider=\"github\",\n+            code=\"auth_code_123\",\n+            redirect_uri=\"\",\n+        )\n+\n+\n+def test_oauth_exchange_code_rejects_missing_provider():\n+    client = Authly(project_id=\"proj_demo\", api_key=\"key\")\n+\n+    with pytest.raises(ValidationError, match=\"provider is required\"):\n+        client.oauth.exchange_code(\n+            provider=\"\",\n+            code=\"auth_code_123\",\n+            redirect_uri=\"https://app.example.com/callback\",\n+        )\n"
+  },
+  "repository": {
+    "full_name": "TheGreatBonnie/authly"
+  },
+  "sender": {
+    "login": "scenario-bot"
+  },
+  "installation": {
+    "id": 42
+  }
+}

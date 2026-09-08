@@ -183,6 +183,28 @@ docker compose -f docker-compose.redis.yml exec redis redis-cli ping
 
 The Redis check should return `PONG`. The database account needs permission to apply the migrations, including creation of the `vector` extension. The bootstrap script handles some duplicate-object errors by skipping; it is not a version-tracking migration system.
 
+### 2b. Rebuild and restart the Redis and worker containers
+
+The Redis container is a stateless dev dependency pulled from `redis:7-alpine`; the `rq-worker` container is built from [docker/Dockerfile.worker](docker/Dockerfile.worker) and must be rebuilt to pick up source changes. All compose commands run from `draftly-agent-backend/` and require the `-f docker-compose.redis.yml` flag.
+
+Rebuild the worker image and recreate both containers (the typical command after code changes; the worker has `restart: unless-stopped`):
+
+```bash
+docker compose -f docker-compose.redis.yml up -d --build
+```
+
+| Goal | Command |
+| --- | --- |
+| Rebuild just the worker image (no recreate) | `docker compose -f docker-compose.redis.yml build rq-worker` |
+| Recreate the worker from the rebuilt image | `docker compose -f docker-compose.redis.yml up -d rq-worker` |
+| Restart the worker without rebuilding | `docker compose -f docker-compose.redis.yml restart rq-worker` |
+| Force recreate even if nothing is stale | `docker compose -f docker-compose.redis.yml up -d --force-recreate` |
+| Start or restart Redis only | `docker compose -f docker-compose.redis.yml up -d redis` |
+| Follow logs for both containers | `docker compose -f docker-compose.redis.yml logs -f rq-worker redis` |
+| Stop both containers | `docker compose -f docker-compose.redis.yml down` |
+
+`--build` is required to pick up code changes; `restart` alone reuses the old image. The worker loads `.env` and needs `secrets/private-key.pem` at build time. Recreating Redis drops queued-but-unprocessed jobs, so drain the queues or expect to re-dispatch.
+
 ### 3. Start both native processes
 
 In one terminal, from `draftly-agent-backend/`:

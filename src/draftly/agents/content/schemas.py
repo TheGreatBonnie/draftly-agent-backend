@@ -34,3 +34,8 @@ class ContentSocialOutput(BaseModel):
     evidence: list[dict[str, Any]] = Field(default_factory=list)
     feedback_ids: list[str] = Field(default_factory=list)
     gap_id: str | None = None
+
+
+class ContentJudgeVerdict(BaseModel):
+    grounded: bool
+    blocking_issues: list[str] = Field(default_factory=list)

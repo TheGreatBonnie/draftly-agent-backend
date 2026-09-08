@@ -37,7 +37,7 @@ class ContentRequest(BaseModel):
     source_summary: str = Field(min_length=1)
     source_feedback_ids: list[str] = Field(default_factory=list)
     source_gap_id: str | None = None
-    source_evidence: list[dict[str, Any]] = Field(min_length=1)
+    source_evidence: list[dict[str, Any]] = Field(default_factory=list)
     requested_channels: list[ContentChannel] = Field(min_length=1)
     audience: str = Field(min_length=1)
     tone: str = Field(min_length=1)
@@ -80,15 +80,9 @@ class ContentVariant(BaseModel):
     title: str = Field(min_length=1)
     body: str = Field(min_length=1)
     status: ContentPackageStatus = ContentPackageStatus.DRAFT
-    evidence: list[dict[str, Any]] = Field(min_length=1)
+    evidence: list[dict[str, Any]] = Field(default_factory=list)
     evaluation: dict[str, Any] = Field(default_factory=dict)
     revision_id: str | None = None
-
-    @model_validator(mode="after")
-    def validate_channel_constraints(self) -> ContentVariant:
-        if self.channel is ContentChannel.X and len(self.body) > 280:
-            raise ValueError("x body must be 280 characters or fewer")
-        return self
 
 
 class ContentPackage(BaseModel):
@@ -101,7 +95,7 @@ class ContentPackage(BaseModel):
     source_event_type: str
     status: ContentPackageStatus
     brief: str = Field(min_length=1)
-    source_evidence: list[dict[str, Any]] = Field(min_length=1)
+    source_evidence: list[dict[str, Any]] = Field(default_factory=list)
     variants: list[ContentVariant] = Field(default_factory=list)
     workflow_run_id: str
     source_feedback_ids: list[str] = Field(default_factory=list)

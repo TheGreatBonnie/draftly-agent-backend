@@ -307,18 +307,18 @@ async def github_webhook(
         logger.warning("github_webhook_unhandled", error=str(exc))
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
-    # Only merged PRs proceed to the runner; drop other PR actions at the
-    # edge. Defense-in-depth — the runner gate (workflow/runner.py) is the
-    # authoritative filter for all entry paths.
+    # Only merged and opened PRs proceed to the runner; drop other PR
+    # actions at the edge. Defense-in-depth — the runner gate
+    # (workflow/runner.py) is the authoritative filter for all entry paths.
     if str(event.get("event_type", "")).startswith("pull_request.") and not str(
         event.get("event_type", "")
-    ).endswith(".merged"):
+    ).endswith((".merged", ".opened")):
         logger.info(
             "github_webhook_pr_skipped",
             event_type=event.get("event_type"),
             delivery_id=delivery_id,
         )
-        return WebhookResponse(status=f"{event.get('event_type')} (skipped, not merged)")
+        return WebhookResponse(status=f"{event.get('event_type')} (skipped, not merged/opened)")
 
     run_id = str(event.get("event_id") or uuid4().hex)
     org_repo = str(event.get("repository") or "")
@@ -520,6 +520,7 @@ async def resume_review(
 
     reviews_repo = getattr(getattr(app_state.dependencies, "repositories", None), "reviews", None)
     if reviews_repo is None:
+        logger.warning("review_resume_store_unavailable", run_id=run_id)
         raise HTTPException(status_code=503, detail="Reviews store unavailable")
 
     from draftly.review.service import ReviewService
@@ -535,12 +536,14 @@ async def resume_review(
     )
     pending = await service.get_by_run_id(run_id)
     if pending is None:
+        logger.warning("review_resume_not_found", run_id=run_id)
         raise HTTPException(
             status_code=404,
             detail=f"No pending review for run {run_id}",
         )
     org_id = str(token.get("org_id") or "")
     if pending.org_id != org_id:
+        logger.warning("review_resume_org_mismatch", run_id=run_id, org_id=org_id)
         raise HTTPException(status_code=404, detail=f"No pending review for run {run_id}")
 
     from draftly.review.resume import ReviewResumeError, resume_review_decision
@@ -556,8 +559,10 @@ async def resume_review(
         )
     except ReviewResumeError as exc:
         if "not pending" in str(exc) or "does not belong" in str(exc):
+            logger.warning("review_resume_not_found", run_id=run_id)
             detail = f"No pending review for run {run_id}"
             raise HTTPException(status_code=404, detail=detail) from exc
+        logger.warning("review_resume_conflict", run_id=run_id, error=str(exc))
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     status = state.status.value

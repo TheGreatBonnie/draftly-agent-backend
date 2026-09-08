@@ -304,3 +304,18 @@ class EventRepository:
             status,
             datetime.now(UTC),
         )
+
+    async def list_recent_runs(self, *, limit: int = 100) -> Sequence[dict[str, Any]]:
+        """Recent claimed events with their status, for reconciliation sweeps."""
+        query = """
+        SELECT event_id, status
+        FROM events
+        ORDER BY created_at DESC
+        LIMIT $1
+        """
+
+        rows = await self.database.fetch_all(query, limit)
+        return [
+            {"event_id": str(r["event_id"]), "status": str(r["status"])}
+            for r in rows
+        ]

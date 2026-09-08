@@ -120,14 +120,12 @@ class ReviewNotifier:
                     recipient,
                     body,
                     org_id=org_id,
-                    review_id=review_id,
                 )
             elif platform == "discord":
                 await self.discord.send_dm(
                     recipient,
                     body,
                     org_id=org_id,
-                    review_id=review_id,
                 )
             elif platform == "email":
                 if self.email is None:

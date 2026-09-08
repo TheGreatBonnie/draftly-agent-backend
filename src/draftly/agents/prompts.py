@@ -34,19 +34,12 @@ _SKILLS_DIR = Path(__file__).resolve().parents[1] / "skills"
 # Shared guardrail snippets (composable, appended per role)
 # ------------------------------------------------------------------
 
-GUARDRAIL_CITATIONS = (
-    "Cite source ids collected in evidence. Never invent sources."
-)
+GUARDRAIL_CITATIONS = "Cite source ids collected in evidence. Never invent sources."
 GUARDRAIL_PATHS = (
-    "Only modify paths present in evidence or the repository tree. "
-    "Never invent file paths."
+    "Only modify paths present in evidence or the repository tree. Never invent file paths."
 )
-GUARDRAIL_REFUSAL = (
-    'If evidence is insufficient, choose action "none" rather than guessing.'
-)
-GUARDRAIL_BREVITY = (
-    "Be concise: under 200 words unless the question demands more."
-)
+GUARDRAIL_REFUSAL = 'If evidence is insufficient, choose action "none" rather than guessing.'
+GUARDRAIL_BREVITY = "Be concise: under 200 words unless the question demands more."
 GUARDRAIL_EVIDENCE_SIZE = (
     "Keep tool calls small or they are dropped: evidence items are pointers "
     "({id, repo-relative path, excerpt under ~2000 chars}), never full file "
@@ -61,9 +54,22 @@ GUARDRAIL_EVIDENCE_SIZE = (
 LOCAL_REPO_NOTE = """The repository is available as a LOCAL checkout and the
 PR/diff/changed files are already provided in the task context. Inspect code
 and docs with the local repository tools (code_search, read_file,
-list_directory, git_*, repo_dir=<local checkout path>) rather than calling the
-GitHub API. Do NOT call get_pull_request / get_files / get_diff / GitHub web
-tools: the network API is not available for this task."""
+list_directory, git_*), ALWAYS passing repo_dir=<local checkout path> so tools
+act on the checkout that backs this task — never the ambient working
+directory. Do NOT call get_pull_request / get_files / get_diff / GitHub web
+tools: the network API is not available for this task. Never cite a file path
+you have not confirmed exists under repo_dir."""
+
+
+def local_repo_note_for(repo_dir: str | None) -> str:
+    """Render the LOCAL-checkout note for evidence agents.
+
+    Empty when there is no checkout (so agents never hallucinate a repo_dir);
+    otherwise the generic placeholder is replaced with the concrete path.
+    """
+    if not repo_dir:
+        return ""
+    return LOCAL_REPO_NOTE.replace("<local checkout path>", repo_dir)
 
 
 # ------------------------------------------------------------------
@@ -233,18 +239,24 @@ Rules for evaluating Draftly's generated output.
 
 ## Scoring
 
-- Each criterion is scored 0.0–1.0.
-- Overall score is a weighted combination:
-  - Groundedness 0.4
-  - Completeness 0.3
-  - Quality (structure/style) 0.3
+- Overall score is computed by a DETERMINISTIC gate (not judgement):
+  - Coverage (evidence cited in draft) 0.4
+  - Completeness (evidence topics covered) 0.3
+  - Length/detail heuristic 0.3
+- Each component ranges 0.0-1.0; overall = coverage*0.4 + completeness*0.3 +
+  length*0.3.
 - A draft passes at score >= 0.70.
+- Gate reasons use exactly: `Grounded in N/M sources`, `Covers K/M key topics`,
+  `Adequate detail level`.
 
 ## Failure Policy
 
-- **Not grounded** → revise with more citations or re-research.
-- **Incomplete** → revise to cover missing topics.
-- **Low quality** → rewrite for structure and style.
+- **Not grounded** (`Grounded in N/M sources`) → re-author with every evidence
+  id/url linked verbatim in a `## References` section.
+- **Incomplete** (`Covers K/M key topics`) → author real sections for each
+  missing topic.
+- **Low detail** (missing `Adequate detail level`) → expand with exact
+  symbols/parameters/steps.
 - After 3 failed iterations, escalate to human review.
 
 ## No-Fabrication Rule
@@ -350,7 +362,7 @@ def schema_contract(model: type[BaseModel]) -> str:
         " be REJECTED if any string value contains a real (unescaped) newline"
         " or quote. Inside every string:"
         "  - encode a newline as the literal characters \\n (backslash-n),"
-        "  - encode a double-quote as \\\"."
+        '  - encode a double-quote as \\".'
         " Never put an actual line break between the quotes of a string value;"
         " keep each string on one line with \\n escapes. No markdown fences."
         " Contract:"
@@ -372,6 +384,7 @@ def build_prompt(
     template: str,
     *,
     output_model: type[BaseModel] | None = None,
+    local_repo_note: str = LOCAL_REPO_NOTE,
     **policy_names: str,
 ) -> str:
     """Render a prompt template.
@@ -382,20 +395,16 @@ def build_prompt(
     placeholder from the Pydantic schema.
     """
 
-    kwargs: dict[str, Any] = {
-        name: load_policy(policy) for name, policy in policy_names.items()
-    }
+    kwargs: dict[str, Any] = {name: load_policy(policy) for name, policy in policy_names.items()}
     kwargs.update(
         guardrail_citations=GUARDRAIL_CITATIONS,
         guardrail_paths=GUARDRAIL_PATHS,
         guardrail_refusal=GUARDRAIL_REFUSAL,
         guardrail_brevity=GUARDRAIL_BREVITY,
         guardrail_evidence_size=GUARDRAIL_EVIDENCE_SIZE,
-        local_repo_note=LOCAL_REPO_NOTE,
+        local_repo_note=local_repo_note,
     )
-    kwargs["output_contract"] = (
-        schema_contract(output_model) if output_model else ""
-    )
+    kwargs["output_contract"] = schema_contract(output_model) if output_model else ""
 
     rendered = template
     for token, value in kwargs.items():
@@ -520,6 +529,10 @@ ISSUE_LOCAL_RESEARCHER_PROMPT = (
     "local repository tools (semantic_search, keyword_search, code_search) "
     "with repo_dir."
 )
+# NOTE: DOC_RESEARCH_PROMPT is used by the standalone docs researcher
+# (documentation/researcher.py). The documentation GRAPH does not consume it —
+# it builds the research swarm (agents/documentation/research_swarm.py), whose
+# docs_researcher uses this same prompt. Keep both in sync when editing.
 # Documentation researcher: the evaluation harness backs cases with local
 # worktrees (repo_dir) and the GitHub API is unavailable, so steer the agent
 # to inspect the checkout directly instead of 401-ing on remote GitHub tools.
@@ -700,6 +713,31 @@ runnable steps. Cross-check your plan against BOTH:
 If a reader following your page could get stuck on a step you did not spell
 out, or a required area is missing, the page is incomplete — fill it. Omit
 ONLY what the change does not touch; never pad with unrelated background.
+
+## Revision pass (when the evaluation requests a fix)
+
+The task carries the evaluate result from the previous pass when this is a
+revision. Read its `reasons` and fix EVERY failure it names before producing
+the new plan:
+
+- A reason like `Grounded in N/M sources`: the previous draft did not cite some
+  of the evidence items supplied for the task. Add a `## References` section
+  (or extend the existing one) that links EVERY evidence source id/url by its
+  exact full path verbatim, and make the prose actually reference the covered
+  topics.
+- A reason like `Covers K/M key topics`: the previous draft skipped a coverage
+  topic. For each topic named in the evidence, ensure a real section with
+  concrete mechanics exists for it — referencing the area without covering it
+  is incomplete.
+- A reason like `Missing topics: <a, b, c>`: the previous draft did not cover
+  the topics the deterministic gate derived from the evidence. Author a real
+  section for each named topic (with concrete mechanics, exact identifiers,
+  and runnable steps) — you must add content that actually covers every
+  listed topic before resubmitting.
+- A reason about detail level: expand the thin page with exact symbols,
+  parameters, and runnable steps from the diff/evidence.
+- Never restate the old plan unchanged: the reasons describe exactly what the
+  deterministic gate measured, so address each measured gap.
 
 Output contract:
 {output_contract}

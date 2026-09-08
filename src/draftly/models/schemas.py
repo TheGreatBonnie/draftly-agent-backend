@@ -41,6 +41,7 @@ ROLE_TO_TASK_TYPE: dict[str, TaskType] = {
     "content_strategist": TaskType.RESEARCH,
     "content_blog_writer": TaskType.DOCUMENTATION_GENERATION,
     "content_social_adapter": TaskType.DOCUMENTATION_GENERATION,
+    "content_judge": TaskType.EVALUATION,
 }
 
 

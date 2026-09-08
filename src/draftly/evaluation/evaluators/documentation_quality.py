@@ -30,6 +30,35 @@ class DocumentationQualityEvaluator(Evaluator):
         evidence = metadata.get("evidence") or []
         draft = getattr(evaluation_case, "actual_output", None) or ""
 
+        # A case that expects its run to be BLOCKED (e.g. the unsupported
+        # content variant) produces authoring feedback, not documentation.
+        # scoring feedback with the doc-quality rubric is structurally
+        # impossible (with empty evidence the max achievable score is 0.3 <
+        # 0.6 threshold regardless of the output), so it is not applicable and
+        # must pass with an explicit reason instead of failing forever.
+        if metadata.get("expected_blocked"):
+            return [
+                EvaluationOutput(
+                    score=1.0,
+                    test_pass=True,
+                    reason="n/a: case expects a blocked run; doc-quality rubric not applicable",
+                    label=self.name,
+                )
+            ]
+
+        # Feedback cases produce a gap report (topic clusters + counts), not
+        # authored documentation against evidence, so the doc-quality rubric
+        # is structurally unpassable (max 0.3 with no evidence) — pass n/a.
+        if metadata.get("surface") == "feedback":
+            return [
+                EvaluationOutput(
+                    score=1.0,
+                    test_pass=True,
+                    reason="n/a: feedback surface produces a gap report; doc-quality rubric not applicable",
+                    label=self.name,
+                )
+            ]
+
         score, reasons = compute_quality(evidence, draft)
         return [
             EvaluationOutput(

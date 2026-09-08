@@ -4,20 +4,18 @@
     "description": "Content cases: release-to-blog/social authoring grounded in release notes, with one unsupported variant that should be blocked by the groundedness frontier.",
     "surface": "content",
     "required_tools": {
-      "context": [
+      "content_brief": [
         "keyword_search",
         "semantic_search",
-        "file_exists"
+        "code_search"
       ],
-      "content_blog": [
-        "keyword_search"
-      ]
+      "content_blog": []
     },
     "cases": [
       {
         "name": "grounded_release_variants",
         "input": "Release v2.0.0: BREAKING: Removed API key authentication. Migrate to OAuth. Added RBAC with organization scoping.",
-        "expected_output": "Blog and social variants announce the release, grounded in the release notes: API key authentication was removed and RFC-8252 authorization-code flows with RBAC organization scoping were added.",
+        "expected_output": "API key authentication was removed. OAuth-based authorization was added. RBAC with organization scoping was introduced.",
         "metadata": {
           "surface": "content",
           "event_type": "content.manual",
@@ -41,7 +39,7 @@
               "url": "docs/explanation/authorization-model.md"
             }
           ],
-          "expected_tools": ["keyword_search"]
+          "expected_tools": ["code_search"]
         }
       },
       {
@@ -58,7 +56,8 @@
           "requested_channels": ["blog", "linkedin", "x"],
           "audience": "developers",
           "tone": "clear, practical, trustworthy",
-          "evidence": []
+          "evidence": [],
+          "expected_blocked": true
         }
       }
     ]

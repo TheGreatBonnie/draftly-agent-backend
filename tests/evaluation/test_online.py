@@ -1924,6 +1924,171 @@ def test_extract_authored_content_content_only_brief_is_empty() -> None:
     assert extract_authored_content(graph) == ""
 
 
+# -- Content review-feedback extraction ------------------------------------
+
+
+def test_extract_content_review_feedback_reads_blocked_evaluate_node() -> None:
+    """A failed content run must surface the evaluate node's blocking issues
+    as authoring feedback so the harness judges read feedback, not a draft
+    that was never approved."""
+    from draftly.evaluation.online import extract_content_review_feedback
+
+    evaluate_ar = _real_agent_result(
+        json.dumps(
+            {
+                "passed": False,
+                "variants": [],
+                "issues": [
+                    "missing evidence references",
+                    "claims telemetry exporter behavior absent from evidence",
+                ],
+            }
+        )
+    )
+    graph = _real_graph_result([("evaluate", evaluate_ar)])
+
+    text = extract_content_review_feedback(graph)
+
+    assert "Authoring feedback:" in text
+    assert "missing evidence references" in text
+    assert "claims telemetry exporter behavior absent from evidence" in text
+    assert "Do not publish content claiming behavior that has no supporting evidence." in text
+
+
+def test_extract_content_review_feedback_empty_when_passed() -> None:
+    from draftly.evaluation.online import extract_content_review_feedback
+
+    evaluate_ar = _real_agent_result(
+        json.dumps({"passed": True, "variants": [], "issues": []})
+    )
+
+    assert extract_content_review_feedback(_real_graph_result([("evaluate", evaluate_ar)])) == ""
+
+
+def test_extract_content_review_feedback_empty_for_non_content_evaluate() -> None:
+    """The docs/issue ``evaluate`` node emits ``score``/``reasons`` (no
+    ``variants``); it must never be mistaken for content authoring feedback."""
+    from draftly.evaluation.online import extract_content_review_feedback
+
+    evaluate_ar = _real_agent_result(
+        json.dumps({"passed": False, "score": 0.2, "reasons": ["low"], "iteration": 3})
+    )
+
+    assert extract_content_review_feedback(_real_graph_result([("evaluate", evaluate_ar)])) == ""
+
+
+def test_extract_content_review_feedback_empty_without_evaluate_node() -> None:
+    from draftly.evaluation.online import extract_content_review_feedback
+
+    graph = StubGraphResult([StubNode("content_brief", [StubAgentResult([])])])
+
+    assert extract_content_review_feedback(graph) == ""
+
+
+def test_compose_content_output_prefers_review_feedback_when_blocked() -> None:
+    """When evaluation blocks a content run, the scored output must be the
+    deterministic authoring feedback rather than the unapproved draft."""
+    from draftly.evaluation.online import compose_content_output
+
+    graph = StubGraphResult(
+        [
+            StubNode(
+                "content_blog",
+                [
+                    StubAgentResult(
+                        [],
+                        structured_output={
+                            "title": "telemetry release",
+                            "body": "claims telemetry behavior with no support",
+                        },
+                    )
+                ],
+            ),
+            StubNode(
+                "evaluate",
+                [
+                    StubAgentResult(
+                        [],
+                        structured_output={
+                            "passed": False,
+                            "variants": [],
+                            "issues": ["claims telemetry behavior absent from evidence"],
+                        },
+                    )
+                ],
+            ),
+        ]
+    )
+
+    text = compose_content_output(graph)
+
+    assert text.startswith("Authoring feedback:")
+    assert "claims telemetry behavior absent from evidence" in text
+    assert "claims telemetry behavior with no support" not in text
+
+
+def test_compose_content_output_returns_authored_content_when_passed() -> None:
+    from draftly.evaluation.online import compose_content_output
+
+    graph = StubGraphResult(
+        [
+            StubNode(
+                "content_blog",
+                [
+                    StubAgentResult(
+                        [],
+                        structured_output={
+                            "title": "v2.0.0",
+                            "body": "grounded blog content",
+                        },
+                    )
+                ],
+            ),
+            StubNode(
+                "evaluate",
+                [
+                    StubAgentResult(
+                        [],
+                        structured_output={"passed": True, "variants": [], "issues": []},
+                    )
+                ],
+            ),
+        ]
+    )
+
+    text = compose_content_output(graph)
+
+    assert text.startswith("v2.0.0")
+    assert "grounded blog content" in text
+
+
+def test_build_event_content_carries_loadable_evidence_content(tmp_path: str) -> None:
+    """The content event must carry the declared evidence FILE CONTENTS (not
+    just ids) so the in-graph grounding judge can verify draft claims."""
+    from draftly.evaluation.online import build_event
+
+    repo_dir = _make_scenario_repo(tmp_path)
+    case = _case(
+        "grounded_release_variants",
+        "Release v2.0.0",
+        "grounded",
+        {
+            "surface": "content",
+            "event_type": "content.manual",
+            "source_event_type": "release",
+            "repo_dir": repo_dir,
+            "evidence": [{"id": "oauth", "url": "docs/oauth.md"}],
+            "requested_channels": ["blog"],
+        },
+    )
+
+    event = build_event(case, "content")
+
+    assert event["release"]["source_evidence_content"] == [
+        {"path": "docs/oauth.md", "content": "# OAuth\nnow fully supported\n"}
+    ]
+
+
 async def test_build_online_task_content_surface_routes_and_grounds() -> None:
     """The content surface must be routed to the graph and its authored blog +
     social variants become the scored output, with the declared evidence in
@@ -2014,8 +2179,30 @@ async def test_build_online_task_content_surface_routes_and_grounds() -> None:
     assert by_name["evidence"] == [{"id": "release-notes", "topic": "oauth"}]
 
 
-# -- Feedback dataset shape --
+# -- Content dataset shape --
 
+def test_content_dataset_flags_expected_blocked_for_unsupported() -> None:
+    """The unsupported case must carry expected_blocked so the
+    documentation_quality evaluator skips the structurally-impossible
+    deterministic scoring."""
+    path = (
+        Path(__file__).resolve().parents[2]
+        / "src"
+        / "draftly"
+        / "evaluation"
+        / "datasets"
+        / "content.json"
+    )
+    data = json.loads(path.read_text())
+    ds = data[0]
+    cases = {c["name"]: c for c in ds["cases"]}
+    unsupported = cases["unsupported_variant_is_blocked"]
+    grounded = cases["grounded_release_variants"]
+    assert unsupported["metadata"].get("expected_blocked") is True
+    assert grounded["metadata"].get("expected_blocked") is not True
+
+
+# -- Feedback dataset shape --
 
 def test_feedback_dataset_matches_live_shape() -> None:
     path = (

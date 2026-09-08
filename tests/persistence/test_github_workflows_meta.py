@@ -28,6 +28,18 @@ class FakeClient:
         return self.rows
 
 
+class _FetchAllClient(FakeClient):
+    def __init__(self, responses: list[list[dict[str, Any]]]) -> None:
+        super().__init__()
+        self.responses = responses
+        self.queries: list[str] = []
+
+    async def fetch_all(self, query: str, *args: Any) -> list[dict[str, Any]]:
+        self.queries.append(query)
+        self.executed.append((query, args))
+        return self.responses.pop(0)
+
+
 async def test_save_github_workflow_writes_meta_columns() -> None:
     client = FakeClient()
     client.row = {"id": "wf-1"}
@@ -84,8 +96,34 @@ async def test_list_github_workflows_record_shape() -> None:
         },
     ]
     # Need to also stub jobs and workflow_events fetches
-    # Simulate the three-query pattern: first fetch_all for github_workflows
-    # then fetch_all for jobs, then fetch_all for workflow_events
+    # Simulate the four-query pattern: github_workflows, jobs, light workflow_events,
+    # then payload-only workflow_events for status-bearing event types.
+    seq_events = [
+        {"run_id": "ev-1", "seq": 1, "type": "workflow_result", "node_id": None},
+        {"run_id": "ev-1", "seq": 2, "type": "node_start", "node_id": "classify"},
+        {"run_id": "ev-1", "seq": 3, "type": "node_start", "node_id": "context"},
+        {"run_id": "ev-1", "seq": 4, "type": "node_start", "node_id": "research"},
+        {"run_id": "ev-1", "seq": 5, "type": "node_start", "node_id": "impact"},
+        {"run_id": "ev-1", "seq": 6, "type": "node_start", "node_id": "update"},
+        {"run_id": "ev-1", "seq": 7, "type": "node_start", "node_id": "evaluate"},
+        {"run_id": "ev-1", "seq": 8, "type": "node_start", "node_id": "deliver"},
+        {"run_id": "ev-1", "seq": 9, "type": "node_stop", "node_id": "classify"},
+        {"run_id": "ev-1", "seq": 10, "type": "node_stop", "node_id": "context"},
+        {"run_id": "ev-1", "seq": 11, "type": "node_stop", "node_id": "research"},
+        {"run_id": "ev-1", "seq": 12, "type": "node_stop", "node_id": "impact"},
+        {"run_id": "ev-1", "seq": 13, "type": "node_stop", "node_id": "update"},
+        {"run_id": "ev-1", "seq": 14, "type": "node_stop", "node_id": "evaluate"},
+        {"run_id": "ev-1", "seq": 15, "type": "node_stop", "node_id": "deliver"},
+    ]
+    payload_events = [
+        {"run_id": "ev-1", "seq": 1, "type": "workflow_result",
+         "payload": {"status": "COMPLETED"}},
+    ] + [
+        {"run_id": "ev-1", "seq": 9 + i, "type": "node_stop",
+         "payload": {"status": "COMPLETED"}}
+        for i in range(7)
+    ]
+
     call_count = 0
     async def fetch_all(query: str, *args: Any) -> list[dict[str, Any]]:
         nonlocal call_count
@@ -103,44 +141,12 @@ async def test_list_github_workflows_record_shape() -> None:
                     "completed_at": "2024-01-01T00:01:00Z",
                 }
             ]
+        elif call_count == 3:
+            # light workflow_events listing (no payload column)
+            return seq_events
         else:
-            # workflow_events - terminal workflow_result + node_start for stages
-            return [
-                {
-                    "run_id": "ev-1",
-                    "type": "workflow_result",
-                    "payload": {"status": "COMPLETED"},
-                    "ts": "2024-01-01T00:01:00Z",
-                },
-                {"run_id": "ev-1", "type": "node_start", "node_id": "classify",
-                 "payload": {}, "ts": "2024-01-01T00:00:05Z"},
-                {"run_id": "ev-1", "type": "node_start", "node_id": "context",
-                 "payload": {}, "ts": "2024-01-01T00:00:10Z"},
-                {"run_id": "ev-1", "type": "node_start", "node_id": "research",
-                 "payload": {}, "ts": "2024-01-01T00:00:15Z"},
-                {"run_id": "ev-1", "type": "node_start", "node_id": "impact",
-                 "payload": {}, "ts": "2024-01-01T00:00:20Z"},
-                {"run_id": "ev-1", "type": "node_start", "node_id": "update",
-                 "payload": {}, "ts": "2024-01-01T00:00:25Z"},
-                {"run_id": "ev-1", "type": "node_start", "node_id": "evaluate",
-                 "payload": {}, "ts": "2024-01-01T00:00:30Z"},
-                {"run_id": "ev-1", "type": "node_start", "node_id": "deliver",
-                 "payload": {}, "ts": "2024-01-01T00:00:35Z"},
-                {"run_id": "ev-1", "type": "node_stop", "node_id": "classify",
-                 "payload": {"status": "COMPLETED"}, "ts": "2024-01-01T00:00:10Z"},
-                {"run_id": "ev-1", "type": "node_stop", "node_id": "context",
-                 "payload": {"status": "COMPLETED"}, "ts": "2024-01-01T00:00:15Z"},
-                {"run_id": "ev-1", "type": "node_stop", "node_id": "research",
-                 "payload": {"status": "COMPLETED"}, "ts": "2024-01-01T00:00:20Z"},
-                {"run_id": "ev-1", "type": "node_stop", "node_id": "impact",
-                 "payload": {"status": "COMPLETED"}, "ts": "2024-01-01T00:00:25Z"},
-                {"run_id": "ev-1", "type": "node_stop", "node_id": "update",
-                 "payload": {"status": "COMPLETED"}, "ts": "2024-01-01T00:00:30Z"},
-                {"run_id": "ev-1", "type": "node_stop", "node_id": "evaluate",
-                 "payload": {"status": "COMPLETED"}, "ts": "2024-01-01T00:00:35Z"},
-                {"run_id": "ev-1", "type": "node_stop", "node_id": "deliver",
-                 "payload": {"status": "COMPLETED"}, "ts": "2024-01-01T00:00:40Z"},
-            ]
+            # payload-only workflow_events for status-bearing types
+            return payload_events
 
     client.fetch_all = fetch_all  # type: ignore
 
@@ -160,3 +166,51 @@ async def test_list_github_workflows_record_shape() -> None:
     assert rows[0]["time"] != "—"
     assert "run_id = ANY($1::TEXT[])" in client.executed[1][0]
     assert client.executed[1][1] == (["ev-1"],)
+
+
+async def test_list_workflows_fetches_payload_only_for_status_events() -> None:
+    client = _FetchAllClient([
+        [
+            {
+                "workflow_id": "ev-1", "run_id": "ev-1", "title": "Test PR",
+                "owner": "acme", "repo": "api", "issue_number": 482,
+                "actor": "sarah.chen", "event_type": "pull_request.merged",
+                "status": "pending", "created_at": "2024-01-01T00:00:00Z",
+            },
+        ],
+        [
+            {
+                "run_id": "ev-1", "status": "completed",
+                "started_at": "2024-01-01T00:00:00Z",
+                "completed_at": "2024-01-01T00:01:00Z",
+            },
+        ],
+        [
+            {"run_id": "ev-1", "seq": 1, "type": "node_start", "node_id": "classify"},
+            {"run_id": "ev-1", "seq": 2, "type": "node_start", "node_id": "context"},
+            {"run_id": "ev-1", "seq": 3, "type": "node_stop", "node_id": "classify"},
+            {"run_id": "ev-1", "seq": 4, "type": "node_stop", "node_id": "context"},
+            {"run_id": "ev-1", "seq": 5, "type": "workflow_result"},
+        ],
+        [
+            {"run_id": "ev-1", "seq": 3, "type": "node_stop",
+             "payload": {"status": "COMPLETED"}},
+            {"run_id": "ev-1", "seq": 4, "type": "node_stop",
+             "payload": {"status": "COMPLETED"}},
+            {"run_id": "ev-1", "seq": 5, "type": "workflow_result",
+             "payload": {"status": "COMPLETED"}},
+        ],
+    ])
+
+    rows = await list_github_workflows_record(org_id="o-1", db=client)
+
+    assert len(rows) == 1
+    assert rows[0]["status"] == "completed"
+    assert rows[0]["current_stage"] == "context"
+    assert rows[0]["stages"][0] == "done"
+    assert rows[0]["stages"][1] == "done"
+    assert rows[0]["stages"][2] == "waiting"
+
+    listing_query, payload_query = client.queries[2], client.queries[3]
+    assert "payload" not in listing_query
+    assert "type IN ('workflow_result', 'node_stop')" in payload_query

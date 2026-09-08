@@ -99,6 +99,7 @@ class WorkflowContext:
             "max_node_executions",
             "execution_timeout",
             "node_timeout",
+            "evaluator_max_iterations",
         ):
             value = getattr(strands, attr, None)
             if value is not None:

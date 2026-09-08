@@ -14,6 +14,15 @@ metadata:
 Turn recurring questions and feedback into concrete, prioritized
 documentation gaps.
 
+## Applicability
+
+This skill's steps assume a support/feedback lookback (recurrence counts,
+clusters). When invoked from a pull_request/release event there is no
+support-feedback dataset — SKIP steps 1-2 (no recurrence counting) and apply
+steps 3-5 (coverage check, gap decision, action) to the event's evidence
+directly. The `github-pr-analysis` skill owns classification and action
+decisions for PR events.
+
 ## Steps
 
 1. Gather support questions and issues for a topic (see support-feedback-analysis).
@@ -35,7 +44,9 @@ documentation gaps.
 
 `DocumentationGap`s (`topic`, `source`, `occurrences`, `severity`,
 `sample_questions[]`, `related_paths[]`) with a recommended action
-(create/update) per gap.
+(create/update) per gap. When the caller renders gaps as evidence, each gap's
+`related_paths[]` becomes the evidence `id`s and its `topic` carries over
+verbatim.
 
 ## References
 

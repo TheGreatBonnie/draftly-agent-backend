@@ -2,6 +2,10 @@
 
 Operational rules for classifying GitHub pull requests and determining documentation impact. These rules are consumed by the `github-pr-analysis` skill to produce an `ImpactAnalysis`.
 
+These rules apply in both GITHUB (API) and LOCAL (offline) modes. In LOCAL mode
+the diff comes from the task context, not `get_diff` — but the classification
+rigor is identical.
+
 ## Change Type Classification
 
 | Change Type | Description | Urgency | Typical Action |
@@ -25,7 +29,10 @@ Derived from `context/documentation_policy.md`:
 
 ## Classification Evidence Requirements
 
-1. **Fetch the diff** — never classify from title alone; use `get_diff` and `get_files`
+1. **Fetch/obtain the diff** — never classify from title alone. In GITHUB mode
+   use `get_diff` and `get_files`; in LOCAL mode read the diff hunks and
+   changed-file list already present in the task context, then confirm against
+   the checkout (`references/local-mode.md`)
 2. **Identify public API surface** — changes to `public/`, exported functions, CLI commands, config schemas
 3. **Check for migration markers** — deprecation warnings, version guards, `RemovedIn` annotations
 4. **Cite concrete paths** — include file paths and line ranges in `evidence`

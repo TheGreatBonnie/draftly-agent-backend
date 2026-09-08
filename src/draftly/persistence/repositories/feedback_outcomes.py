@@ -32,7 +32,7 @@ class FeedbackOutcomeRepository:
             org_id,
             source_type,
             source_id,
-            json.dumps(outcome),
+            json.dumps(outcome, default=str),
         )
         if row is None:
             raise RuntimeError("feedback outcome missing after upsert")

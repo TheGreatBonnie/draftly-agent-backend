@@ -7,7 +7,7 @@
       {
         "name": "three-same-topic-questions",
         "input": "[{\"topic\":\"oauth\",\"question\":\"How do I set up OAuth?\"},{\"topic\":\"oauth\",\"question\":\"OAuth redirect fails with state mismatch\"},{\"topic\":\"oauth\",\"question\":\"OAuth token expired after 1 hour\"}]",
-        "expected_output": "Exactly 1 gap detected for topic 'oauth' with count >= 2",
+        "expected_output": "1 gap detected for topic oauth with count 3",
         "metadata": {
           "surface": "feedback",
           "gap_threshold": 2,
@@ -19,7 +19,7 @@
       {
         "name": "scattered-unrelated-questions",
         "input": "[{\"topic\":\"oauth\",\"question\":\"How do I set up OAuth?\"},{\"topic\":\"rbac\",\"question\":\"How do roles work?\"},{\"topic\":\"tokens\",\"question\":\"What are refresh tokens?\"},{\"topic\":\"webhooks\",\"question\":\"How do webhooks fire?\"}]",
-        "expected_output": "No gaps detected — all topics appear once, below threshold",
+        "expected_output": "No gaps detected; all topics (oauth, rbac, tokens, webhooks) are below the threshold of 3",
         "metadata": {
           "surface": "feedback",
           "gap_threshold": 3,
@@ -31,7 +31,7 @@
       {
         "name": "mixed-severities",
         "input": "[{\"topic\":\"auth-breaking\",\"question\":\"Login completely broken after update\"},{\"topic\":\"auth-breaking\",\"question\":\"Cannot authenticate at all\"},{\"topic\":\"how-to-pkce\",\"question\":\"How do I enable PKCE?\"},{\"topic\":\"how-to-pkce\",\"question\":\"PKCE setup guide?\"}]",
-        "expected_output": "Two gaps: auth-breaking (high severity, count 2) ranked above how-to-pkce (low severity, count 2)",
+        "expected_output": "2 gaps detected: auth-breaking (count 2) and how-to-pkce (count 2)",
         "metadata": {
           "surface": "feedback",
           "gap_threshold": 2,

@@ -30,8 +30,8 @@ def build_impact_agent(
         plugins=[
             AgentSkills(
                 skills=load_skills(
-                    "documentation-gap-detection",
-                    "documentation-audit",
+                    "github-pr-analysis",
+                    "documentation-research",
                 )
             )
         ],

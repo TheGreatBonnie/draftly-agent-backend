@@ -41,12 +41,11 @@ class FakeSlack:
         text: str,
         *,
         org_id: str | None = None,
-        review_id: str | None = None,
         **kwargs,
     ):
         if self.raise_on_send is not None:
             raise self.raise_on_send
-        self.dms.append((user_id, review_id or text))
+        self.dms.append((user_id, text))
 
 
 class FakeDiscord:
@@ -61,12 +60,11 @@ class FakeDiscord:
         *,
         org_id: str | None = None,
         guild_id: str | None = None,
-        review_id: str | None = None,
         **kwargs,
     ):
         if self.raise_on_send is not None:
             raise self.raise_on_send
-        self.dms.append((user_id, review_id or content))
+        self.dms.append((user_id, content))
 
 
 class FakeNotificationRepository:
@@ -146,8 +144,8 @@ async def test_notifies_only_reviewers_with_matching_pref():
     sent = await notifier.notify_reviewers("run-1")
 
     assert sent == {"slack": ["U1"], "discord": ["D1"], "email": []}
-    assert slack.dms == [("U1", "review-1")]
-    assert discord.dms == [("D1", "review-1")]
+    assert slack.dms == [("U1", "a documentation review is pending\nReview: review-1")]
+    assert discord.dms == [("D1", "a documentation review is pending\nReview: review-1")]
     assert notifications.sent == [
         ("review-1", "slack", "U1"),
         ("review-1", "discord", "D1"),
@@ -240,4 +238,4 @@ async def test_body_includes_summary_and_review_pointer():
     )
 
     await notifier.notify_reviewers("run-1")
-    assert slack.dms == [("U1", "review-1")]
+    assert slack.dms == [("U1", "Updated widgets guide\nReview: review-1")]

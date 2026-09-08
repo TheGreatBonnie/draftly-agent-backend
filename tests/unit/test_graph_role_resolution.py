@@ -71,6 +71,7 @@ EXPECTED_ROLES: dict[str, set[str]] = {
         "research",
         "github_delivery",
         "github_intelligence",
+        "documentation_reviewer",
     },
     "support": {
         "classifier",
@@ -79,6 +80,7 @@ EXPECTED_ROLES: dict[str, set[str]] = {
         "support_engineer",
         "documentation_engineer",
         "github_delivery",
+        "documentation_reviewer",
     },
     "issue": {
         "classifier",
@@ -87,6 +89,7 @@ EXPECTED_ROLES: dict[str, set[str]] = {
         "github_intelligence",
         "support_engineer",
         "documentation_engineer",
+        "documentation_reviewer",
     },
 }
 

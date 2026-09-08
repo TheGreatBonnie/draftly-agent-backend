@@ -21,6 +21,8 @@ services:
       - REDIS_URL=redis://redis:6379/0
       - DATABASE_URL=${DATABASE_URL}
       - GITHUB_PRIVATE_KEY_PATH=secrets/private-key.pem
+    volumes:
+      - ../authly:/tmp/repos/TheGreatBonnie/authly
     depends_on:
       redis:
         condition: service_healthy

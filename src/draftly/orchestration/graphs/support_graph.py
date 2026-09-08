@@ -12,6 +12,8 @@ import structlog
 from strands.multiagent import GraphBuilder
 from strands.session.session_manager import SessionManager
 
+from draftly.evaluation.evaluators.completeness import COMPLETENESS_RUBRIC
+from draftly.evaluation.evaluators.groundedness import GROUNDEDNESS_RUBRIC
 from draftly.orchestration.graphs.documentation_graph import (
     DEFAULT_EVALUATOR_MAX_ITERATIONS,
     DEFAULT_EXECUTION_TIMEOUT,
@@ -22,6 +24,7 @@ from draftly.orchestration.graphs.documentation_graph import (
 from draftly.orchestration.graphs.tool_scoping import scope_writer_tools
 from draftly.orchestration.hooks.review_gate import ReviewGate
 from draftly.orchestration.nodes.evaluate import EvaluatorNode
+from draftly.orchestration.nodes.rubric_grader import build_docs_rubric_grader
 from draftly.orchestration.routing.conditions import (
     eval_passed,
     generated,
@@ -112,6 +115,11 @@ def build_support_graph(
     research_model = resolve_model_for_role(model, "research")
     writer_model = resolve_model_for_role(model, "documentation_engineer")
     delivery_model = resolve_model_for_role(model, "github_delivery")
+    grader_model = resolve_model_for_role(model, "documentation_reviewer")
+
+    docs_rubric_grader = build_docs_rubric_grader(
+        grader_model, rubric=GROUNDEDNESS_RUBRIC + "\n\n" + COMPLETENESS_RUBRIC
+    )
 
     registry = agents
     classifier_builder = getattr(registry, "classifier", None) or build_classifier
@@ -208,7 +216,11 @@ def build_support_graph(
     builder.add_edge("impact", "update", condition=route_to_update_of("triage"))
     builder.add_edge("impact", "create", condition=route_to_create_of("triage"))
 
-    evaluator = EvaluatorNode("evaluate", max_iterations=evaluator_max_iterations)
+    evaluator = EvaluatorNode(
+        "evaluate",
+        max_iterations=evaluator_max_iterations,
+        rubric_grader=docs_rubric_grader,
+    )
     builder.add_node(evaluator, "evaluate")
     builder.add_edge("answer", "evaluate", condition=generated)
     builder.add_edge("update", "evaluate", condition=generated)

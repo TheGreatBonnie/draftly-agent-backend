@@ -59,7 +59,19 @@ async def run_pull_request_workflow(
         # A skip/duplicate (e.g. non-merged PR replayed or idempotency duplicate)
         # is not an error; leave the row as pending/running rather than marking
         # completed/failed so /workflows/{run_id}/events replay stays coherent.
-        pass
+        # On a DUPLICATE replay the original run may already be terminal in the
+        # events row — reconcile the read-model rows so a replayed finished run
+        # doesn't stay stuck at "running".
+        if state.status == WorkflowStatus.DUPLICATE:
+            from draftly.workflows.documentation.reconciliation import reconcile_run
+
+            reconciled = await reconcile_run(context, run_id)
+            if reconciled is not None:
+                logger.info(
+                    "pr_workflow_reconciled",
+                    run_id=run_id,
+                    status=reconciled,
+                )
     elif state.status == WorkflowStatus.PENDING_REVIEW:
         # Intermediate — human review gate, not terminal completion.
         pass

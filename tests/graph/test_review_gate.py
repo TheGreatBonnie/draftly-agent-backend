@@ -197,3 +197,39 @@ def test_interrupt_reason_includes_evaluation_result() -> None:
         "score": 0.92,
         "reasons": ["grounded"],
     }
+
+
+def test_review_pause_and_decision_are_logged(monkeypatch) -> None:
+    """The gate must surface when it pauses a run for review and how the
+    reviewer responded — today it imports structlog but logs nothing."""
+    import structlog
+    from structlog.testing import capture_logs
+
+    import draftly.orchestration.hooks.review_gate as review_gate_module
+
+    event = SimpleNamespace(
+        node_id="deliver",
+        invocation_state={"review_policy": "always", "run_id": "run-gate-log"},
+        source=SimpleNamespace(state=SimpleNamespace(results={})),
+        interrupt=lambda _name, *, reason: {"approved": False, "comment": "nope"},
+        cancel_node=None,
+    )
+
+    with capture_logs() as logs:
+        monkeypatch.setattr(
+            review_gate_module,
+            "logger",
+            structlog.get_logger("test.review_gate.logging"),
+        )
+        ReviewGate().gate(event)
+
+    pauses = [line for line in logs if line.get("event") == "review_gate_pause"]
+    assert len(pauses) == 1
+    assert pauses[0]["run_id"] == "run-gate-log"
+    assert pauses[0]["policy"] == "always"
+
+    decisions = [line for line in logs if line.get("event") == "review_gate_decision"]
+    assert len(decisions) == 1
+    assert decisions[0]["approved"] is False
+    assert decisions[0]["comment"] == "nope"
+    assert event.cancel_node == "Rejected by reviewer: nope"

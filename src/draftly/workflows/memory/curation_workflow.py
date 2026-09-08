@@ -40,6 +40,7 @@ async def run_memory_curation(context: Any) -> dict[str, int]:
     candidates = context.candidates
     claimed = await candidates.claim_batch(limit=BATCH_SIZE)
     if not claimed:
+        logger.info("memory_curation_skip", reason="no_candidates")
         return {"claimed": 0}
 
     prompt = (
@@ -62,6 +63,7 @@ async def run_memory_curation(context: Any) -> dict[str, int]:
             await candidates.set_status_pending(
                 str(record["id"]), "offline: no routed curator model"
             )
+        logger.warning("memory_curation_skip", reason="no_routed_model")
         return {"claimed": 0}
 
     agent = build_memory_curator(model=model, tools=_MEMORY_CURATOR_TOOLS)
@@ -96,6 +98,11 @@ async def run_memory_curation(context: Any) -> dict[str, int]:
             await candidates.set_status_pending(
                 str(record["id"]), "curator returned no usable decisions"
             )
+        logger.warning(
+            "memory_curation_skip",
+            reason="no_usable_decisions",
+            claimed=len(claimed),
+        )
 
     logger.info("memory_curation_run claimed=%d applied=%d", len(claimed), applied)
     return {"claimed": len(claimed), "applied": applied}

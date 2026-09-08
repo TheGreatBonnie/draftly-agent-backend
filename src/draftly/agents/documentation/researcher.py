@@ -1,4 +1,9 @@
-"""Documentation researcher agent."""
+"""Documentation researcher agent.
+
+This agent is used by the support flow; the documentation GRAPH routes through
+the research swarm (agents/documentation/research_swarm.py), whose
+docs_researcher builds on the same DOC_RESEARCH_PROMPT. Keep both in sync.
+"""
 
 from __future__ import annotations
 

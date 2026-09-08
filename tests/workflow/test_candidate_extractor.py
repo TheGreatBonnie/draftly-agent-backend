@@ -127,3 +127,46 @@ async def test_post_run_memory_preserves_run_and_graph_provenance():
     assert episodes.fields["agent_run_id"] == "run-1"
     assert episodes.fields["actions_taken"] == ["classify", "deliver"]
     assert episodes.fields["tools_used"] == ["create_pull_request"]
+
+
+async def test_post_run_memory_captured_is_logged(monkeypatch):
+    import structlog
+    from structlog.testing import capture_logs
+
+    import draftly.workflows.post_run.candidate_extractor as ce
+
+    class Episodes:
+        def __init__(self):
+            self.fields = None
+
+        async def record_episode(self, **fields):
+            self.fields = fields
+
+    class Candidates:
+        def __init__(self):
+            self.enqueued = []
+
+        async def enqueue(self, candidate):
+            self.enqueued.append(candidate)
+
+    state = make_state({"project_id": "org1", "event_id": "run-1"})
+    state.result = FakeResult()
+    object.__setattr__(state.result, "changed_files", ["auth/token_service.py"])
+    object.__setattr__(state.result, "docs_touched", ["docs/auth/tokens.md"])
+
+    with capture_logs() as logs:
+        monkeypatch.setattr(
+            ce, "logger", structlog.get_logger("test.post_run_memory_captured")
+        )
+        await ce.record_post_run_memory(
+            SimpleNamespace(episodic=Episodes(), candidates=Candidates()),
+            state,
+            "github_pr",
+        )
+
+    markers = [line for line in logs if line.get("event") == "post_run_memory_captured"]
+    assert len(markers) == 1
+    assert markers[0]["run_id"] == "run-1"
+    assert markers[0]["surface"] == "github_pr"
+    assert markers[0]["episode_recorded"] is True
+    assert markers[0]["candidate_count"] == 1

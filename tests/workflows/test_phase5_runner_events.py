@@ -370,13 +370,10 @@ class TestRunnerMergedOnlyGate:
         )
         return state, context
 
-    async def test_opened_pr_skips_before_claim(self) -> None:
+    async def test_opened_pr_runs_graph(self) -> None:
         state, context = await self._run_event("pull_request.opened")
-        assert state.status.value == "skipped"
-        assert state.surface == "pull_request"
-        # Idempotency claim never happened -> no audit/duplicate record.
-        assert context.events.claimed == {}
-        assert context.events.statuses == {}
+        assert state.status.value == "delivered"
+        assert context.events.statuses["evt-gate"] == "completed"
 
     async def test_edited_pr_skips(self) -> None:
         state, _ = await self._run_event("pull_request.edited")
@@ -706,3 +703,73 @@ class TestRunnerStreaming:
         terminal = publisher.published[-1]
         assert terminal.type == "workflow_result"
         assert terminal.payload["status"] == "FAILED"
+
+    async def test_streaming_node_timeout_maps_to_failed_outcome(self) -> None:
+        class TimeoutGraph(FakeGraph):
+            async def stream_async(self, task, invocation_state=None, **kwargs):
+                del kwargs
+                self.calls.append({"task": task, "invocation_state": invocation_state})
+                for raw in STREAM_EVENTS:
+                    yield raw
+                raise Exception("Node 'research' execution timed out after 180s")
+
+        publisher = RecordingPublisher()
+        context = make_context()
+        graph = TimeoutGraph(completed_result())
+        runner = WorkflowRunner(
+            context, graph_factory=lambda r, s: graph, publisher=publisher
+        )
+
+        state = await runner.run(dict(PR_EVENT))
+
+        assert state.status.value == "failed"
+        assert state.errors == ["research"]
+        assert context.events.statuses["evt-1"] == "failed"
+        assert [row["status"] for row in context.repositories.jobs.statuses][-1] == "failed"
+        assert context.repositories.github_workflows.statuses[-1]["status"] == "failed"
+        terminal = publisher.published[-1]
+        assert terminal.type == "workflow_result"
+        assert terminal.payload["status"] == "FAILED"
+        assert terminal.node_id == "research"
+        # Partial events streamed before the timeout are preserved.
+        assert [e.type for e in publisher.published][:4] == [
+            "node_start",
+            "text_delta",
+            "node_stop",
+            "handoff",
+        ]
+
+    async def test_invoke_node_timeout_maps_to_failed_outcome(self) -> None:
+        class TimeoutInvokeGraph(FakeGraph):
+            async def invoke_async(self, task, invocation_state=None, **kwargs):
+                del kwargs
+                self.calls.append({"task": task, "invocation_state": invocation_state})
+                raise Exception("Node 'update' execution timed out after 600s")
+
+        context = make_context()
+        graph = TimeoutInvokeGraph(completed_result())
+        runner = WorkflowRunner(context, graph_factory=lambda r, s: graph)
+
+        state = await runner.run(dict(PR_EVENT))
+
+        assert state.status.value == "failed"
+        assert state.errors == ["update"]
+        assert context.events.statuses["evt-1"] == "failed"
+        assert context.repositories.jobs.statuses[-1]["status"] == "failed"
+
+    async def test_non_timeout_exception_still_propagates(self) -> None:
+        class BoomGraph(FakeGraph):
+            async def stream_async(self, task, invocation_state=None, **kwargs):
+                del kwargs, task, invocation_state
+                yield {"force_stop": True, "force_stop_reason": "max_iterations"}
+                raise RuntimeError("orcarouter refused")
+
+        publisher = RecordingPublisher()
+        context = make_context()
+        graph = BoomGraph(completed_result())
+        runner = WorkflowRunner(
+            context, graph_factory=lambda r, s: graph, publisher=publisher
+        )
+
+        with pytest.raises(RuntimeError, match="orcarouter refused"):
+            await runner.run(dict(PR_EVENT))

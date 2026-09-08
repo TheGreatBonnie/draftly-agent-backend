@@ -4,34 +4,59 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
+
+from draftly.agents.taxonomy import (
+    CHANGE_TYPES,
+    DOCA_ACTIONS,
+    SURFACES,
+    URGENCY_LEVELS,
+)
+
+
+def _enum_description(values: tuple[str, ...]) -> str:
+    """Render an ``"a" | "b"`` field description from a vocabulary tuple."""
+    return " | ".join(f'"{v}"' for v in values)
 
 
 class EventClassification(BaseModel):
     """Structured classifier output for an incoming surface event."""
 
-    surface: str = Field(description='"pull_request" | "issue" | "support_question"')
-    change_type: str = Field(
-        description=(
-            '"documentation_only" | "bug_fix" | "new_feature" | "api_change" '
-            '| "breaking_change" | "deprecation" | "question" | "other"'
-        )
-    )
-    urgency: str = Field(description='"low" | "medium" | "high"')
+    surface: str = Field(description=_enum_description(SURFACES))
+    change_type: str = Field(description=_enum_description(CHANGE_TYPES))
+    urgency: str = Field(description=_enum_description(URGENCY_LEVELS))
     reason: str = Field(description="Short justification for the classification")
+
+
+class EvidenceItem(BaseModel):
+    """A single evidence item: what it points at and what it covers.
+
+    LLM research output is validated as ``EvidenceItem`` (Strands builds a
+    structured-output tool named after the model class). ``id``/``url`` hold
+    the concrete source locator, ``topic`` the coverage topic the draft must
+    address, and ``excerpt`` a short quote. Unknown keys survive validation
+    so legacy freeform payloads keep working.
+    """
+
+    id: str = ""
+    url: str = ""
+    topic: str = ""
+    excerpt: str = ""
+
+    model_config = ConfigDict(extra="allow")
 
 
 class EvidenceBundle(BaseModel):
     """Evidence collected by the context/research agents."""
 
-    items: list[dict[str, Any]] = Field(default_factory=list)
+    items: list[EvidenceItem] = Field(default_factory=list)
     summary: str = ""
 
 
 class ImpactAnalysis(BaseModel):
     """Documentation impact analysis for a surface event."""
 
-    action: str = Field(description='"answer" | "update" | "create" | "none"')
+    action: str = Field(description=_enum_description(DOCA_ACTIONS))
     affected_documents: list[str] = Field(default_factory=list)
     rationale: str = ""
     evidence: list[str] = Field(default_factory=list)

@@ -15,6 +15,7 @@ from draftly.orchestration.routing.conditions import (
     generated,
     is_valid_surface,
     needs_revision,
+    needs_revision_of,
     route_to_answer,
     route_to_create,
     route_to_update,
@@ -134,6 +135,34 @@ class TestEvaluationConditions:
         state = GraphState()
         assert not eval_passed(state)
         assert not needs_revision(state)
+
+    def test_escalated_evaluator_routes_forward_not_to_revision(self) -> None:
+        """An evaluator that escalated at max iterations reports passed=True;
+        the graph must route toward deliver/ReviewGate, NOT back into the
+        writer revision loop (which would burn the node budget and die)."""
+        result = MultiAgentResult(
+            status=Status.COMPLETED,
+            results={
+                "evaluate": NodeResult(
+                    result=agent_result(
+                        {
+                            "passed": True,
+                            "score": 0.3,
+                            "escalated": True,
+                            "iteration": 3,
+                            "reasons": [
+                                "Quality threshold not met after 3 evaluations; "
+                                "escalated to human review"
+                            ],
+                        }
+                    )
+                )
+            },
+        )
+        state = _state_with_results({"evaluate": result})
+        assert eval_passed(state)
+        assert not needs_revision(state)
+        assert not needs_revision_of("create")(state)
 
 
 class TestAllDependenciesComplete:

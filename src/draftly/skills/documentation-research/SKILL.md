@@ -31,8 +31,12 @@ Determine what the documentation already covers and where the gaps are.
 
 ## Output
 
-An `EvidenceBundle` (`items[]` with doc ids, paths, and excerpts; `summary`)
-listing covered topics, stale sections, and confirmed gaps.
+An `EvidenceBundle` (`items[]`, `summary`). Each item MUST carry the shape
+`{id, url, topic, excerpt}`: `id` is the concrete doc/code path, `url` the
+page URL when one exists, `topic` is the short coverage topic the draft must
+address (used by the coverage check), and `excerpt` a short supporting quote.
+Populate `topic` for every item — the gate falls back to the id's basename
+when it is empty, but an explicit topic matches prose reliably.
 
 ## References
 

@@ -167,6 +167,7 @@ async def record_post_run_memory(context: Any, state: Any, surface: str) -> None
     if delivery.get("reference"):
         artifacts.append(str(delivery["reference"]))
 
+    episode_recorded = False
     if getattr(context, "episodic", None):
         await context.episodic.record_episode(
             org_id=org_id,
@@ -180,7 +181,19 @@ async def record_post_run_memory(context: Any, state: Any, surface: str) -> None
             evaluation_results=evaluation or None,
             artifacts_created=artifacts,
         )
+        episode_recorded = True
 
+    candidate_count = 0
     if getattr(context, "candidates", None):
-        for candidate in extract_candidates(state, surface):
+        candidates = list(extract_candidates(state, surface))
+        for candidate in candidates:
             await context.candidates.enqueue(candidate)
+        candidate_count = len(candidates)
+
+    logger.info(
+        "post_run_memory_captured",
+        run_id=str(getattr(state, "run_id", "") or ""),
+        surface=surface,
+        episode_recorded=episode_recorded,
+        candidate_count=candidate_count,
+    )

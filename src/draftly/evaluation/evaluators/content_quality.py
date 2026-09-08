@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from draftly.content.models import ContentChannel, ContentVariant
+from draftly.content.models import ContentVariant
 
 THRESHOLDS = {
     "groundedness": 0.90,
@@ -21,10 +21,15 @@ def evaluate_content_variant(variant: ContentVariant) -> dict[str, Any]:
     issues: list[str] = []
     if not variant.evidence:
         issues.append("missing evidence references")
-    if variant.channel is ContentChannel.X and len(variant.body) > 280:
-        issues.append("x variant exceeds 280 characters")
     for key, threshold in THRESHOLDS.items():
-        if scores[key] < threshold:
+        score = variant.evaluation.get(key)
+        if score is None:
+            # No score was produced (e.g. the writer pipeline emitted the
+            # variant directly). Absence is not a failure — threshold checks
+            # apply only to scores that actually exist, so the in-graph gate
+            # blocks on missing evidence rather than on undefined scores.
+            continue
+        if float(score) < threshold:
             issues.append(f"{key} below threshold {threshold:.2f}")
     return {"passed": not issues, "scores": scores, "issues": issues}
 

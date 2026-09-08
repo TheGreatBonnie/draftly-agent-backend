@@ -9,13 +9,16 @@ unavailable — grounding must never break a run.
 from __future__ import annotations
 
 import inspect
+import time
 from typing import Any
 
 import structlog
 from strands.agent import Agent
+from strands.agent.agent_result import AgentResult
 from strands.multiagent.base import (
     MultiAgentBase,
     MultiAgentResult,
+    NodeResult,
     Status,
 )
 
@@ -60,13 +63,72 @@ class MemoryGroundedNode(MultiAgentBase):
         **kwargs: Any,
     ) -> MultiAgentResult:
         grounded_task = await self._ground(task, invocation_state=invocation_state)
+        started = time.monotonic()
         result = await self.inner.invoke_async(
             grounded_task,
             invocation_state=invocation_state,
             **kwargs,
         )
+        execution_ms = round((time.monotonic() - started) * 1000)
+
         if isinstance(result, MultiAgentResult):
             return result
+
+        # Preserve the inner AgentResult payload untouched: the context agent's
+        # structured_output (EvidenceBundle) must reach downstream nodes, and
+        # `str(AgentResult)` only serializes it while it is still present.
+        # Dropping it into an empty MultiAgentResult used to throw the evidence
+        # away, starving the evaluator and looping runs into the timeout.
+        if isinstance(result, AgentResult):
+            usage = None
+            metrics = None
+            event_metrics = getattr(result, "metrics", None)
+            if event_metrics is not None:
+                usage = getattr(event_metrics, "accumulated_usage", None)
+                metrics = getattr(event_metrics, "accumulated_metrics", None)
+            status = (
+                Status.INTERRUPTED
+                if getattr(result, "stop_reason", None) == "interrupt"
+                else Status.COMPLETED
+            )
+            structured = getattr(result, "structured_output", None)
+            evidence_items = None
+            if structured is not None:
+                items = getattr(structured, "items", None)
+                if isinstance(items, list):
+                    evidence_items = len(items)
+            if structured is None:
+                # Plain-text degradation surfaces here: the inner agent did not
+                # emit its structured_output, so downstream nodes (and the
+                # deterministic evaluator) will only see raw prose.
+                logger.warning(
+                    "memory_grounded_no_structured_output",
+                    agent=self.name,
+                )
+            else:
+                logger.info(
+                    "memory_grounded_structured_preserved",
+                    agent=self.name,
+                    structured=True,
+                    evidence_items=evidence_items,
+                )
+            inner = NodeResult(
+                result=result,
+                execution_time=execution_ms,
+                status=status,
+                execution_count=1,
+            )
+            kwargs_result: dict[str, Any] = {}
+            if usage is not None:
+                kwargs_result["accumulated_usage"] = usage
+            if metrics is not None:
+                kwargs_result["accumulated_metrics"] = metrics
+            return MultiAgentResult(
+                status=status,
+                results={getattr(result, "agent_name", None) or self.name: inner},
+                execution_time=execution_ms,
+                **kwargs_result,
+            )
         return MultiAgentResult(status=getattr(result, "status", Status.COMPLETED))
 
     def _is_bundle(self) -> bool:

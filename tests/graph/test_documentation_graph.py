@@ -248,3 +248,189 @@ async def test_none_action_release_routes_to_changelog(model, tools, tmp_session
     assert "changelog" in order
     assert "changelog_evaluate" in order
     assert "deliver" in order
+
+
+def _tool_names(tool_list: list) -> set[str]:
+    from draftly.orchestration.graphs.tool_scoping import tool_name
+
+    return {name for name in (tool_name(t) for t in tool_list) if name}
+
+
+def test_github_grounding_gives_context_and_swarm_github_api_tools(
+    model,
+    tools,
+    tmp_sessions,
+) -> None:
+    """Real-PR runs (github grounding) must reason over the GitHub API, not a
+    nonexistent local checkout, so context + swarm get the read-only GitHub
+    tools instead of the repository checkout tools."""
+    from types import SimpleNamespace
+
+    from draftly.agents.documentation.context import build_doc_context_agent
+    from draftly.agents.documentation.research_swarm import build_doc_research_swarm
+
+    captured: dict = {}
+
+    def context_builder(agent_model, agent_tools, **kwargs):
+        captured["context_tools"] = agent_tools
+        captured["context_kwargs"] = kwargs
+        return build_doc_context_agent(agent_model, agent_tools, **kwargs)
+
+    def swarm_builder(agent_model, registry, **kwargs):
+        captured["swarm_kwargs"] = kwargs
+        return build_doc_research_swarm(agent_model, registry, **kwargs)
+
+    build_graph_for_run(
+        "github-grounding-1",
+        surface="pull_request",
+        tools_registry=tools,
+        model=model,
+        agents=SimpleNamespace(
+            documentation_context=context_builder,
+            documentation_research_swarm=swarm_builder,
+        ),
+        storage_dir=tmp_sessions,
+        grounding="github",
+    )
+
+    context_tools = _tool_names(captured["context_tools"])
+    assert {"get_pull_request", "get_diff", "get_files", "code_search"} <= context_tools
+    assert "git_diff" not in context_tools
+    assert "read_file" not in context_tools
+    assert "create_comment" not in context_tools
+
+    swarm = captured["swarm_kwargs"]
+    assert swarm["grounding"] == "github"
+    assert "local_repo_researcher" not in swarm
+    gh_tools = _tool_names(swarm["github_tools"] or [])
+    assert {"get_pull_request", "get_diff", "get_files"} <= gh_tools
+    assert "create_comment" not in gh_tools
+
+
+def test_default_local_grounding_keeps_checkout_tools(
+    model,
+    tools,
+    tmp_sessions,
+) -> None:
+    """Default (local-first) runs keep the repository checkout tools and no
+    GitHub API tools — the offline evaluation harness depends on this."""
+    from types import SimpleNamespace
+
+    from draftly.agents.documentation.context import build_doc_context_agent
+    from draftly.agents.documentation.research_swarm import build_doc_research_swarm
+
+    captured: dict = {}
+
+    def context_builder(agent_model, agent_tools, **kwargs):
+        captured["context_tools"] = agent_tools
+        return build_doc_context_agent(agent_model, agent_tools, **kwargs)
+
+    def swarm_builder(agent_model, registry, **kwargs):
+        captured["swarm_kwargs"] = kwargs
+        return build_doc_research_swarm(agent_model, registry, **kwargs)
+
+    build_graph_for_run(
+        "local-grounding-1",
+        surface="pull_request",
+        tools_registry=tools,
+        model=model,
+        agents=SimpleNamespace(
+            documentation_context=context_builder,
+            documentation_research_swarm=swarm_builder,
+        ),
+        storage_dir=tmp_sessions,
+    )
+
+    context_tools = _tool_names(captured["context_tools"])
+    assert {"read_file", "git_diff", "git_status"} <= context_tools
+    assert "get_pull_request" not in context_tools
+
+    swarm = captured["swarm_kwargs"]
+    assert swarm["grounding"] == "local"
+    assert (swarm["github_tools"] or []) == []
+    assert _tool_names(swarm["local_tools"] or []) >= {"read_file", "git_diff"}
+
+
+def test_documentation_graph_timeout_budget_covers_a_delivered_run(
+    model,
+    tools,
+    tmp_sessions,
+) -> None:
+    """Regression: a delivered PR docs run spans ~8 sequential LLM nodes and
+    the live run died at 600s before the ReviewGate could fire. The graph
+    ceiling must leave headroom so a healthy run reaches pending_review."""
+    graph = build_graph_for_run(
+        "timeout-budget-1",
+        surface="pull_request",
+        tools_registry=tools,
+        model=model,
+        storage_dir=tmp_sessions,
+    )
+
+    assert graph.execution_timeout >= 1800
+
+
+async def test_memory_grounded_context_reaches_delivery(
+    model,
+    tools,
+    tmp_sessions,
+) -> None:
+    """Regression: memory-wrapping the context node dropped its EvidenceBundle
+    (an empty MultiAgentResult), so evaluation never saw evidence and the run
+    looped in revision until the timeout killed it before delivery."""
+    from types import SimpleNamespace
+
+    class Bundle:
+        async def knowledge(self, query: str, *, org_id: str | None = None):
+            del query, org_id
+            return [{"content": "OAuth exchange adds a new public API"}]
+
+        async def episodes(self, query: str, *, limit: int = 2, org_id: str | None = None):
+            del query, org_id, limit
+            return []
+
+        async def procedures(self, query: str, *, limit: int = 1, org_id: str | None = None):
+            del query, org_id, limit
+            return []
+
+    graph = build_graph_for_run(
+        "memory-grounded-1",
+        surface="pull_request",
+        tools_registry=tools,
+        model=model,
+        storage_dir=tmp_sessions,
+        memory=SimpleNamespace(
+            knowledge=Bundle().knowledge,
+            episodes=Bundle().episodes,
+            procedures=Bundle().procedures,
+        ),
+    )
+
+    result = await graph.invoke_async(
+        PR_TASK,
+        invocation_state={"run_id": "memory-grounded-1", "review_policy": "never"},
+    )
+
+    assert result.status == Status.COMPLETED
+    order = [n.node_id for n in result.execution_order]
+    assert order[-1] == "deliver"
+    assert order.count("update") == 1
+    assert order.count("evaluate") == 1
+
+
+def test_documentation_graph_wires_required_rubric_graders(model, tools, tmp_sessions) -> None:
+    """The rubric grader is mandatory production wiring: both the docs
+    evaluator and the changelog evaluator are built with a non-None grader."""
+    graph = build_graph_for_run(
+        "grader-required-1",
+        surface="pull_request",
+        tools_registry=tools,
+        model=model,
+        storage_dir=tmp_sessions,
+    )
+
+    evaluator = graph.nodes["evaluate"].executor
+    assert evaluator.rubric_grader is not None
+
+    changelog_evaluator = graph.nodes["changelog_evaluate"].executor
+    assert changelog_evaluator.rubric_grader is not None

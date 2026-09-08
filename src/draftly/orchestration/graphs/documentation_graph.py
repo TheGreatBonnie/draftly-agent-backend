@@ -30,6 +30,8 @@ import structlog
 from strands.multiagent import GraphBuilder
 from strands.session.session_manager import SessionManager
 
+from draftly.evaluation.evaluators.completeness import COMPLETENESS_RUBRIC
+from draftly.evaluation.evaluators.groundedness import GROUNDEDNESS_RUBRIC
 from draftly.integrations.strands.models import resolve_model_for_role
 from draftly.orchestration.graphs.tool_scoping import (
     scope_read_only_tools as _scope_read_only_tools,
@@ -40,6 +42,10 @@ from draftly.orchestration.graphs.tool_scoping import (
 from draftly.orchestration.hooks.audit import RunAuditLogger
 from draftly.orchestration.hooks.review_gate import ReviewGate
 from draftly.orchestration.nodes.evaluate import EvaluatorNode
+from draftly.orchestration.nodes.rubric_grader import (
+    build_changelog_rubric_grader,
+    build_docs_rubric_grader,
+)
 from draftly.orchestration.routing.conditions import (
     changelog_eval_passed,
     changelog_needs_revision,
@@ -54,6 +60,7 @@ from draftly.orchestration.routing.conditions import (
     route_to_update,
 )
 from draftly.tools.repository.code_search import code_search
+from draftly.workflows.grounding import DOCS, GITHUB, LOCAL
 
 logger = structlog.get_logger(__name__)
 
@@ -64,8 +71,10 @@ _LOCAL_CODE_SEARCH = [code_search]
 
 DEFAULT_GRAPH_ID = "draftly-main-graph"
 DEFAULT_MAX_NODE_EXECUTIONS = 15
-DEFAULT_EXECUTION_TIMEOUT = 600.0
-DEFAULT_NODE_TIMEOUT = 180.0
+# 600s killed delivered PR runs at the tail (8+ sequential LLM nodes plus a
+# datadog-style revision loop); keep enough ceiling to reach the ReviewGate.
+DEFAULT_EXECUTION_TIMEOUT = 1800.0
+DEFAULT_NODE_TIMEOUT = 600.0
 DEFAULT_EVALUATOR_MAX_ITERATIONS = 2
 
 
@@ -98,8 +107,16 @@ def build_documentation_graph(
     execution_timeout: float = DEFAULT_EXECUTION_TIMEOUT,
     node_timeout: float = DEFAULT_NODE_TIMEOUT,
     evaluator_max_iterations: int = DEFAULT_EVALUATOR_MAX_ITERATIONS,
+    grounding: str = LOCAL,
+    repo_dir: str | None = None,
 ):
-    """Build the unified Draftly Graph for documentation workflows."""
+    """Build the unified Draftly Graph for documentation workflows.
+
+    ``grounding`` selects the evidence mode: ``local`` (default, repository
+    checkout tools), ``github`` (read-only GitHub API tools for real linked
+    PRs), or ``docs`` (documentation-store search only). ``repo_dir`` is the
+    concrete checkout path surfaces into the LOCAL note when known.
+    """
     # Import agents (factories — one instance per graph node)
     from draftly.agents.documentation.analyzer import build_impact_agent
     from draftly.agents.documentation.changelog import build_changelog_agent
@@ -119,14 +136,30 @@ def build_documentation_graph(
     research_model = resolve_model_for_role(model, "research")
     intelligence_model = resolve_model_for_role(model, "github_intelligence")
     delivery_model = resolve_model_for_role(model, "github_delivery")
+    grader_model = resolve_model_for_role(model, "documentation_reviewer")
+
+    # Mandatory rubric graders: LLM feedback enriches the deterministic docs
+    # and changelog gates on every failed draft (the future). Built eagerly
+    # from the resolved reviewer model; OutputEvaluator is lazy so this is
+    # safe offline.
+    docs_rubric_grader = build_docs_rubric_grader(
+        grader_model, rubric=GROUNDEDNESS_RUBRIC + "\n\n" + COMPLETENESS_RUBRIC
+    )
+    changelog_rubric_grader = build_changelog_rubric_grader(grader_model)
 
     registry = agents
     classifier = (getattr(registry, "classifier", None) or build_classifier)(classifier_model)
     context_builder = getattr(registry, "documentation_context", None) or build_doc_context_agent
+    if grounding == GITHUB:
+        context_repo_tools = _scope_read_only_tools(reg.github_intelligence)
+    elif grounding == DOCS:
+        context_repo_tools = []
+    else:
+        context_repo_tools = _scope_read_only_tools(reg.documentation_engineer)
     context_agent = context_builder(
         context_model,
         _dedupe(
-            _scope_read_only_tools(reg.documentation_engineer),
+            context_repo_tools,
             reg.semantic_search,
             reg.keyword_search,
             reg.hybrid_search,
@@ -135,20 +168,34 @@ def build_documentation_graph(
             reg.discord_search,
             reg.discord_get_thread,
         ),
+        grounding=grounding,
+        repo_dir=repo_dir,
     )
     research_builder = (
         getattr(registry, "documentation_research_swarm", None) or build_doc_research_swarm
     )
-    research_swarm = research_builder(
-        research_model,
-        reg,
-        local_tools=_dedupe(
+    if grounding == GITHUB:
+        swarm_github_tools = _scope_read_only_tools(reg.github_intelligence)
+        swarm_local_tools: list[Any] = []
+    elif grounding == DOCS:
+        swarm_github_tools = []
+        swarm_local_tools = []
+    else:
+        swarm_github_tools = []
+        swarm_local_tools = _dedupe(
             _scope_read_only_tools(reg.documentation_engineer),
             reg.semantic_search,
             reg.keyword_search,
             reg.hybrid_search,
             _LOCAL_CODE_SEARCH,
-        ),
+        )
+    research_swarm = research_builder(
+        research_model,
+        reg,
+        local_tools=swarm_local_tools,
+        github_tools=swarm_github_tools,
+        grounding=grounding,
+        repo_dir=repo_dir,
     )
     impact_builder = getattr(registry, "impact_agent", None) or build_impact_agent
     impact_agent = impact_builder(
@@ -185,7 +232,9 @@ def build_documentation_graph(
         _scope_writer_tools(reg.documentation_engineer, reg.documentation),
     )
     changelog_evaluator = ChangelogEvaluatorNode(
-        "changelog_evaluate", max_iterations=evaluator_max_iterations
+        "changelog_evaluate",
+        max_iterations=evaluator_max_iterations,
+        rubric_grader=changelog_rubric_grader,
     )
 
     builder = GraphBuilder()
@@ -221,7 +270,11 @@ def build_documentation_graph(
     builder.add_edge("impact", "create", condition=route_to_create)
 
     # Evaluation
-    evaluator = EvaluatorNode("evaluate", max_iterations=evaluator_max_iterations)
+    evaluator = EvaluatorNode(
+        "evaluate",
+        max_iterations=evaluator_max_iterations,
+        rubric_grader=docs_rubric_grader,
+    )
     builder.add_node(evaluator, "evaluate")
     builder.add_edge("answer", "evaluate", condition=generated)
     builder.add_edge("update", "evaluate", condition=generated)

@@ -34,6 +34,4 @@ class SocialAdapter:
         evidence: list[dict[str, Any]],
     ) -> dict[str, Any]:
         body = f"{title}: {summary}"
-        if channel == "x":
-            body = body[:280]
         return {"title": title, "body": body, "evidence": evidence, "channel": channel}

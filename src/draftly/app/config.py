@@ -13,9 +13,10 @@ class StrandsConfig(BaseModel):
 
     graph_id: str = "draftly-main-graph"
     session_storage_dir: str = ".draftly/sessions"
-    max_node_executions: int = 10
-    execution_timeout: int = 600
-    node_timeout: int = 180
+    max_node_executions: int = 15
+    execution_timeout: int = 1800
+    node_timeout: int = 600
+    evaluator_max_iterations: int = 2
     review_policy: str = "always"  # "always" | "risky" | "never"
 
 
@@ -125,9 +126,15 @@ class Settings(BaseSettings):
 
     strands_graph_id: str = "draftly-main-graph"
     strands_session_storage_dir: str = ".draftly/sessions"
-    strands_max_node_executions: int = 10
-    strands_execution_timeout: int = 600
-    strands_node_timeout: int = 180
+    strands_max_node_executions: int = 15
+    # A delivered PR docs run executes ~8 sequential LLM nodes; 600s killed
+    # those runs right before the ReviewGate could fire. Leave headroom.
+    strands_execution_timeout: int = 1800
+    # Slow-network workers see ~50s first-byte on model calls; a 180s per-node
+    # budget failed mid-flight nodes. 600s still bounds a stuck node well
+    # under the 1800s run deadline while letting slow runs finish.
+    strands_node_timeout: int = 600
+    strands_evaluator_max_iterations: int = 2
     strands_review_policy: str = "always"  # "always" | "risky" | "never"
 
     @property
@@ -139,6 +146,7 @@ class Settings(BaseSettings):
             max_node_executions=self.strands_max_node_executions,
             execution_timeout=self.strands_execution_timeout,
             node_timeout=self.strands_node_timeout,
+            evaluator_max_iterations=self.strands_evaluator_max_iterations,
             review_policy=self.strands_review_policy,
         )
 
