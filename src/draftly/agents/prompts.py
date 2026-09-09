@@ -288,6 +288,9 @@ The reviewer must see, at minimum:
 ## Decision Outcomes
 
 - **approve** (`approved: true`): the graph resumes and delivers.
+- **request_changes**: the current review closes as `needs_changes`, the
+  reviewer comment is sent to a fresh agent run, and that run pauses for a new
+  review before delivery.
 - **reject** (`approved: false`): the node is cancelled and the run fails with
   the reviewer's comment recorded.
 

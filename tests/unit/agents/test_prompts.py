@@ -132,6 +132,7 @@ class TestPolicyInjectionMatrix:
         )
 
         assert "# Human Review Policy" in rendered
+        assert "request_changes" in rendered
 
 
 class TestGuardrailsPresent:
