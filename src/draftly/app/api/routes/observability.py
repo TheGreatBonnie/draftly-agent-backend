@@ -40,9 +40,13 @@ async def model_performance(request: Request) -> dict[str, Any]:
 
 
 @router.get("/jobs")
-async def active_jobs(request: Request) -> dict[str, Any]:
+async def active_jobs(
+    request: Request,
+    token: dict[str, Any] = Depends(get_verified_token),
+) -> dict[str, Any]:
     """Currently active background jobs (history: GET /documentation/sync/{job_id})."""
     jobs = getattr(_repos(request).jobs, "list_active", None)
     if jobs is None:
         raise HTTPException(status_code=503, detail="Jobs store unavailable")
-    return {"items": await jobs()}
+    org_id = str(token.get("org_id") or "") or None
+    return {"items": await jobs(org_id=org_id)}

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 from typing import Any
 
@@ -9,6 +10,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from draftly.app.api.auth import get_verified_token
+from draftly.app.api import routes as route_modules
 from draftly.app.api.routes.agents import router
 
 
@@ -90,3 +92,24 @@ def test_agents_status_defaults_gracefully_when_no_runs() -> None:
     for a in agents:
         assert a["status"] in ("idle", "running", "completed", "failed")
         assert a["history"] == []
+
+
+def test_build_agent_summaries_reuses_the_catalog_response_shape() -> None:
+    app = make_app(FakeRunsRepo(runs=[], steps=[]))
+    build_agent_summaries = getattr(route_modules.agents, "build_agent_summaries", None)
+
+    assert callable(build_agent_summaries)
+    agents = asyncio.run(build_agent_summaries(app, org_id="org-1"))
+
+    assert agents
+    assert agents[0]["role"] == "classifier"
+    assert set(agents[0]) == {
+        "role",
+        "name",
+        "description",
+        "surface",
+        "tools",
+        "status",
+        "activity",
+        "history",
+    }

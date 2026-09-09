@@ -40,8 +40,8 @@ class JobRepositoryImpl:
             result=result,
         )
 
-    async def list_active(self) -> list[dict[str, Any]]:
-        return await self.store.list_active()
+    async def list_active(self, org_id: str | None = None) -> list[dict[str, Any]]:
+        return await self.store.list_active(org_id=org_id)
 
     async def list_stuck(
         self,

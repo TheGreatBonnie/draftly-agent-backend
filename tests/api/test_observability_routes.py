@@ -38,8 +38,8 @@ class FakeRepos:
         return [PERF]
 
     @staticmethod
-    async def _jobs_active() -> list[dict[str, Any]]:
-        return [{"job_id": "j-1"}]
+    async def _jobs_active(org_id: str | None = None) -> list[dict[str, Any]]:
+        return [{"job_id": "j-1", "org_id": org_id}]
 
 
 def make_app() -> FastAPI:
@@ -73,4 +73,4 @@ def test_jobs_active_list() -> None:
     client = TestClient(make_app())
     resp = client.get("/jobs")
     assert resp.status_code == 200
-    assert resp.json()["items"] == [{"job_id": "j-1"}]
+    assert resp.json()["items"] == [{"job_id": "j-1", "org_id": "org-1"}]

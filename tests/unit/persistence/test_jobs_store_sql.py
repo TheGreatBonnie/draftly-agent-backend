@@ -233,6 +233,32 @@ async def test_update_status_persists_terminal_lifecycle_fields():
     assert json.loads(args[-1]) == {"status": "FAILED"}
 
 
+async def test_list_active_filters_by_org_id_when_requested():
+    calls: list[tuple[str, tuple]] = []
+    store = _capture([], calls)
+
+    rows = await store.list_active(org_id="org-a")
+
+    assert rows == []
+    sql, args = calls[-1]
+    assert "WHERE status = 'active'" in sql
+    assert "AND org_id = $1" in sql
+    assert args == ("org-a",)
+
+
+async def test_list_active_without_org_id_preserves_unfiltered_query():
+    calls: list[tuple[str, tuple]] = []
+    store = _capture([], calls)
+
+    rows = await store.list_active()
+
+    assert rows == []
+    sql, args = calls[-1]
+    assert "WHERE status = 'active'" in sql
+    assert "AND org_id = $1" not in sql
+    assert args == ()
+
+
 _POSITIONAL_ROW = (
     "job-1",
     "run-1",

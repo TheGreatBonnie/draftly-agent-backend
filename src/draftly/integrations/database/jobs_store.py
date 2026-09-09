@@ -221,10 +221,9 @@ class DatabaseJobsStore:
 
         return self._to_dict(row)
 
-    async def list_active(self) -> list[dict[str, Any]]:
+    async def list_active(self, org_id: str | None = None) -> list[dict[str, Any]]:
 
-        rows = await self.client.fetch_all(
-            """
+        query = """
             SELECT
                 id,
                 run_id,
@@ -238,7 +237,15 @@ class DatabaseJobsStore:
                 next_run_at
             FROM jobs
             WHERE status = 'active'
-            """,
+        """
+        args: tuple[Any, ...] = ()
+        if org_id is not None:
+            query += " AND org_id = $1"
+            args = (org_id,)
+
+        rows = await self.client.fetch_all(
+            query,
+            *args,
         )
 
         return [self._to_dict(row) for row in rows]

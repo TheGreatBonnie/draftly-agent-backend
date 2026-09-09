@@ -262,7 +262,7 @@ async def build_overview_snapshot(
 ) -> dict[str, Any]:
     """Aggregate the current organization's dashboard metrics into one snapshot."""
     repositories = application.dependencies.repositories
-    from draftly.app.api.routes.agents import AGENT_CATALOG
+    from draftly.app.api.routes.agents import build_agent_summaries
     from draftly.app.api.routes.documentation import derive_status
 
     documents = await repositories.documents.list_by_org(org_id=org_id, limit=1000)
@@ -304,7 +304,9 @@ async def build_overview_snapshot(
             "reviewed",
         )
 
-    agent_count = len(AGENT_CATALOG)
+    agent_summaries = await build_agent_summaries(application, org_id=org_id)
+    agent_count = len(agent_summaries)
+    agents_online = sum(item.get("status") != "failed" for item in agent_summaries)
     return {
         "summary": {
             "documentation_total": len(documents),
@@ -320,7 +322,7 @@ async def build_overview_snapshot(
             "stale_documentation": sum(bool(document.get("stale")) for document in documents),
         },
         "system": {
-            "agents_online": agent_count,
+            "agents_online": agents_online,
             "agents_total": agent_count,
             "data_sources_connected": data_sources_connected,
             "data_sources_total": 3,

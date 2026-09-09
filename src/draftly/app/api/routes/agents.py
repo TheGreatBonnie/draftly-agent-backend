@@ -200,10 +200,10 @@ ROLE_NODES: dict[str, list[str]] = {
 
 
 async def _agent_status_history(
-    request: Request, role: str, *, org_id: str | None
+    application: Any, role: str, *, org_id: str | None
 ) -> tuple[str, str, list[dict[str, str]]]:
     runs_repo = getattr(
-        getattr(getattr(request.app.state.draftly, "dependencies", None), "repositories", None),
+        getattr(getattr(application, "dependencies", None), "repositories", None),
         "agent_runs",
         None,
     )
@@ -236,15 +236,13 @@ async def _agent_status_history(
     return status, activity, history[-6:]
 
 
-@router.get("")
-async def list_agents(
-    request: Request, token: dict[str, Any] = Depends(get_verified_token)
-) -> dict[str, Any]:
-    org_id = str(token.get("org_id") or "") or None
+async def build_agent_summaries(
+    application: Any, *, org_id: str | None
+) -> list[dict[str, Any]]:
     agents: list[dict[str, Any]] = []
     for entry in AGENT_CATALOG:
         status, activity, history = await _agent_status_history(
-            request, entry["role"], org_id=org_id
+            application, entry["role"], org_id=org_id
         )
         agents.append(
             {
@@ -258,4 +256,16 @@ async def list_agents(
                 "history": history,
             }
         )
-    return {"agents": agents}
+    return agents
+
+
+@router.get("")
+async def list_agents(
+    request: Request, token: dict[str, Any] = Depends(get_verified_token)
+) -> dict[str, Any]:
+    org_id = str(token.get("org_id") or "") or None
+    return {
+        "agents": await build_agent_summaries(
+            request.app.state.draftly, org_id=org_id
+        )
+    }
