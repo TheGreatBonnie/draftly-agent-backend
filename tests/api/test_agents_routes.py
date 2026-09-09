@@ -9,8 +9,8 @@ from typing import Any
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from draftly.app.api.auth import get_verified_token
 from draftly.app.api import routes as route_modules
+from draftly.app.api.auth import get_verified_token
 from draftly.app.api.routes.agents import router
 
 

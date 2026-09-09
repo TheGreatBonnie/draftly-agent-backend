@@ -8,6 +8,7 @@ from typing import Any
 
 from draftly.persistence.repositories.github import list_github_workflows_record
 
+
 def _value(record: Any, key: str, default: Any = None) -> Any:
     if isinstance(record, dict):
         return record.get(key, default)
@@ -155,7 +156,10 @@ def _recent_changes(documents: list[dict[str, Any]]) -> list[dict[str, Any]]:
     from draftly.app.api.routes.documentation import derive_status
 
     changes: list[dict[str, Any]] = []
-    for document in sorted(documents, key=lambda item: _sort_key(item, "updated_at"), reverse=True)[:5]:
+    recent_documents = sorted(
+        documents, key=lambda item: _sort_key(item, "updated_at"), reverse=True
+    )[:5]
+    for document in recent_documents:
         document_id = str(document.get("id") or "")
         repository = str(document.get("repository") or "")
         path = str(document.get("path") or "")
@@ -173,7 +177,9 @@ def _recent_changes(documents: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return changes
 
 
-def _workflow_snapshot(workflows: list[dict[str, Any]]) -> tuple[dict[str, int], list[dict[str, Any]]]:
+def _workflow_snapshot(
+    workflows: list[dict[str, Any]],
+) -> tuple[dict[str, int], list[dict[str, Any]]]:
     running_statuses = {"running", "started"}
     scheduled_statuses = {"scheduled", "queued", "pending"}
     active: list[dict[str, Any]] = []
