@@ -14,8 +14,8 @@ from __future__ import annotations
 import json
 import re
 import time
-from copy import deepcopy
 from collections.abc import Callable
+from copy import deepcopy
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any
@@ -432,7 +432,7 @@ class WorkflowRunner:
     def _invocation_state(self, event: dict[str, Any], surface: str) -> dict[str, Any]:
         return {
             "run_id": str(event.get("event_id") or ""),
-            "review_policy": self.context.review_policy(),
+            "review_policy": event.get("review_policy") or self.context.review_policy(),
             "delivery_summary": "",
             "evaluation": {},
             "evidence_count": 0,
@@ -442,6 +442,8 @@ class WorkflowRunner:
             "surface": surface,
             "installation_id": event.get("installation_id"),
             "repo_dir": event.get("repo_dir"),
+            "review_revision_of": event.get("review_revision_of"),
+            "review_feedback": event.get("review_feedback"),
         }
 
     async def _notify_reviewers(self, run_id: str) -> None:

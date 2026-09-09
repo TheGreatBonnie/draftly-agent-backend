@@ -357,6 +357,28 @@ class TestRunnerOutcomes:
         assert invocation_state["run_id"] == "evt-1"
         assert invocation_state["review_policy"] == "risky"
 
+    async def test_invocation_state_carries_review_revision_feedback(self) -> None:
+        context = make_context()
+        graph = FakeGraph(completed_result())
+        runner = WorkflowRunner(context, graph_factory=lambda r, s: graph)
+
+        await runner.run(
+            {
+                **PR_EVENT,
+                "review_policy": "always",
+                "review_revision_of": "review-1",
+                "review_feedback": {
+                    "decision": "needs_changes",
+                    "comment": "Add the migration example.",
+                },
+            }
+        )
+
+        invocation_state = graph.calls[0]["invocation_state"]
+        assert invocation_state["review_policy"] == "always"
+        assert invocation_state["review_revision_of"] == "review-1"
+        assert invocation_state["review_feedback"]["comment"] == "Add the migration example."
+
 
 class TestRunnerMergedOnlyGate:
     async def _run_event(self, event_type: str) -> tuple[WorkflowState, object]:

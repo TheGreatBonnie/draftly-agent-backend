@@ -83,9 +83,14 @@ class FakeRunner:
     def __init__(self, status: str) -> None:
         self.status = status
         self.calls: list[dict[str, Any]] = []
+        self.run_calls: list[dict[str, Any]] = []
 
     async def resume_review(self, **kwargs: Any) -> Any:
         self.calls.append(kwargs)
+        return SimpleNamespace(status=SimpleNamespace(value=self.status))
+
+    async def run(self, event: dict[str, Any]) -> Any:
+        self.run_calls.append(event)
         return SimpleNamespace(status=SimpleNamespace(value=self.status))
 
 
@@ -146,6 +151,45 @@ async def test_rejection_resumes_failed_workflow():
     runner = app_state.workflows.runner
     assert runner.calls[0]["response"] == {"approved": False, "comment": "not yet"}
     assert app_state.dependencies.repositories.reviews.decisions[0]["decision"] == "rejected"
+
+
+async def test_request_changes_closes_review_and_restarts_agents_with_feedback():
+    app_state = fake_app_state(workflow_status="pending_review")
+    state = await resume_review_decision(
+        review_id="review-1",
+        decision="request_changes",
+        reviewer_id="user-1",
+        comment="Add the migration example and explain rollback.",
+        app_state=app_state,
+    )
+
+    assert state.status.value == "pending_review"
+    runner = app_state.workflows.runner
+    assert runner.calls == []
+    assert len(runner.run_calls) == 1
+    revision_event = runner.run_calls[0]
+    assert revision_event["event_id"] != "run-1"
+    assert revision_event["review_revision_of"] == "review-1"
+    assert revision_event["review_policy"] == "always"
+    assert revision_event["review_feedback"] == {
+        "decision": "needs_changes",
+        "comment": "Add the migration example and explain rollback.",
+    }
+    assert app_state.dependencies.repositories.reviews.decisions[0]["decision"] == "needs_changes"
+
+
+async def test_request_changes_requires_actionable_comment():
+    app_state = fake_app_state(workflow_status="pending_review")
+    with pytest.raises(ReviewResumeError, match="comment"):
+        await resume_review_decision(
+            review_id="review-1",
+            decision="request_changes",
+            reviewer_id="user-1",
+            comment=" ",
+            app_state=app_state,
+        )
+    assert app_state.workflows.runner.run_calls == []
+    assert app_state.dependencies.repositories.reviews.decisions == []
 
 
 async def test_resume_failure_does_not_mark_approval_complete():

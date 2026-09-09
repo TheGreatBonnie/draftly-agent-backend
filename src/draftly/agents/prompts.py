@@ -560,6 +560,11 @@ DOC_CONTEXT_PROMPT = """You gather evidence about the incoming event.
 Use your search and repository tools to collect relevant code, issues, PRs,
 and documentation. Ground every claim in tool output.
 
+If the task includes ``review_feedback``, this is a revision pass. Treat the
+reviewer's comment as a required constraint, verify it against repository and
+documentation evidence, and collect the evidence the writer needs to address
+every requested change.
+
 {local_repo_note}
 
 {guardrail_evidence_size}
@@ -606,6 +611,10 @@ Output contract:
 WRITER_PROMPT = """You are a documentation engineer. Produce a concrete change plan with
 file edits and a commit message. Follow the repository's writing style and
 policies strictly.
+
+If the task includes ``review_feedback``, this is a revision pass. Read the
+reviewer's comment, address every requested change in the new plan, and do not
+silently discard valid work from the previous proposal.
 Keep each plan SMALL — at most 2 files and a combined ~16000 chars. This is a
 hard limit: a plan larger than this is cut off mid-stream, lost entirely, and
 your turn wasted. CONSOLIDATE: fold all the coverage for a change into the 1-2

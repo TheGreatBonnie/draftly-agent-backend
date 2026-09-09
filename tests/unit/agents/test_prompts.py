@@ -195,6 +195,14 @@ class TestGuardrailsPresent:
         assert "each named" in flat
         assert "real section" in flat
 
+    def test_revision_prompts_use_human_review_feedback(self) -> None:
+        writer = " ".join(build_prompt(WRITER_PROMPT, output_model=DocChangePlan).split())
+        context = " ".join(build_prompt(DOC_CONTEXT_PROMPT, output_model=EvidenceBundle).split())
+
+        assert "review_feedback" in writer
+        assert "review_feedback" in context
+        assert "revision" in writer.lower()
+
     def test_evaluation_rules_match_deterministic_weights(self) -> None:
         rendered = build_prompt(
             REVIEWER_PROMPT,

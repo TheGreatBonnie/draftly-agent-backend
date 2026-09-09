@@ -86,11 +86,19 @@ class FakeEventsRepository:
 class FakeWorkflowRunner:
     def __init__(self) -> None:
         self.calls: list[dict[str, Any]] = []
+        self.run_calls: list[dict[str, Any]] = []
 
     async def resume_review(self, **kwargs: Any) -> Any:
         self.calls.append(kwargs)
         status = "delivered" if kwargs["response"]["approved"] else "failed"
         return SimpleNamespace(status=SimpleNamespace(value=status))
+
+    async def run(self, event: dict[str, Any]) -> Any:
+        self.run_calls.append(event)
+        return SimpleNamespace(
+            run_id=event["event_id"],
+            status=SimpleNamespace(value="pending_review"),
+        )
 
 
 class FakeDocumentsRepository:
@@ -281,6 +289,28 @@ class TestReviewResumeRoute:
         assert runner_call["interrupt_id"] == "int-1"
         assert runner_call["response"]["approved"] is True
         assert runner_call["event"]["project_id"] == "org-1"
+
+    def test_request_changes_restarts_agents_with_feedback(self, client: TestClient) -> None:
+        response = client.post(
+            "/api/github/review/run-1",
+            json={
+                "review_id": "rev-1",
+                "reviewer_id": "u-1",
+                "decision": "request_changes",
+                "comment": "Add the migration example.",
+            },
+        )
+        assert response.status_code == 200
+        body = response.json()
+        assert body["status"] == "needs_changes"
+        assert body["workflow_status"] == "pending_review"
+        runner = client.app.state.draftly.workflows.runner  # type: ignore[attr-defined]
+        assert len(runner.run_calls) == 1
+        revision_event = runner.run_calls[0]
+        assert revision_event["review_feedback"]["decision"] == "needs_changes"
+        assert revision_event["review_feedback"]["comment"] == "Add the migration example."
+        decisions = client.app.state.draftly.dependencies.repositories.reviews.decisions  # type: ignore[attr-defined]
+        assert decisions[0]["decision"] == "needs_changes"
 
     def test_approve_non_resumable_surface_409(self, client: TestClient) -> None:
         state = client.app.state.draftly  # type: ignore[attr-defined]

@@ -549,9 +549,11 @@ async def resume_review(
     from draftly.review.resume import ReviewResumeError, resume_review_decision
 
     try:
+        decision_kind = decision.normalized_decision()
         state = await resume_review_decision(
             review_id=pending.review_id,
-            approved=bool(decision.approved),
+            approved=decision.approved,
+            decision=decision_kind,
             reviewer_id=str(token.get("user_id") or token.get("sub") or ""),
             comment=decision.comment,
             app_state=app_state,
@@ -574,8 +576,13 @@ async def resume_review(
         reviewer_id=str(token.get("user_id") or token.get("sub") or ""),
     )
     return {
-        "status": "resumed" if decision.approved else "rejected",
+        "status": "needs_changes" if decision_kind == "request_changes" else (
+            "resumed" if decision_kind == "approve" else "rejected"
+        ),
         "run_id": run_id,
         "workflow_status": status,
         "review": getattr(state, "decision_outcome", None),
+        "rework_run_id": getattr(state, "run_id", None)
+        if decision_kind == "request_changes"
+        else None,
     }
