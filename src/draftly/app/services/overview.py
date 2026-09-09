@@ -8,6 +8,10 @@ from typing import Any
 
 from draftly.persistence.repositories.github import list_github_workflows_record
 
+DASHBOARD_EVALUATION_DIMENSIONS = frozenset(
+    {"completeness", "correctness", "groundedness", "relevance"}
+)
+
 
 def _value(record: Any, key: str, default: Any = None) -> Any:
     if isinstance(record, dict):
@@ -124,9 +128,12 @@ def _evaluation_summary(evaluations: list[Any]) -> tuple[dict[str, Any], int, st
         for item in granular if isinstance(granular, list) else []:
             if not isinstance(item, dict) or not item.get("metric"):
                 continue
+            metric_name = str(item["metric"]).strip().lower()
+            if metric_name not in DASHBOARD_EVALUATION_DIMENSIONS:
+                continue
             score = _normalize_score(item.get("score"))
             if score is not None:
-                dimensions[str(item["metric"])].append(score)
+                dimensions[metric_name].append(score)
 
     statuses = [_normalized_status(_value(item, "status")) for item in ordered]
     if any(status in {"running", "queued"} for status in statuses):

@@ -87,6 +87,34 @@ def _empty_application() -> SimpleNamespace:
     )
 
 
+def test_evaluation_summary_exposes_only_dashboard_quality_dimensions() -> None:
+    evaluations = [
+        {
+            "score": 0.8,
+            "created_at": datetime(2026, 9, 9, tzinfo=UTC),
+            "metrics": {
+                "granular": [
+                    {"metric": "completeness", "score": 0.8},
+                    {"metric": "correctness", "score": 0.9},
+                    {"metric": "groundedness", "score": 0.7},
+                    {"metric": "relevance", "score": 0.85},
+                    {"metric": "expected_tools", "score": 1.0},
+                    {"metric": "node:content_blog", "score": 0.95},
+                ]
+            },
+        }
+    ]
+
+    summary, _, _ = overview._evaluation_summary(evaluations)
+
+    assert summary["dimensions"] == [
+        {"name": "completeness", "value": 80.0},
+        {"name": "correctness", "value": 90.0},
+        {"name": "groundedness", "value": 70.0},
+        {"name": "relevance", "value": 85.0},
+    ]
+
+
 @pytest.mark.asyncio
 async def test_overview_aggregates_org_scoped_document_review_and_evaluation_signals() -> None:
     """Removing any source aggregation must break the corresponding snapshot data."""
@@ -210,7 +238,7 @@ async def test_overview_aggregates_org_scoped_document_review_and_evaluation_sig
     assert snapshot["evaluation"] == {
         "average_score": 85.0,
         "trend": 10.0,
-        "dimensions": [{"name": "Correctness", "value": 85.0}],
+        "dimensions": [{"name": "correctness", "value": 85.0}],
     }
     by_date = {point["date"]: point for point in snapshot["activity"]}
     assert by_date[yesterday.date().isoformat()]["created"] == 1
