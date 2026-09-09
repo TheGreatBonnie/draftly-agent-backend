@@ -58,6 +58,22 @@ def _classification(source: Any, invocation_state: dict[str, Any]) -> dict[str, 
     return classified if isinstance(classified, dict) else {}
 
 
+def _collect_evidence(source: Any) -> list[dict[str, Any]]:
+    """Collect structured evidence from the graph nodes that own it."""
+    graph_state = getattr(source, "state", None)
+    evidence: list[dict[str, Any]] = []
+    for node_id in ("context", "research"):
+        data = safe_node_data(graph_state, node_id)
+        if not isinstance(data, dict):
+            continue
+        for key in ("evidence", "items"):
+            items = data.get(key)
+            if isinstance(items, list):
+                evidence.extend(item for item in items if isinstance(item, dict))
+                break
+    return evidence
+
+
 def _collect_document(source: Any, state: dict[str, Any]) -> dict[str, Any] | None:
     """Pull the proposed document from completed writer nodes.
 
@@ -152,6 +168,8 @@ class ReviewGate(HookProvider):
                 "evaluation": safe_node_data(getattr(event.source, "state", None), "evaluate")
                 or state.get("evaluation", {}),
                 "evidence_count": state.get("evidence_count", 0),
+                "evidence": _collect_evidence(event.source),
+                "classification": classification,
                 "document": document or None,
             },
         )

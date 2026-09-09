@@ -265,6 +265,35 @@ def test_interrupt_reason_includes_evaluation_result() -> None:
     }
 
 
+def test_interrupt_reason_includes_classification_and_structured_evidence() -> None:
+    reasons: list[dict] = []
+    event = SimpleNamespace(
+        node_id="deliver",
+        invocation_state={"review_policy": "always", "run_id": "run-evidence"},
+        source=SimpleNamespace(
+            state=SimpleNamespace(
+                results={
+                    "classify": SimpleNamespace(
+                        result=agent_result({"change_type": "api_change", "urgency": "high"})
+                    ),
+                    "context": SimpleNamespace(
+                        result=agent_result(
+                            {"evidence": [{"id": "src/auth/oauth.py:10", "quote": "PKCE"}]}
+                        )
+                    ),
+                }
+            )
+        ),
+        interrupt=lambda _name, *, reason: reasons.append(reason) or {"approved": True},
+        cancel_node=None,
+    )
+
+    ReviewGate().gate(event)
+
+    assert reasons[0]["classification"] == {"change_type": "api_change", "urgency": "high"}
+    assert reasons[0]["evidence"] == [{"id": "src/auth/oauth.py:10", "quote": "PKCE"}]
+
+
 def test_review_pause_and_decision_are_logged(monkeypatch) -> None:
     """The gate must surface when it pauses a run for review and how the
     reviewer responded — today it imports structlog but logs nothing."""

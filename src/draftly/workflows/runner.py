@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import re
 import time
+from copy import deepcopy
 from collections.abc import Callable
 from datetime import UTC, datetime
 from types import SimpleNamespace
@@ -1142,9 +1143,10 @@ class WorkflowRunner:
     ) -> None:
         reviews = self.context.reviews
         for interrupt in result.interrupts or []:
+            reason = await self._enrich_review_reason(interrupt.reason, state)
             record = {
                 "interrupt_id": interrupt.id,
-                "reason": interrupt.reason,
+                "reason": reason,
             }
             state.interrupts.append(record)
             if reviews is None:
@@ -1153,9 +1155,58 @@ class WorkflowRunner:
                 await reviews.store_interrupt(
                     run_id=run_id,
                     interrupt_id=interrupt.id,
-                    reason=interrupt.reason,
+                    reason=reason,
                     workflow_type=surface,
                     org_id=str(state.event.get("project_id") or ""),
                 )
             except Exception:
                 logger.exception("store_interrupt_failed", run_id=run_id)
+
+    async def _enrich_review_reason(
+        self,
+        reason: Any,
+        state: WorkflowState,
+    ) -> dict[str, Any]:
+        """Add organization-scoped original document bodies before persistence."""
+        if not isinstance(reason, dict):
+            return {}
+        enriched = deepcopy(reason)
+        document = enriched.get("document")
+        if not isinstance(document, dict):
+            return enriched
+        files = document.get("files")
+        if not isinstance(files, list):
+            return enriched
+        repository = document.get("repository")
+        documents = getattr(getattr(self.context, "repositories", None), "documents", None)
+        org_id = str(state.event.get("project_id") or "")
+        for file in files:
+            if not isinstance(file, dict):
+                continue
+            action = str(file.get("action") or "").lower()
+            if action not in {"update", "create"}:
+                continue
+            file["original_content"] = None
+            file["original_content_available"] = False
+            if action == "create" or not repository or not file.get("path") or documents is None:
+                continue
+            try:
+                existing = await documents.get_by_org_repository_path(
+                    org_id=org_id,
+                    repository=str(repository),
+                    path=str(file["path"]),
+                )
+            except Exception:
+                logger.warning(
+                    "review_original_content_lookup_failed",
+                    org_id=org_id,
+                    repository=repository,
+                    path=file.get("path"),
+                    exc_info=True,
+                )
+                continue
+            content = existing.get("content") if isinstance(existing, dict) else None
+            if isinstance(content, str):
+                file["original_content"] = content
+                file["original_content_available"] = True
+        return enriched

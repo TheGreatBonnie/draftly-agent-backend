@@ -24,6 +24,8 @@ def _reason_detail(reason: Any) -> dict[str, Any]:
             "evaluation": reason.get("evaluation"),
             "evidence_count": reason.get("evidence_count"),
             "run_id": reason.get("run_id"),
+            "classification": reason.get("classification"),
+            "evidence": reason.get("evidence"),
             "document": reason.get("document"),
         }
     return {}
