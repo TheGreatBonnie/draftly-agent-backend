@@ -61,9 +61,7 @@ async def test_store_interrupt_persists_document_payload() -> None:
             "evidence_count": 2,
             "document": {
                 "repository": "acme/api",
-                "files": [
-                    {"path": "docs/widgets.md", "content": "# Widgets", "action": "update"}
-                ],
+                "files": [{"path": "docs/widgets.md", "content": "# Widgets", "action": "update"}],
                 "commit_message": "docs: update widgets",
                 "summary": "Updated widgets guide",
             },
@@ -76,3 +74,23 @@ async def test_store_interrupt_persists_document_payload() -> None:
     detail = json.loads(params[-1])
     assert detail["document"]["files"][0]["path"] == "docs/widgets.md"
     assert detail["document"]["files"][0]["content"] == "# Widgets"
+
+
+async def test_store_interrupt_action_description_never_leaks_run_id() -> None:
+    """Without a summary, the stored action_description must read like a
+    human notice instead of exposing the internal run id."""
+    client = FakeClient()
+    repo = ReviewsRepository(database=client)
+
+    await repo.store_interrupt(
+        run_id="ev-3",
+        interrupt_id="i-3",
+        reason={"run_id": "ev-3", "summary": "", "evaluation": {}, "evidence_count": 0},
+        workflow_type="pull_request",
+        org_id="o-1",
+    )
+
+    _, params = client.executed[0]
+    assert params[5] == "a documentation review is pending"
+    detail = json.loads(params[-1])
+    assert detail["summary"] == ""

@@ -149,9 +149,7 @@ def test_risky_policy_reads_classification_from_graph_state() -> None:
             state=SimpleNamespace(
                 results={
                     "classify": SimpleNamespace(
-                        result=agent_result(
-                            {"change_type": "routine", "urgency": "low"}
-                        )
+                        result=agent_result({"change_type": "routine", "urgency": "low"})
                     )
                 }
             )
@@ -161,6 +159,74 @@ def test_risky_policy_reads_classification_from_graph_state() -> None:
     )
 
     ReviewGate().gate(event)
+
+
+def test_interrupt_reason_summary_falls_back_without_document() -> None:
+    reasons: list[dict] = []
+    event = SimpleNamespace(
+        node_id="deliver",
+        invocation_state={"review_policy": "always", "run_id": "run-1"},
+        source=SimpleNamespace(state=SimpleNamespace(results={})),
+        interrupt=lambda _name, **kwargs: reasons.append(kwargs["reason"]) or {"approved": True},
+        cancel_node=None,
+    )
+
+    ReviewGate().gate(event)
+
+    assert reasons[0]["summary"] == "a documentation review is pending"
+    assert reasons[0]["summary"] != "run-1"
+    assert reasons[0]["document"] is None
+
+
+def test_interrupt_reason_summary_uses_writer_summary() -> None:
+    reasons: list[dict] = []
+    event = SimpleNamespace(
+        node_id="deliver",
+        invocation_state={"review_policy": "always", "run_id": "run-1"},
+        source=SimpleNamespace(
+            state=SimpleNamespace(
+                results={
+                    "create": SimpleNamespace(
+                        result=agent_result(
+                            {
+                                "files": [{"path": "docs/x.md", "content": "x"}],
+                                "summary": "Updated widgets guide",
+                            }
+                        )
+                    )
+                }
+            )
+        ),
+        interrupt=lambda _name, **kwargs: reasons.append(kwargs["reason"]) or {"approved": True},
+        cancel_node=None,
+    )
+
+    ReviewGate().gate(event)
+
+    assert reasons[0]["summary"] == "Updated widgets guide"
+
+
+def test_interrupt_reason_summary_uses_content_title() -> None:
+    reasons: list[dict] = []
+    event = SimpleNamespace(
+        node_id="deliver",
+        invocation_state={"review_policy": "always", "run_id": "run-1"},
+        source=SimpleNamespace(
+            state=SimpleNamespace(
+                results={
+                    "content_blog": SimpleNamespace(
+                        result=agent_result({"title": "Monthly Update", "body": "..."})
+                    )
+                }
+            )
+        ),
+        interrupt=lambda _name, **kwargs: reasons.append(kwargs["reason"]) or {"approved": True},
+        cancel_node=None,
+    )
+
+    ReviewGate().gate(event)
+
+    assert reasons[0]["summary"] == "Monthly Update"
 
 
 def test_interrupt_reason_includes_evaluation_result() -> None:

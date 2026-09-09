@@ -32,9 +32,7 @@ class DiscordClient:
         if self.allowed_guilds is None:
             return
         if guild_id is None or guild_id not in self.allowed_guilds:
-            raise PermissionError(
-                f"Discord guild {guild_id!r} is not an allowed delivery target"
-            )
+            raise PermissionError(f"Discord guild {guild_id!r} is not an allowed delivery target")
 
     async def _request(
         self,
@@ -153,6 +151,8 @@ class DiscordClient:
         user_id: str,
         content: str,
         *,
+        embeds: list[dict[str, Any]] | None = None,
+        components: list[dict[str, Any]] | None = None,
         org_id: str | None = None,
         guild_id: str | None = None,
     ) -> dict[str, Any]:
@@ -161,7 +161,8 @@ class DiscordClient:
         Resolves the organization's linked guild when only ``org_id`` is given,
         refuses guilds outside the allowed target, verifies the user is a guild
         member, then opens and sends the DM. All delivery stays within the
-        resolved organization.
+        resolved organization. Optional ``embeds`` and ``components`` are
+        forwarded into the channel message payload (interactive review cards).
         """
         if guild_id is None and org_id:
             from draftly.persistence.repositories.organizations import (
@@ -186,12 +187,18 @@ class DiscordClient:
         if not channel_id:
             raise RuntimeError(f"Failed to open DM with user {user_id}")
 
+        payload: dict[str, Any] = {"content": content}
+        if embeds:
+            payload["embeds"] = embeds
+        if components:
+            payload["components"] = components
+
         return cast(
             dict[str, Any],
             await self._request(
                 "POST",
                 f"/channels/{channel_id}/messages",
-                json={"content": content},
+                json=payload,
             ),
         )
 

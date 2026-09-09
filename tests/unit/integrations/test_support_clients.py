@@ -76,6 +76,31 @@ class TestSupportRuntime:
         assert parent is None
 
 
+class TestDefaultSlackInstallationStore:
+    async def test_build_dependencies_receives_settings(self, monkeypatch) -> None:
+        from draftly.integrations.slack.installation_store import SlackInstallationStore
+        from draftly.integrations.support.runtime import (
+            default_slack_installation_store,
+        )
+
+        captured: dict[str, Any] = {}
+
+        def fake_build_dependencies(*, settings):
+            captured["settings"] = settings
+            return SimpleNamespace(
+                integrations=SimpleNamespace(database=SimpleNamespace())
+            )
+
+        monkeypatch.setattr(
+            "draftly.app.dependencies.build_dependencies", fake_build_dependencies
+        )
+
+        store = default_slack_installation_store()
+
+        assert captured["settings"] is not None
+        assert isinstance(store, SlackInstallationStore)
+
+
 class TestSlackClientInstallationAware:
     def make_client(self, tokens=None) -> SlackClient:
         return SlackClient(installation_store=FakeInstallations(tokens or {}))

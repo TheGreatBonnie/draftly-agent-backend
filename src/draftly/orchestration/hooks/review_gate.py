@@ -103,7 +103,7 @@ def _collect_document(source: Any, state: dict[str, Any]) -> dict[str, Any] | No
                 "branch": data.get("branch", ""),
                 "repository": data.get("repository", ""),
             }
-        if document.get("content") or document.get("files"):
+        if document.get("content") or document.get("body") or document.get("files"):
             return document
     return None
 
@@ -119,9 +119,6 @@ class ReviewGate(HookProvider):
             return
 
         state = event.invocation_state or {}
-        policy = state.get("review_policy", "always")
-        classification = _classification(event.source, state)
-
         classification = _classification(event.source, state)
         policy = state.get("review_policy", "always")
 
@@ -140,15 +137,22 @@ class ReviewGate(HookProvider):
             node_id=event.node_id,
             policy=policy,
         )
+        document = _collect_document(event.source, state) or {}
+        summary = (
+            document.get("summary")
+            or document.get("title")
+            or str(state.get("delivery_summary") or "")
+            or "a documentation review is pending"
+        )
         decision = event.interrupt(
             INTERRUPT_NAME,
             reason={
                 "run_id": state.get("run_id"),
-                "summary": state.get("delivery_summary", ""),
+                "summary": summary,
                 "evaluation": safe_node_data(getattr(event.source, "state", None), "evaluate")
                 or state.get("evaluation", {}),
                 "evidence_count": state.get("evidence_count", 0),
-                "document": _collect_document(event.source, state),
+                "document": document or None,
             },
         )
 

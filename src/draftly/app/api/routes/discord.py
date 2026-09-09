@@ -11,7 +11,6 @@ from pydantic import BaseModel
 
 from draftly.app.api.auth import get_verified_token
 from draftly.app.config import get_settings
-from draftly.integrations.discord.interactions import resolve_interaction_token
 
 logger = structlog.get_logger(__name__)
 
@@ -107,27 +106,11 @@ async def handle_interactions(request: Request) -> JSONResponse:
         if len(parts) != 2:
             return JSONResponse(status_code=400, content={"error": "Invalid custom_id"})
 
-        action_prefix, short_key = parts
+        action_prefix, review_id = parts
         action = ACTION_MAP.get(action_prefix)
-        if not action:
-            return JSONResponse(status_code=400, content={"error": "Unknown action"})
+        if not action or not review_id:
+            return JSONResponse(status_code=400, content={"error": "Invalid custom_id"})
 
-        full_token = resolve_interaction_token(short_key)
-        if not full_token:
-            return JSONResponse(
-                content={
-                    "type": 4,
-                    "data": {
-                        "content": (
-                            "This review link has expired or is invalid. "
-                            "Please use the dashboard instead."
-                        ),
-                        "flags": 64,
-                    },
-                },
-            )
-
-        review_id = full_token  # full_token is the review UUID
         reviewer_id = payload.get("member", {}).get("user", {}).get("id", "unknown")
 
         approved = action == "approved"

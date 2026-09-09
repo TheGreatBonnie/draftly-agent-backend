@@ -33,6 +33,7 @@ class FakeReviewers:
 class FakeSlack:
     def __init__(self) -> None:
         self.dms: list[tuple] = []
+        self.calls: list[dict] = []
         self.raise_on_send: Exception | None = None
 
     async def send_dm(
@@ -41,16 +42,19 @@ class FakeSlack:
         text: str,
         *,
         org_id: str | None = None,
+        blocks=None,
         **kwargs,
     ):
         if self.raise_on_send is not None:
             raise self.raise_on_send
         self.dms.append((user_id, text))
+        self.calls.append({"user_id": user_id, "text": text, "blocks": blocks})
 
 
 class FakeDiscord:
     def __init__(self) -> None:
         self.dms: list[tuple] = []
+        self.calls: list[dict] = []
         self.raise_on_send: Exception | None = None
 
     async def send_dm(
@@ -60,11 +64,16 @@ class FakeDiscord:
         *,
         org_id: str | None = None,
         guild_id: str | None = None,
+        embeds=None,
+        components=None,
         **kwargs,
     ):
         if self.raise_on_send is not None:
             raise self.raise_on_send
         self.dms.append((user_id, content))
+        self.calls.append(
+            {"user_id": user_id, "content": content, "embeds": embeds, "components": components}
+        )
 
 
 class FakeNotificationRepository:
@@ -154,9 +163,7 @@ async def test_notifies_only_reviewers_with_matching_pref():
 
 async def test_does_not_resend_after_notification_sent():
     reviews = FakeReviews(pending={"run-1": {"org_id": "org-1", "id": "review-1"}})
-    reviewers = FakeReviewers(
-        org="org-1", rows=[{"notify_slack": True, "slack_user_id": "U1"}]
-    )
+    reviewers = FakeReviewers(org="org-1", rows=[{"notify_slack": True, "slack_user_id": "U1"}])
     slack = FakeSlack()
     notifier = _notifier(
         reviews=reviews,
@@ -172,9 +179,7 @@ async def test_does_not_resend_after_notification_sent():
 
 async def test_platform_delivery_error_is_best_effort():
     reviews = FakeReviews(pending={"run-1": {"org_id": "org-1", "id": "review-1"}})
-    reviewers = FakeReviewers(
-        org="org-1", rows=[{"notify_slack": True, "slack_user_id": "U1"}]
-    )
+    reviewers = FakeReviewers(org="org-1", rows=[{"notify_slack": True, "slack_user_id": "U1"}])
     slack = FakeSlack()
     slack.raise_on_send = RuntimeError("provider down")
     notifications = FakeNotificationRepository()
@@ -226,9 +231,7 @@ async def test_body_includes_summary_and_review_pointer():
             }
         }
     )
-    reviewers = FakeReviewers(
-        org="org-1", rows=[{"notify_slack": True, "slack_user_id": "U1"}]
-    )
+    reviewers = FakeReviewers(org="org-1", rows=[{"notify_slack": True, "slack_user_id": "U1"}])
     slack = FakeSlack()
     notifier = _notifier(
         reviews=reviews,
@@ -239,3 +242,90 @@ async def test_body_includes_summary_and_review_pointer():
 
     await notifier.notify_reviewers("run-1")
     assert slack.dms == [("U1", "Updated widgets guide\nReview: review-1")]
+
+
+async def test_slack_dm_carries_block_kit_with_review_action_buttons():
+    reviews = FakeReviews(
+        pending={
+            "run-1": {
+                "org_id": "org-1",
+                "id": "review-1",
+                "detail": {
+                    "summary": "Updated widgets guide",
+                    "document": {
+                        "kind": "change_plan",
+                        "repository": "acme/api",
+                        "files": [
+                            {"path": "docs/widgets.md", "content": "# Widgets", "action": "update"}
+                        ],
+                        "summary": "Updated widgets guide",
+                    },
+                },
+            }
+        }
+    )
+    reviewers = FakeReviewers(org="org-1", rows=[{"notify_slack": True, "slack_user_id": "U1"}])
+    slack = FakeSlack()
+    notifier = _notifier(
+        reviews=reviews,
+        reviewers=reviewers,
+        notifications=FakeNotificationRepository(),
+        slack=slack,
+    )
+
+    await notifier.notify_reviewers("run-1")
+
+    blocks = slack.calls[0]["blocks"]
+    assert blocks is not None and blocks
+    elements = [e for b in blocks if b["type"] == "actions" for e in b["elements"]]
+    action_ids = {e["action_id"]: e["value"] for e in elements}
+    assert action_ids == {
+        "approve_review": "review-1",
+        "reject_review": "review-1",
+        "revise_review": "review-1",
+    }
+    assert slack.calls[0]["text"] == "Updated widgets guide\nReview: review-1"
+
+
+async def test_discord_dm_carries_embed_and_components_with_review_id():
+    reviews = FakeReviews(
+        pending={
+            "run-1": {
+                "org_id": "org-1",
+                "id": "review-1",
+                "detail": {
+                    "summary": "Updated widgets guide",
+                    "document": {
+                        "kind": "change_plan",
+                        "repository": "acme/api",
+                        "files": [
+                            {"path": "docs/widgets.md", "content": "# Widgets", "action": "update"}
+                        ],
+                        "summary": "Updated widgets guide",
+                    },
+                },
+            }
+        }
+    )
+    reviewers = FakeReviewers(org="org-1", rows=[{"notify_discord": True, "discord_user_id": "D1"}])
+    discord = FakeDiscord()
+    notifier = _notifier(
+        reviews=reviews,
+        reviewers=reviewers,
+        notifications=FakeNotificationRepository(),
+        discord=discord,
+    )
+
+    await notifier.notify_reviewers("run-1")
+
+    call = discord.calls[0]
+    assert call["embeds"][0]["title"] == "Documentation Review Required"
+    assert call["embeds"][0]["fields"][0]["value"].startswith("# Widgets")
+    custom_ids = [
+        c["custom_id"]
+        for row in call["components"]
+        for c in row["components"]
+        if c.get("custom_id")
+    ]
+    assert all(custom_id.endswith(":review-1") for custom_id in custom_ids)
+    assert call["content"] == "Updated widgets guide\nReview: review-1"

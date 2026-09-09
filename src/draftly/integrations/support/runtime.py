@@ -64,8 +64,9 @@ def support_runtime_for(event: dict[str, Any]) -> SupportRuntimeContext | None:
 
 def default_slack_installation_store():
     """Lazily build the DB-backed installation store used by support tools."""
+    from draftly.app.config import get_settings
     from draftly.app.dependencies import build_dependencies
     from draftly.integrations.slack.installation_store import SlackInstallationStore
 
-    deps = build_dependencies()
+    deps = build_dependencies(settings=get_settings())
     return SlackInstallationStore(deps.integrations.database)

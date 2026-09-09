@@ -10,7 +10,6 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from draftly.app.api.routes import discord as discord_routes
-from draftly.integrations.discord.interactions import store_interaction_token
 from draftly.persistence.repositories.reviews import ReviewRecord
 
 
@@ -169,7 +168,6 @@ def test_discord_approve_button_resumes_support_workflow(monkeypatch):
     app.include_router(discord_routes.router, prefix="/api")
     app.state.draftly = _app_state()
 
-    store_interaction_token("ab", "review-1")
     monkeypatch.setattr(discord_routes, "_verify_signature", lambda *a, **k: True)
 
     client = TestClient(app)
@@ -178,7 +176,7 @@ def test_discord_approve_button_resumes_support_workflow(monkeypatch):
         json={
             "type": 3,
             "data": {
-                "custom_id": "discord_approve:ab",
+                "custom_id": "discord_approve:review-1",
                 "components": [{"value": "looks good"}],
             },
             "member": {"user": {"id": "user-9"}},

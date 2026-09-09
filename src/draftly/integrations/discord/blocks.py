@@ -1,11 +1,14 @@
-"""Discord interactive components: review cards, embeds, and action components."""
+"""Discord interactive components: review cards, embeds, and action components.
+
+Buttons and selects reference the review id directly in their ``custom_id``
+(``discord_{action}:{review_id}``). The interactions route resolves the id
+against the persisted review, so no in-memory token store is needed — and the
+card can round-trip across separate worker/API processes.
+"""
 
 from __future__ import annotations
 
-import secrets
 from typing import Any
-
-from draftly.integrations.discord.interactions import store_interaction_token
 
 
 def _truncate_draft(content: str, max_chars: int = 500) -> str:
@@ -22,19 +25,21 @@ def _truncate_draft(content: str, max_chars: int = 500) -> str:
 def build_discord_review_card(
     title: str,
     source: str,
-    confidence: float,
+    confidence: float | None,
     dashboard_url: str,
-    review_token: str,
+    review_id: str,
     draft_content: str = "",
 ) -> dict[str, Any]:
     """Build a Discord embed payload with interactive action components."""
     truncated_draft = _truncate_draft(draft_content)
 
+    header = [f"**Title:** {title}", f"**Source:** {source}"]
+    if confidence is not None:
+        header.append(f"**Confidence:** {confidence:.0%}")
+
     embed: dict[str, Any] = {
         "title": "Documentation Review Required",
-        "description": (
-            f"**Title:** {title}\n**Source:** {source}\n**Confidence:** {confidence:.0%}"
-        ),
+        "description": "\n".join(header),
         "color": 49407,
         "fields": [
             {
@@ -48,9 +53,6 @@ def build_discord_review_card(
 
     if len(embed["fields"][0]["value"]) > 1024:
         embed["fields"][0]["value"] = embed["fields"][0]["value"][:1021] + "..."
-
-    short_key = secrets.token_urlsafe(6)
-    store_interaction_token(short_key, review_token)
 
     components = [
         {
@@ -71,19 +73,19 @@ def build_discord_review_card(
                     "type": 2,
                     "style": 3,
                     "label": "Approve",
-                    "custom_id": f"discord_approve:{short_key}",
+                    "custom_id": f"discord_approve:{review_id}",
                 },
                 {
                     "type": 2,
                     "style": 4,
                     "label": "Reject",
-                    "custom_id": f"discord_reject:{short_key}",
+                    "custom_id": f"discord_reject:{review_id}",
                 },
                 {
                     "type": 2,
                     "style": 2,
                     "label": "Revise",
-                    "custom_id": f"discord_revise:{short_key}",
+                    "custom_id": f"discord_revise:{review_id}",
                 },
             ],
         },
@@ -92,7 +94,7 @@ def build_discord_review_card(
             "components": [
                 {
                     "type": 3,
-                    "custom_id": f"discord_feedback:{short_key}",
+                    "custom_id": f"discord_feedback:{review_id}",
                     "placeholder": "Quick feedback",
                     "options": [
                         {"label": "Needs more context", "value": "needs_context"},

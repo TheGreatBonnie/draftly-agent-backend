@@ -235,7 +235,7 @@ class ReviewsRepository:
         detail = _reason_detail(reason)
         # Prefer the summary text for action_description over a raw dict repr
         if isinstance(reason, dict):
-            action_description = str(reason.get("summary") or reason.get("run_id") or reason)
+            action_description = str(reason.get("summary") or "a documentation review is pending")
         else:
             action_description = str(reason) if reason is not None else None
 

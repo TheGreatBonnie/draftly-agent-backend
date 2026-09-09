@@ -3,7 +3,9 @@
 Loaded per run by ``WorkflowContext.notifier``. Resolves the organization's own
 Slack/Discord integrations (never the source runtime's), claims each
 (platform, recipient) delivery before sending, and marks the receipt sent or
-failed. A provider failure never raises into the workflow.
+failed. A provider failure never raises into the workflow. Slack DMs use Block
+Kit and Discord DMs use an embed + action components via
+``draftly.integrations.slack.blocks`` / ``draftly.integrations.discord.blocks``.
 """
 
 from __future__ import annotations
@@ -27,6 +29,32 @@ def _review_summary(review: Any) -> str:
     if not summary:
         summary = _get(review, "action_description") or "a documentation review is pending"
     return str(summary)
+
+
+def _review_document(review: Any) -> dict[str, Any]:
+    """The writer payload the gate attached to the review, if any."""
+    detail = _get(review, "detail") or {}
+    document = detail.get("document") if isinstance(detail, dict) else None
+    return document if isinstance(document, dict) else {}
+
+
+def _card_context(review: Any) -> dict[str, str]:
+    """Title/source/draft context for interactive review cards."""
+    document = _review_document(review)
+    title = document.get("title") or "Documentation Change"
+    source = document.get("repository") or document.get("channel") or "draftly"
+    draft = ""
+    if document.get("content") or document.get("body"):
+        draft = str(document.get("content") or document.get("body") or "")
+    else:
+        files = document.get("files") or []
+        if files and isinstance(files[0], dict) and files[0].get("content"):
+            draft = str(files[0]["content"])
+    return {
+        "title": str(title),
+        "source": str(source),
+        "draft": draft,
+    }
 
 
 def _review_body(review: Any) -> str:
@@ -75,6 +103,7 @@ class ReviewNotifier:
         for reviewer in active:
             for platform, recipient in self._targets_for(reviewer):
                 if await self._notify_leg(
+                    review,
                     reviewer,
                     review_id,
                     org_id,
@@ -93,9 +122,7 @@ class ReviewNotifier:
         targets: list[tuple[str, str]] = []
         if _get(reviewer, "notify_slack", False) and _get(reviewer, "slack_user_id"):
             targets.append(("slack", str(_get(reviewer, "slack_user_id"))))
-        if _get(reviewer, "notify_discord", False) and _get(
-            reviewer, "discord_user_id"
-        ):
+        if _get(reviewer, "notify_discord", False) and _get(reviewer, "discord_user_id"):
             targets.append(("discord", str(_get(reviewer, "discord_user_id"))))
         if _get(reviewer, "notify_email", False) and _get(reviewer, "email"):
             targets.append(("email", str(_get(reviewer, "email"))))
@@ -103,6 +130,7 @@ class ReviewNotifier:
 
     async def _notify_leg(
         self,
+        review: Any,
         reviewer: Any,
         review_id: str,
         org_id: str,
@@ -116,16 +144,44 @@ class ReviewNotifier:
 
         try:
             if platform == "slack":
+                from draftly.integrations.slack.blocks import (
+                    build_review_notification_card,
+                )
+
+                context = _card_context(review)
+                card = build_review_notification_card(
+                    title=context["title"],
+                    source=context["source"],
+                    summary=summary,
+                    dashboard_url=f"{self._dashboard_url()}/review/{review_id}",
+                    review_id=review_id,
+                )
                 await self.slack.send_dm(
                     recipient,
-                    body,
+                    card["text"],
                     org_id=org_id,
+                    blocks=card["blocks"],
                 )
             elif platform == "discord":
+                from draftly.integrations.discord.blocks import (
+                    build_discord_review_card,
+                )
+
+                context = _card_context(review)
+                card = build_discord_review_card(
+                    context["title"],
+                    context["source"],
+                    None,
+                    f"{self._dashboard_url()}/review/{review_id}",
+                    review_id,
+                    draft_content=context["draft"],
+                )
                 await self.discord.send_dm(
                     recipient,
                     body,
                     org_id=org_id,
+                    embeds=card["embeds"],
+                    components=card["components"],
                 )
             elif platform == "email":
                 if self.email is None:
