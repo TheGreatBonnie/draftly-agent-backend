@@ -106,4 +106,3 @@ def test_display_is_nullable_safe_for_legacy_records() -> None:
     }
     assert display["evidence"] == []
     assert display["github_url"] is None
-
