@@ -541,6 +541,10 @@ async def list_github_workflows_record(
         result.append({
             "run_id": run_id,
             "title": gw.get("title", ""),
+            "repository": "/".join(
+                part for part in (str(gw.get("owner") or ""), str(gw.get("repo") or "")) if part
+            ),
+            "created_at": gw.get("created_at"),
             "target_doc": None,  # PR runs don't have a target doc
             "trigger_label": trigger,
             "status": status,

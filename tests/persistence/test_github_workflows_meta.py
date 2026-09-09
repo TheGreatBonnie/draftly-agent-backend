@@ -158,6 +158,8 @@ async def test_list_github_workflows_record_shape() -> None:
     assert len(rows) == 1
     assert rows[0]["run_id"] == "ev-1"
     assert rows[0]["title"] == "Test PR"
+    assert rows[0]["repository"] == "acme/api"
+    assert rows[0]["created_at"] == "2024-01-01T00:00:00Z"
     assert rows[0]["trigger_label"] == "PR #482"
     assert rows[0]["status"] == "completed"
     assert rows[0]["current_stage"] == "deliver"
