@@ -257,6 +257,18 @@ async def _integration_health(
     return connected, issues
 
 
+async def _scheduler_status(repositories: Any, org_id: str) -> str:
+    jobs = getattr(repositories, "jobs", None)
+    list_active = getattr(jobs, "list_active", None)
+    if list_active is None:
+        return "Unavailable"
+    try:
+        active_jobs = await list_active(org_id=org_id)
+    except Exception:
+        return "Unavailable"
+    return "Healthy" if active_jobs else "Idle"
+
+
 async def build_overview_snapshot(
     application: Any, org_id: str, days: int
 ) -> dict[str, Any]:
@@ -283,6 +295,7 @@ async def build_overview_snapshot(
     data_sources_connected, integration_issues = await _integration_health(
         repositories, database, org_id
     )
+    scheduler_status = await _scheduler_status(repositories, org_id)
 
     evaluation, failed_evaluations, evaluations_status = _evaluation_summary(evaluations)
     workflow_summary, active_workflows = _workflow_snapshot(workflows)
@@ -327,7 +340,7 @@ async def build_overview_snapshot(
             "data_sources_connected": data_sources_connected,
             "data_sources_total": 3,
             "evaluations_status": evaluations_status,
-            "scheduler_status": "Unavailable",
+            "scheduler_status": scheduler_status,
         },
         "recent_changes": _recent_changes(documents),
         "active_workflows": active_workflows,

@@ -55,3 +55,21 @@ def test_overview_returns_a_snapshot_for_the_verified_organization() -> None:
         "evaluation",
         "activity",
     }
+
+
+def test_overview_rejects_an_unsupported_activity_range() -> None:
+    app = create_api_app()
+    app.dependency_overrides[get_verified_token] = lambda: {"org_id": "org-a"}
+    app.state.draftly = SimpleNamespace(
+        dependencies=SimpleNamespace(
+            repositories=SimpleNamespace(
+                documents=EmptyDocuments(),
+                reviews=EmptyReviews(),
+                evaluations=EmptyEvaluations(),
+            )
+        )
+    )
+
+    response = TestClient(app).get("/api/overview?days=2")
+
+    assert response.status_code == 422

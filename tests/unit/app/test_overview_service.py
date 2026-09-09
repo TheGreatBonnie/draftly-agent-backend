@@ -45,6 +45,16 @@ class FakeEvaluations:
         return [item for item in self._items if item["org_id"] == org_id][:limit]
 
 
+class FakeJobs:
+    def __init__(self, items: list[dict[str, Any]]) -> None:
+        self.items = items
+        self.org_ids: list[str | None] = []
+
+    async def list_active(self, org_id: str | None = None) -> list[dict[str, Any]]:
+        self.org_ids.append(org_id)
+        return [item for item in self.items if item["org_id"] == org_id]
+
+
 class FakeGitHubInstallations:
     async def list_by_org(self, org_id: str) -> list[dict[str, str]]:
         return [{"id": "github-installation"}] if org_id == "org-a" else []
@@ -301,3 +311,22 @@ async def test_overview_isolates_a_failed_integration_lookup(
     assert snapshot["system"]["data_sources_total"] == 3
     assert snapshot["system"]["data_sources_connected"] == 2
     assert snapshot["attention"]["integration_issues"] == 1
+
+
+@pytest.mark.asyncio
+async def test_overview_derives_scheduler_status_from_org_scoped_active_jobs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    application = _empty_application()
+    jobs = FakeJobs([{"org_id": "org-a", "id": "job-1"}])
+    application.dependencies.repositories.jobs = jobs
+
+    async def no_workflows(**_: object) -> list[dict[str, str]]:
+        return []
+
+    monkeypatch.setattr(overview, "list_github_workflows_record", no_workflows)
+
+    snapshot = await build_overview_snapshot(application, "org-a", 14)
+
+    assert snapshot["system"]["scheduler_status"] == "Healthy"
+    assert jobs.org_ids == ["org-a"]
