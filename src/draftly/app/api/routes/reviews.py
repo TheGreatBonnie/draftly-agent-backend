@@ -12,7 +12,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from draftly.app.api.auth import get_verified_token
-from draftly.persistence.repositories.reviews import ReviewRecord
+from draftly.persistence.repositories.reviews import ReviewRecord, review_counts_from_records
 
 router = APIRouter(
     prefix="/reviews", tags=["reviews"], dependencies=[Depends(get_verified_token)]
@@ -213,15 +213,39 @@ async def list_reviews(
     token: dict = Depends(get_verified_token),
     status: str | None = None,
     limit: int = 100,
+    cursor: str | None = None,
 ) -> dict[str, Any]:
     """List reviews (default: all statuses) for the caller's organization."""
-    items = await _repo(request).list_reviews(
-        status=status,
-        org_id=str(token.get("org_id") or ""),
-        limit=max(1, min(limit, 200)),
-    )
+    repo = _repo(request)
+    org_id = str(token.get("org_id") or "")
+    page = getattr(repo, "list_reviews_page", None)
+    if page is not None:
+        result = await page(
+            status=status,
+            org_id=org_id,
+            limit=max(1, min(limit, 200)),
+            cursor=cursor,
+        )
+        items = result["items"]
+        total = result["total"]
+        counts = result["counts"]
+        next_cursor = result.get("next_cursor")
+    else:
+        items = await repo.list_reviews(
+            status=status,
+            org_id=org_id,
+            limit=max(1, min(limit, 200)),
+        )
+        total = len(items)
+        counts = review_counts_from_records(items)
+        next_cursor = None
     enriched = [await review_to_dict_enriched(r, request) for r in items]
-    return {"items": enriched}
+    return {
+        "items": enriched,
+        "total": total,
+        "counts": counts,
+        "next_cursor": next_cursor,
+    }
 
 
 @router.get("/by-run/{run_id}")

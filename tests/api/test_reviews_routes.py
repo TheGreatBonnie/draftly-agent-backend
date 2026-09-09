@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 
 from draftly.app.api.auth import get_verified_token
 from draftly.app.api.routes.reviews import router
+from draftly.persistence.repositories.reviews import review_counts_from_records
 from draftly.persistence.repositories.reviews import ReviewRecord
 
 
@@ -39,6 +40,17 @@ class FakeRepo:
         if org_id:
             rows = [r for r in rows if r.org_id == org_id]
         return rows[:limit]
+
+    async def list_reviews_page(self, *, status=None, org_id=None, limit=100, cursor=None):
+        self.calls.append({"status": status, "org_id": org_id, "limit": limit, "cursor": cursor})
+        rows = [r for r in self.rows if not status or r.status == status]
+        rows = [r for r in rows if not org_id or r.org_id == org_id]
+        return {
+            "items": rows[:limit],
+            "total": len(rows),
+            "counts": review_counts_from_records([r for r in self.rows if r.org_id == org_id]),
+            "next_cursor": "next-page" if len(rows) > limit else None,
+        }
 
     async def get_review(self, review_id: str):
         return next((r for r in self.rows if r.id == review_id), None)
@@ -78,6 +90,35 @@ def test_lists_pending_scoped_to_org() -> None:
     assert repo.calls[0]["status"] == "pending"
     assert repo.calls[0]["org_id"] == "org-1"
     assert repo.calls[0]["limit"] <= 200
+
+
+def test_list_includes_dynamic_counts_and_cursor_metadata() -> None:
+    repo = FakeRepo()
+    repo.rows = [
+        record(rid="pending-high"),
+        record(rid="approved", status="approved"),
+        record(rid="rejected", status="rejected"),
+    ]
+    repo.rows[0].detail = {
+        "classification": {"urgency": "high"},
+        "evaluation": {"score": 0.6},
+    }
+    client = TestClient(make_app(repo))
+
+    resp = client.get("/reviews", params={"limit": 1, "cursor": "previous-page"})
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["total"] == 3
+    assert body["counts"] == {
+        "pending": 1,
+        "urgent": 1,
+        "approved": 1,
+        "needs_changes": 0,
+        "rejected": 1,
+    }
+    assert body["next_cursor"] == "next-page"
+    assert repo.calls[-1]["cursor"] == "previous-page"
 
 
 def test_detail_404_for_unknown_or_other_org() -> None:
