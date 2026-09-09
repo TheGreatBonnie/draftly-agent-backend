@@ -8,6 +8,8 @@ from typing import Any, cast
 
 from draftly.integrations.database.client import DatabaseClient
 
+_DASHBOARD_PAGE_SIZE = 100
+
 
 class GitHubWorkflowRepository:
     """Persistence adapter for the workflow identity/read-model row."""
@@ -332,6 +334,7 @@ async def list_github_workflows_record(
     *,
     org_id: str,
     db: DatabaseClient | None = None,
+    limit: int = _DASHBOARD_PAGE_SIZE,
 ) -> list[dict[str, Any]]:
     """List GitHub workflows with joined state for the frontend list page."""
     if db is None:
@@ -348,15 +351,16 @@ async def list_github_workflows_record(
                   actor, event_type, status, created_at
            FROM github_workflows
            WHERE org_id = $1
-           ORDER BY created_at DESC""",
+           ORDER BY created_at DESC LIMIT $2""",
         org_id,
+        limit,
     )
 
     if not gw_rows:
         return []
 
     # Collect all run_ids to fetch jobs and workflow_events in bulk
-    run_ids = [str(r["run_id"]) for r in gw_rows if r.get("run_id")]
+    run_ids = [str(r["run_id"]) for r in gw_rows if r.get("run_id")][:limit]
     if not run_ids:
         jobs_map: dict[str, dict] = {}
         events_by_run: dict[str, list[dict]] = {}

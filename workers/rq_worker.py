@@ -22,6 +22,7 @@ from draftly.app.lifecycle import create_application
 from draftly.app.services.init_lock import release_init_lock_sync
 from draftly.app.workers.rq_dispatch import register_handlers, run_on_loop
 from draftly.observability.logging import configure_logging
+from draftly.workflows.documentation.reconciliation import reconcile_stale_on_boot
 
 ONBOARDING_INIT_TASK = "onboarding.initialize"
 
@@ -73,6 +74,14 @@ def main() -> None:
     run_on_loop(application.startup())
     register_handlers(application.task_handlers or {})
     log.info("rq_handlers_registered count=%d", len(application.task_handlers or {}))
+
+    # Recover runs orphaned by a previous worker death before accepting new
+    # jobs. Best-effort: a cold/missing DB must not block worker boot.
+    try:
+        recovered = run_on_loop(reconcile_stale_on_boot(application))
+        log.info("boot_stale_sweep_done", recovered=recovered)
+    except Exception:
+        log.exception("boot_stale_sweep_failed")
 
     import redis as sync_redis
 

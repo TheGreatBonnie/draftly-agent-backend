@@ -1,4 +1,5 @@
 import json
+from datetime import datetime
 from typing import Any
 from uuid import uuid4
 
@@ -241,6 +242,42 @@ class DatabaseJobsStore:
         )
 
         return [self._to_dict(row) for row in rows]
+
+    async def list_stuck(
+        self,
+        *,
+        started_before: datetime,
+        status: str = "running",
+        limit: int = 500,
+    ) -> list[dict[str, Any]]:
+        """Rows still in a non-terminal status whose start predates the cutoff.
+
+        Used by the stale-run recovery sweep to find runs a worker died on
+        (the runner never ran ``_finish_result``, so the row stayed in-flight).
+        """
+        rows = await self.client.fetch_all(
+            """
+            SELECT run_id, org_id, started_at
+            FROM jobs
+            WHERE status = $2
+              AND started_at IS NOT NULL
+              AND started_at < $1
+            ORDER BY started_at ASC
+            LIMIT $3
+            """,
+            started_before,
+            status,
+            limit,
+        )
+
+        return [
+            {
+                "run_id": str(row["run_id"]),
+                "org_id": str(row.get("org_id") or ""),
+                "started_at": row.get("started_at"),
+            }
+            for row in rows
+        ]
 
     @staticmethod
     def _to_dict(row) -> dict[str, Any]:

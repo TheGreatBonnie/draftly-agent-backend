@@ -77,3 +77,42 @@ async def test_null_node_id_round_trips() -> None:
     )
     _, params = client.executed[0]
     assert params[4 - 1] is None or True  # positional: node_id is 4th arg
+
+
+class _TerminalFakeClient:
+    def __init__(self, rows: list[dict[str, Any]]) -> None:
+        self.rows = rows
+        self.calls: list[tuple[str, tuple]] = []
+
+    async def fetch_all(self, query: str, *args: Any) -> list[dict[str, Any]]:
+        self.calls.append((query, args))
+        return self.rows
+
+
+async def test_terminal_run_ids_returns_only_runs_with_workflow_result() -> None:
+    client = _TerminalFakeClient(
+        [
+            {"run_id": "r-1"},
+            {"run_id": "r-3"},
+        ]
+    )
+    store = WorkflowEventsStore(client=client)
+
+    result = await store.terminal_run_ids(["r-1", "r-2", "r-3"])
+
+    assert result == {"r-1", "r-3"}
+    sql, params = client.calls[0]
+    assert "type = 'workflow_result'" in sql
+    assert "ANY($1::TEXT[])" in sql
+    assert params == (["r-1", "r-2", "r-3"],)
+
+
+async def test_repo_terminal_run_ids_passthrough() -> None:
+    from draftly.persistence.repositories.workflow_events import (
+        WorkflowEventRepositoryImpl,
+    )
+
+    client = _TerminalFakeClient([{"run_id": "r-1"}])
+    repo = WorkflowEventRepositoryImpl(store=WorkflowEventsStore(client=client))
+
+    assert await repo.terminal_run_ids(["r-1"]) == {"r-1"}

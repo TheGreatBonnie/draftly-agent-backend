@@ -31,6 +31,7 @@ QUEUE_MAP: dict[str, str] = {
     "evaluation.loop": "scheduled",
     "memory.curation": "scheduled",
     "memory.maintenance": "scheduled",
+    "stale.run_reconcile": "scheduled",
     "onboarding.initialize": "default",
     "github_pr.enqueue": "webhooks",
     "github_release.enqueue": "webhooks",

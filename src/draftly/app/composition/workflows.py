@@ -77,6 +77,9 @@ def build_workflows(
     from draftly.workflows.documentation.github_release_workflow import (
         run_release_workflow,
     )
+    from draftly.workflows.documentation.stale_reconcile_workflow import (
+        run_stale_reconcile,
+    )
     from draftly.workflows.evaluation.documentation_evaluation import (
         run_evaluation_loop,
     )
@@ -140,6 +143,7 @@ def build_workflows(
     registry.register("onboarding_initialize", run_onboarding_initialize)
     registry.register("memory_curation", run_memory_curation)
     registry.register("memory_maintenance", run_memory_maintenance)
+    registry.register("stale_run_reconcile", run_stale_reconcile)
 
     publisher = None
     event_bus = None

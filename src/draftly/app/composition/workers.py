@@ -31,6 +31,7 @@ TASK_REGISTRY: dict[str, str] = {
     "content_generation.enqueue": "content_generation",
     "slack_support.enqueue": "slack_support",
     "discord_support.enqueue": "discord_support",
+    "stale.run_reconcile": "stale_run_reconcile",
 }
 
 
@@ -112,6 +113,12 @@ SCHEDULED_JOBS: list[dict[str, Any]] = [
         "id": "memory-maintenance",
         "name": "memory.maintenance",
         "schedule": "0 6 * * 0",
+        "arguments": {},
+    },
+    {
+        "id": "stale-run-reconcile",
+        "name": "stale.run_reconcile",
+        "schedule": "*/10 * * * *",
         "arguments": {},
     },
 ]

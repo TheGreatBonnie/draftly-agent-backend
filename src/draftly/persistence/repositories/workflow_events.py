@@ -20,3 +20,6 @@ class WorkflowEventRepositoryImpl:
         limit: int = 500,
     ) -> list[dict[str, Any]]:
         return await self.store.list_after(run_id, seq=seq, limit=limit)
+
+    async def terminal_run_ids(self, run_ids: list[str]) -> set[str]:
+        return await self.store.terminal_run_ids(run_ids)

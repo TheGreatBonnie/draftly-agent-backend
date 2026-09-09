@@ -64,3 +64,17 @@ class WorkflowEventsStore:
                 item["payload"] = json.loads(payload)
             out.append(item)
         return out
+
+    async def terminal_run_ids(self, run_ids: list[str]) -> set[str]:
+        """Distinct run_ids that already have a terminal ``workflow_result`` envelope."""
+        if not run_ids:
+            return set()
+        rows = await self.client.fetch_all(
+            """
+            SELECT DISTINCT run_id
+            FROM workflow_events
+            WHERE run_id = ANY($1::TEXT[]) AND type = 'workflow_result'
+            """,
+            list(run_ids),
+        )
+        return {str(row["run_id"]) for row in rows}

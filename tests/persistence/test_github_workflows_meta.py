@@ -214,3 +214,11 @@ async def test_list_workflows_fetches_payload_only_for_status_events() -> None:
     listing_query, payload_query = client.queries[2], client.queries[3]
     assert "payload" not in listing_query
     assert "type IN ('workflow_result', 'node_stop')" in payload_query
+
+
+async def test_list_workflows_bounds_github_query_and_run_ids() -> None:
+    client = _FetchAllClient([[], [], [], []])
+    rows = await list_github_workflows_record(org_id="o-1", db=client, limit=50)
+    assert rows == []
+    assert "LIMIT $2" in client.queries[0]
+    assert client.executed[0][1] == ("o-1", 50)

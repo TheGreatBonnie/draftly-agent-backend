@@ -47,3 +47,18 @@ def test_scheduler_skips_task_without_handler():
     fake = _FakeScheduler()
     setup_rq_scheduler(scheduler=fake, task_handlers={})
     assert fake.cron_calls == []
+
+
+def test_scheduler_registers_stale_run_reconcile_cron():
+    from draftly.app.composition.workers import SCHEDULED_JOBS
+
+    entry = next(j for j in SCHEDULED_JOBS if j["name"] == "stale.run_reconcile")
+    assert entry["schedule"] == "*/10 * * * *"
+
+    fake = _FakeScheduler()
+    handlers = {job["name"]: (lambda **kw: None) for job in SCHEDULED_JOBS}
+    setup_rq_scheduler(scheduler=fake, task_handlers=handlers)
+
+    record = next(r for r in fake.cron_calls if r["id"] == "stale-run-reconcile")
+    assert record["kwargs"]["name"] == "stale.run_reconcile"
+    assert record["schedule"] == "*/10 * * * *"

@@ -42,3 +42,16 @@ class JobRepositoryImpl:
 
     async def list_active(self) -> list[dict[str, Any]]:
         return await self.store.list_active()
+
+    async def list_stuck(
+        self,
+        *,
+        started_before: Any,
+        status: str = "running",
+        limit: int = 500,
+    ) -> list[dict[str, Any]]:
+        return await self.store.list_stuck(
+            started_before=started_before,
+            status=status,
+            limit=limit,
+        )
