@@ -74,6 +74,7 @@ def test_lists_pending_scoped_to_org() -> None:
     assert body["items"][0]["id"] == "rev-1"
     assert body["items"][0]["run_id"] == "evt-9"
     assert body["items"][0]["interrupt_id"] == "i-1"
+    assert "display" in body["items"][0]
     assert repo.calls[0]["status"] == "pending"
     assert repo.calls[0]["org_id"] == "org-1"
     assert repo.calls[0]["limit"] <= 200
@@ -98,3 +99,4 @@ def test_detail_returns_review_shape() -> None:
     assert body["workflow"] == "documentation"
     assert body["tool_name"] == "doc-review"
     assert body["action_description"] == "docs update"
+    assert "display" in body
