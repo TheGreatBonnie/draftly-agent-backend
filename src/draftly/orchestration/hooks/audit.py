@@ -11,6 +11,7 @@ model keys).
 from __future__ import annotations
 
 import asyncio
+import re
 import time
 from typing import Any
 
@@ -28,6 +29,7 @@ from strands.hooks import (
 from draftly.agents.catalog import agent_id_for_node
 from draftly.observability.metrics import Metrics
 from draftly.observability.metrics import metrics as _default_metrics
+from draftly.steering.redaction import redact_value
 
 logger = structlog.get_logger(__name__)
 
@@ -256,6 +258,85 @@ class RunAuditLogger(HookProvider):
                 "node_id": node_id,
                 "surface": surface,
             }
+        )
+
+
+_REASON_SECRET_RE = re.compile(
+    r"(?P<key>[\w.-]*?(?:token|secret|password|passwd|api[_-]?key|"
+    r"authorization|access[_-]?key|credential|client[_-]?secret|"
+    r"signing[_-]?secret))\s*=\s*[\w\-.:~/+%@]{3,}"
+)
+
+
+def _scrub_reason(reason: str) -> str:
+    """Replace embedded credential values in a reason string."""
+    if not reason:
+        return reason
+    return _REASON_SECRET_RE.sub(
+        lambda match: f"{match.group('key')}=[REDACTED]", reason
+    )
+
+
+def _decision_detail(decision: Any, *, reason_max_chars: int) -> dict[str, Any]:
+    """Project one steering decision into bounded, redacted audit detail."""
+    return {
+        "phase": getattr(getattr(decision, "phase", None), "value", str(decision.phase)),
+        "action": getattr(getattr(decision, "kind", None), "value", str(decision.kind)),
+        "role": getattr(decision.role, "value", None) if decision.role else None,
+        "rule": decision.rule or "",
+        "reason": _scrub_reason((decision.reason or "")[:reason_max_chars]),
+        "interrupt_id": decision.interrupt_id,
+    }
+
+
+class SteeringAudit:
+    """Write bounded steering decisions to ``agent_steps`` (``kind='steering'``).
+
+    The helper accepts a ``SteeringDecision`` and persists a redacted,
+    byte-bounded JSON detail row through the injected audit repository. Without
+    a repository it degrades to a no-op so steering remains observable offline.
+    """
+
+    def __init__(
+        self,
+        repo: Any,
+        *,
+        surface: str = "",
+        payload_max_bytes: int = 4 * 1024,
+        reason_max_chars: int = 1_000,
+    ) -> None:
+        self.repo = repo
+        self.surface = surface
+        self.payload_max_bytes = payload_max_bytes
+        self.reason_max_chars = reason_max_chars
+
+    async def record_step(
+        self,
+        *,
+        run_id: str,
+        agent_id: str | None,
+        node_id: str | None,
+        decision: Any,
+        tool_name: str | None = None,
+    ) -> None:
+        if self.repo is None:
+            return
+        detail = _decision_detail(decision, reason_max_chars=self.reason_max_chars)
+        if tool_name:
+            detail["tool_name"] = tool_name
+        bounded = redact_value(detail, max_bytes=self.payload_max_bytes)
+        if not isinstance(bounded, dict):
+            bounded = {"detail": bounded}
+        await self.repo.record_step(
+            run_id=str(run_id),
+            seq=0,
+            kind="steering",
+            name=f"steering.{getattr(getattr(decision, 'kind', None), 'value', 'decision')}",
+            status="completed",
+            detail=bounded,
+            agent_id=agent_id,
+            node_id=node_id,
+            surface=self.surface,
         )
 
 

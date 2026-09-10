@@ -109,6 +109,27 @@ class SteeringRuntime:
             interventions=self.interventions,
         )
 
+    def with_sinks(
+        self,
+        *,
+        attempts: Any | None = None,
+        audit: Any | None = None,
+        interventions: Any | None = None,
+    ) -> "SteeringRuntime":
+        """Return a copy of this runtime with (possibly) replaced sinks.
+
+        Passed ``None`` values keep the current sink, so builders can swap one
+        sink without re-deriving identity or scope.
+        """
+        return SteeringRuntime(
+            scope=self.scope,
+            config=self.config,
+            identity=self.identity,
+            attempts=attempts if attempts is not None else self.attempts,
+            audit=audit if audit is not None else self.audit,
+            interventions=interventions if interventions is not None else self.interventions,
+        )
+
     @classmethod
     def from_context(
         cls,
