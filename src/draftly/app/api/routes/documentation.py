@@ -12,6 +12,10 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from draftly.app.api.auth import get_verified_token
+from draftly.persistence.repositories.document_revisions import (
+    DocumentationRevision,
+    RevisionConflict,
+)
 
 router = APIRouter(
     prefix="/documentation",
@@ -50,12 +54,46 @@ class SyncRequest(BaseModel):
     exclude: list[str] | None = None
 
 
+class RevisionRequest(BaseModel):
+    content: str
+    title: str | None = None
+    base_source_hash: str | None = None
+    base_revision_id: str | None = None
+
+
 def _worker(request: Request):
     """Resolve the background worker from application state."""
     worker = getattr(request.app.state.draftly, "worker", None)
     if worker is None:
         raise HTTPException(status_code=503, detail="Background worker is disabled")
     return worker
+
+
+def _revisions(request: Request) -> Any:
+    repo = getattr(
+        getattr(request.app.state.draftly.dependencies, "repositories", None),
+        "revisions",
+        None,
+    )
+    if repo is None:
+        raise HTTPException(status_code=503, detail="Revision store unavailable")
+    return repo
+
+
+def _revision_payload(revision: DocumentationRevision) -> dict[str, Any]:
+    return {
+        "id": revision.id,
+        "document_id": revision.document_id,
+        "org_id": revision.org_id,
+        "revision_number": revision.revision_number,
+        "origin": revision.origin,
+        "status": revision.status,
+        "title": revision.title,
+        "content": revision.content,
+        "base_source_hash": revision.base_source_hash,
+        "created_by": revision.created_by,
+        "created_at": revision.created_at.isoformat(),
+    }
 
 
 @router.post("/sync")
@@ -130,7 +168,18 @@ async def get_sync_status(
 ) -> dict[str, Any]:
     """Look up a sync run's job record."""
     jobs = request.app.state.draftly.dependencies.repositories.jobs
-    record = await jobs.get(job_id=job_id)
+    scoped_get = jobs.get_for_org if hasattr(type(jobs), "get_for_org") else None
+    record = (
+        await scoped_get(job_id=job_id, org_id=token.get("org_id"))
+        if callable(scoped_get)
+        else await jobs.get(job_id=job_id)
+    )
+    if (
+        record is not None
+        and record.get("org_id") is not None
+        and record.get("org_id") != token.get("org_id")
+    ):
+        record = None
     if record is None:
         raise HTTPException(status_code=404, detail=f"Unknown job: {job_id}")
     return {"job": record}
@@ -178,12 +227,25 @@ async def list_documentation(
     if not org_id:
         raise HTTPException(status_code=400, detail="No organization selected")
     docs = _documents(request)
-    items = await docs.list_by_org(org_id=org_id, limit=min(limit, 1000))
-    if repository:
-        items = [i for i in items if i.get("repository") == repository]
-    if status:
-        items = [i for i in items if derive_status(i.get("status")) == status]
-    return {"items": items}
+    projection_method = (
+        docs.list_projection_by_org if hasattr(type(docs), "list_projection_by_org") else None
+    )
+    if callable(projection_method):
+        items = await projection_method(
+            org_id=org_id,
+            repository=repository,
+            status=status,
+            query=None,
+            limit=min(limit, 1000),
+            cursor=None,
+        )
+    else:
+        items = await docs.list_by_org(org_id=org_id, limit=min(limit, 1000))
+        if repository:
+            items = [i for i in items if i.get("repository") == repository]
+        if status:
+            items = [i for i in items if derive_status(i.get("status")) == status]
+    return {"items": items, "total": len(items)}
 
 
 @router.get("/stats")
@@ -216,12 +278,117 @@ async def get_documentation(
     token: dict = Depends(get_verified_token),
 ) -> dict[str, Any]:
     """Fetch one document by id, scoped to the token org."""
-    docs = _documents(request)
-    document = await docs.get(document_id=document_id)
     org_id = token.get("org_id")
+    docs = _documents(request)
+    scoped_get = docs.get_for_org if hasattr(type(docs), "get_for_org") else None
+    document = (
+        await scoped_get(document_id=document_id, org_id=org_id)
+        if callable(scoped_get)
+        else await docs.get(document_id=document_id)
+    )
     if document is None or (org_id and document.get("org_id") != org_id):
         raise HTTPException(
             status_code=404,
             detail=f"Document {document_id} not found",
         )
-    return document
+    revision_repo = getattr(
+        getattr(request.app.state.draftly.dependencies, "repositories", None),
+        "revisions",
+        None,
+    )
+    draft = None
+    draft_id = document.get("draft_revision_id")
+    if revision_repo is not None and draft_id:
+        draft = await revision_repo.get_revision(
+            document_id=document_id,
+            revision_id=str(draft_id),
+            org_id=str(org_id),
+        )
+    result = dict(document)
+    result["source"] = {
+        "content": document.get("content", ""),
+        "source_hash": document.get("source_hash"),
+        "commit_sha": document.get("commit_sha"),
+    }
+    result["draft"] = _revision_payload(draft) if draft else None
+    result["effective"] = (
+        {"kind": "draft", "revision_id": draft.id, "content": draft.content}
+        if draft
+        else {
+            "kind": "source",
+            "revision_id": None,
+            "content": document.get("content", ""),
+        }
+    )
+    return result
+
+
+@router.get("/{document_id}/revisions")
+@router.get("/{document_id}/history")
+async def list_document_revisions(
+    document_id: str,
+    request: Request,
+    token: dict = Depends(get_verified_token),
+    limit: int = 50,
+    cursor: str | None = None,
+) -> dict[str, Any]:
+    page = await _revisions(request).list_revisions(
+        document_id=document_id,
+        org_id=str(token.get("org_id") or ""),
+        limit=max(1, min(limit, 100)),
+        cursor=cursor,
+    )
+    return {
+        "items": [_revision_payload(item) for item in page.items],
+        "total": page.total,
+        "next_cursor": page.next_cursor,
+    }
+
+
+@router.post("/{document_id}/revisions")
+async def create_document_revision(
+    document_id: str,
+    body: RevisionRequest,
+    request: Request,
+    token: dict = Depends(get_verified_token),
+) -> dict[str, Any]:
+    try:
+        revision = await _revisions(request).create_draft(
+            document_id=document_id,
+            org_id=str(token.get("org_id") or ""),
+            content=body.content,
+            title=body.title,
+            base_source_hash=body.base_source_hash,
+            base_revision_id=body.base_revision_id,
+            created_by=str(token.get("user_id") or token.get("sub") or "unknown"),
+        )
+    except RevisionConflict as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "DOCUMENT_CONFLICT",
+                "message": str(exc),
+                "current_source_hash": exc.current_source_hash,
+                "current_revision_id": exc.current_revision_id,
+            },
+        ) from exc
+    return {"revision": _revision_payload(revision)}
+
+
+@router.post("/{document_id}/revisions/{revision_id}/restore")
+async def restore_document_revision(
+    document_id: str,
+    revision_id: str,
+    request: Request,
+    token: dict = Depends(get_verified_token),
+) -> dict[str, Any]:
+    try:
+        revision = await _revisions(request).restore_revision(
+            document_id=document_id,
+            revision_id=revision_id,
+            org_id=str(token.get("org_id") or ""),
+            created_by=str(token.get("user_id") or token.get("sub") or "unknown"),
+        )
+    except RevisionConflict as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return {"revision": _revision_payload(revision)}

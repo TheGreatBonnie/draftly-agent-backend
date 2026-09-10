@@ -15,6 +15,9 @@ class JobRepositoryImpl:
     async def get(self, *, job_id: str) -> dict[str, Any] | None:
         return await self.store.get(job_id=job_id)
 
+    async def get_for_org(self, *, job_id: str, org_id: str) -> dict[str, Any] | None:
+        return await self.store.get_for_org(job_id=job_id, org_id=org_id)
+
     async def insert(self, **kwargs: Any) -> dict[str, Any]:
         """App-wired / /stream-ticket surface for persisting a jobs row."""
         return await self.store.insert(**kwargs)
