@@ -314,6 +314,62 @@ class DocumentStore:
 
         return self._row_to_dict(row) if row else None
 
+    async def get_for_org(
+        self,
+        *,
+        document_id: str,
+        org_id: str,
+    ) -> dict[str, Any] | None:
+        row = await self.client.fetch_one(
+            f"""
+            SELECT {_DOCUMENT_COLUMNS}
+            FROM documentation
+            WHERE id = $1 AND org_id = $2
+            """,
+            document_id,
+            org_id,
+        )
+        return self._row_to_dict(row) if row else None
+
+    async def list_projection_by_org(
+        self,
+        *,
+        org_id: str,
+        repository: str | None,
+        status: str | None,
+        query: str | None,
+        limit: int,
+        cursor: str | None = None,
+    ) -> list[dict[str, Any]]:
+        clauses = ["org_id = $1"]
+        args: list[Any] = [org_id]
+        if repository:
+            args.append(repository)
+            clauses.append(f"repository = ${len(args)}")
+        if status:
+            args.append(status)
+            clauses.append(f"status = ${len(args)}")
+        if query:
+            args.append(f"%{query}%")
+            clauses.append(f"(title ILIKE ${len(args)} OR path ILIKE ${len(args)})")
+        args.append(max(1, min(limit, 1000)))
+        row_limit = len(args)
+        rows = await self.client.fetch_all(
+            f"""
+            SELECT id, org_id, repository, path, title, document_type, version,
+                   commit_sha, source_hash, status, metadata, stale, outdated,
+                   incomplete, broken_links, unsupported_claims, created_at,
+                   updated_at, last_committed_at, draft_revision_id,
+                   (draft_revision_id IS NOT NULL) AS has_draft
+            FROM documentation
+            WHERE {' AND '.join(clauses)}
+            ORDER BY updated_at DESC, id DESC
+            LIMIT ${row_limit}
+            """,
+            *args,
+        )
+        return [self._projection_to_dict(row) for row in rows]
+
     async def update(
         self,
         *,
@@ -493,3 +549,14 @@ class DocumentStore:
             "updated_at": row["updated_at"],
             "last_committed_at": row["last_committed_at"],
         }
+
+    @staticmethod
+    def _projection_to_dict(row: Any) -> dict[str, Any]:
+        if isinstance(row, dict):
+            return dict(row)
+        return {key: row[key] for key in (
+            "id", "org_id", "repository", "path", "title", "document_type",
+            "version", "commit_sha", "source_hash", "status", "metadata",
+            "stale", "outdated", "incomplete", "broken_links", "unsupported_claims",
+            "created_at", "updated_at", "last_committed_at", "draft_revision_id", "has_draft",
+        )}

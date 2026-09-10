@@ -108,6 +108,33 @@ class DocumentRepository:
     ) -> dict[str, Any] | None:
         return await self.store.get(document_id=document_id)
 
+    async def get_for_org(
+        self,
+        *,
+        document_id: str,
+        org_id: str,
+    ) -> dict[str, Any] | None:
+        return await self.store.get_for_org(document_id=document_id, org_id=org_id)
+
+    async def list_projection_by_org(
+        self,
+        *,
+        org_id: str,
+        repository: str | None,
+        status: str | None,
+        query: str | None,
+        limit: int,
+        cursor: str | None = None,
+    ) -> list[dict[str, Any]]:
+        return await self.store.list_projection_by_org(
+            org_id=org_id,
+            repository=repository,
+            status=status,
+            query=query,
+            limit=limit,
+            cursor=cursor,
+        )
+
     async def get_by_repository_path(
         self,
         *,
