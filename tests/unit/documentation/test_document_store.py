@@ -87,6 +87,22 @@ async def test_upsert_document_insert_sets_title_and_document_type():
     assert "tutorial" in insert_args
 
 
+async def test_projection_treats_indexed_documents_as_published_filter():
+    client = ScriptedClient(responses=[[]])
+    store = DocumentStore(cast(DatabaseClient, client))
+
+    await store.list_projection_by_org(
+        org_id="demo-org",
+        repository=None,
+        status="published",
+        query=None,
+        limit=25,
+    )
+
+    sql, _ = client.calls[-1]
+    assert "status IN ('indexed', 'published')" in sql
+
+
 async def test_upsert_document_update_refreshes_title_and_document_type_when_provided():
     client = ScriptedClient(
         responses=[

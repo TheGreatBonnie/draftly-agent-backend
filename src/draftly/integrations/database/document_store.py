@@ -348,8 +348,11 @@ class DocumentStore:
             args.append(repository)
             clauses.append(f"repository = ${len(args)}")
         if status:
-            args.append(status)
-            clauses.append(f"status = ${len(args)}")
+            if status == "published":
+                clauses.append("status IN ('indexed', 'published')")
+            else:
+                args.append(status)
+                clauses.append(f"status = ${len(args)}")
         if query:
             args.append(f"%{query}%")
             clauses.append(f"(title ILIKE ${len(args)} OR path ILIKE ${len(args)})")
