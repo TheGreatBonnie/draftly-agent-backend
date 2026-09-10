@@ -331,11 +331,14 @@ class RolePolicy:
     ) -> SteeringDecision:
         if judge is None or not self.judge_enabled:
             return decision
+        if decision.kind is DecisionKind.INTERRUPT:
+            # A deterministic side-effect interrupt is never overridden.
+            return decision
         try:
             refined = await judge(decision=decision)
         except Exception:
             return decision  # fail-open only to deterministic base outcome
-        if refined is None:
+        if refined is None or refined.phase is not decision.phase:
             return decision
         return refined
 

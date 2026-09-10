@@ -16,8 +16,37 @@ from strands import Agent
 
 from draftly.steering.context import SteeringRuntime
 from draftly.steering.decisions import AgentRole
-from draftly.steering.handler import DraftlySteeringHandler
+from draftly.steering.handler import (
+    DEFAULT_STEERING_JUDGE_PROMPT,
+    DraftlySteeringHandler,
+    build_isolated_judge,
+    build_steering_judge,
+)
 from draftly.steering.policy import RolePolicy, policy_for
+
+
+def _optional_judge(
+    *,
+    runtime: SteeringRuntime,
+    model: Any,
+    policy: RolePolicy,
+) -> Any:
+    """Build the optional LLM judge, or None when the flag/policy forbid it.
+
+    The judge is constructed in full isolation: a fresh Strands agent with no
+    tools, no plugins, no callback handler, and its own model — never the
+    application agent under review (see ``build_isolated_judge``).
+    """
+    if not runtime.config.llm_enabled or not policy.judge_enabled:
+        return None
+    judge_agent = build_isolated_judge(
+        system_prompt=DEFAULT_STEERING_JUDGE_PROMPT,
+        model=model,
+    )
+    return build_steering_judge(
+        judge_agent,
+        timeout_seconds=runtime.config.judge_timeout_seconds,
+    )
 
 
 def build_draftly_agent(
@@ -55,7 +84,14 @@ def build_draftly_agent(
         model=model,
         system_prompt=system_prompt,
         tools=list(tools or ()),
-        plugins=[*plugins, DraftlySteeringHandler(runtime=agent_runtime, policy=policy)],
+        plugins=[
+            *plugins,
+            DraftlySteeringHandler(
+                runtime=agent_runtime,
+                policy=policy,
+                judge=_optional_judge(runtime=agent_runtime, model=model, policy=policy),
+            ),
+        ],
         structured_output_model=structured_output_model,
         interventions=list(interventions or ()),
         **agent_options,

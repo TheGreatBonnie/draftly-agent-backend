@@ -12,6 +12,7 @@ Redaction guarantees two properties:
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Mapping
 from typing import Any
 
@@ -137,3 +138,38 @@ def redact_value(value: Any, *, max_bytes: int = 4 * 1024) -> Any:
         raise ValueError("max_bytes must be at least 1")
     redacted = _redact_secrets(value)
     return _redact_value(redacted, budget=max_bytes)
+
+
+#: Credential value formats scrubbed anywhere inside free-text strings.
+_CREDENTIAL_VALUE_PATTERNS = (
+    re.compile(r"(?i)(sk-[A-Za-z0-9_-]{16,})"),
+    re.compile(r"(?i)(ghp_[A-Za-z0-9]{20,})"),
+    re.compile(r"(?i)(github_pat_[A-Za-z0-9_]{20,})"),
+    re.compile(r"(?i)(AKIA[0-9A-Z]{16})"),
+    re.compile(r"(?i)(ya29\.[A-Za-z0-9_-]+)"),
+    re.compile(r"(xox[baprs]-[0-9A-Za-z-]{10,})"),
+    re.compile(r"(?i)(bearer\s+[A-Za-z0-9._~+/=-]{16,})"),
+)
+
+#: Labeled ``secret: value`` / ``secret = value`` phrases in free text.
+_LABELED_SECRET = re.compile(
+    r"(?i)\b(token|secret|password|passwd|api[_-]?key|access[_-]?key|private[_-]?key|"
+    r"client[_-]?secret|signing[_-]?secret|authorization|credential)\b"
+    r"(\s*[=:]\s*)([^\s,;]+)"
+)
+
+
+def scrub_secret_values(text: str) -> str:
+    """Replace recognizable credential values embedded in ``text``.
+
+    Key-based redaction cannot see secrets sitting inside free-text strings,
+    so broadcast-facing fields (reasons, guide/audit messages) are scrubbed at
+    the value level before encoding. Labeled assignments are replaced first;
+    then standalone token formats on any nesting depth.
+    """
+    scrubbed = _LABELED_SECRET.sub(
+        lambda match: f"{match.group(1)}{match.group(2)}[REDACTED]", text
+    )
+    for pattern in _CREDENTIAL_VALUE_PATTERNS:
+        scrubbed = pattern.sub("[REDACTED]", scrubbed)
+    return scrubbed

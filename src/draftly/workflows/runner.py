@@ -26,7 +26,11 @@ from strands.multiagent.base import Status
 
 from draftly.delivery.models import PullRequestResult, SupportDeliveryReceipt
 from draftly.events.dispatcher import EventDispatcher
-from draftly.events.stream_envelope import StreamEnvelope, filter_graph_event
+from draftly.events.stream_envelope import (
+    StreamEnvelope,
+    filter_graph_event,
+    steering_envelope,
+)
 from draftly.integrations.github.runtime import (
     reset_installation_id,
     set_installation_id,
@@ -126,6 +130,66 @@ def _workflow_key_for(event: dict[str, Any], surface: str) -> str:
     )
 
 
+class _RunStreamSeq:
+    """Per-run monotonic envelope sequence shared by stream and steering.
+
+    One allocator is created per graph build and handed to both the
+    ``_invoke_streaming`` loop and the steering event sink, so every envelope
+    for a run (graph frames and steering decisions) gets a strictly increasing,
+    collision-free ``seq``. SSE replay and reconnect deduplication rely on this
+    single monotonic counter per run.
+    """
+
+    def __init__(self) -> None:
+        self._value = 0
+
+    def next(self) -> int:
+        self._value += 1
+        return self._value
+
+
+def _steering_event_sink(
+    *,
+    runtime: Any,
+    publisher: Any,
+    run_id: str,
+    surface: str,
+    stream_seq: _RunStreamSeq,
+) -> Callable[..., Any]:
+    """Wire ONE redacted steering event per decision onto the run stream."""
+
+    async def sink(
+        decision: Any,
+        *,
+        tool_name: str | None = None,
+        node_id: str | None = None,
+        agent_id: str | None = None,
+        attempt_summary: dict[str, Any] | None = None,
+    ) -> None:
+        envelope = steering_envelope(
+            decision,
+            run_id=run_id,
+            surface=surface,
+            node_id=node_id,
+            agent_id=agent_id,
+            tool_name=tool_name,
+            attempt_summary=attempt_summary,
+            payload_max_bytes=runtime.config.payload_max_bytes,
+        )
+        envelope.seq = stream_seq.next()
+        try:
+            await publisher.publish(envelope)
+        except Exception:
+            logger.warning(
+                "steering_event_publish_failed",
+                run_id=run_id,
+                seq=envelope.seq,
+                exc_info=True,
+            )
+
+    return sink
+
+
 def _default_graph_factory(context: WorkflowContext) -> GraphFactory:
     """Build the real per-run graph via the Phase 4 integration layer."""
 
@@ -136,6 +200,7 @@ def _default_graph_factory(context: WorkflowContext) -> GraphFactory:
         grounding = current_grounding()
         steering_scope = current_steering_scope()
         steering_runtime = None
+        stream_seq = _RunStreamSeq()
         if steering_scope is not None:
             steering_runtime = context.new_steering_runtime(
                 run_id,
@@ -144,9 +209,20 @@ def _default_graph_factory(context: WorkflowContext) -> GraphFactory:
                 project_id=steering_scope.project_id,
                 workflow_key=steering_scope.workflow_key,
             )
+            publisher = getattr(context, "publisher", None)
+            if steering_runtime is not None and publisher is not None:
+                steering_runtime = steering_runtime.with_sinks(
+                    event_sink=_steering_event_sink(
+                        runtime=steering_runtime,
+                        publisher=publisher,
+                        run_id=run_id,
+                        surface=surface,
+                        stream_seq=stream_seq,
+                    )
+                )
 
         jobs_repo = getattr(getattr(context, "repositories", None), "jobs", None)
-        return build_graph_for_run(
+        graph = build_graph_for_run(
             run_id,
             surface=surface,
             tools_registry=context.tools,
@@ -164,6 +240,8 @@ def _default_graph_factory(context: WorkflowContext) -> GraphFactory:
             steering_runtime=steering_runtime,
             **context.graph_limits(),
         )
+        graph._draftly_stream_seq = stream_seq
+        return graph
 
     return factory
 
@@ -1034,6 +1112,7 @@ class WorkflowRunner:
         result is synthesized so outcome handling matches the invoke path).
         """
         seq = 0
+        seq_allocator: _RunStreamSeq | None = getattr(graph, "_draftly_stream_seq", None)
         result: Any = None
         started_at = time.monotonic()
         ttft_recorded = False
@@ -1050,7 +1129,7 @@ class WorkflowRunner:
                     if not ttft_recorded and envelope.type == "text_delta":
                         ttft_recorded = True
                         _metrics.observe("draftly_run_ttft_ms", time.monotonic() - started_at)
-                    seq += 1
+                    seq = seq_allocator.next() if seq_allocator is not None else seq + 1
                     envelope.seq = seq
                     await self._safe_publish(envelope)
                 if isinstance(raw, dict):
@@ -1081,7 +1160,7 @@ class WorkflowRunner:
                 execution_order=[],
                 failed_nodes=[SimpleNamespace(node_id=node_id)],
             )
-            seq += 1
+            seq = seq_allocator.next() if seq_allocator is not None else seq + 1
             await self._safe_publish(
                 StreamEnvelope(
                     type="workflow_result",

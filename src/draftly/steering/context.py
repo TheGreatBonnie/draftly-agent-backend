@@ -63,6 +63,10 @@ class SteeringRuntime:
     attempts: Any = None
     audit: Any = None
     interventions: Any = None
+    #: Async decision broadcaster ``(decision, *, tool_name, node_id, agent_id,
+    #: attempt_summary) -> None``; best-effort and never fatal. Wired by the
+    #: graph factory so steering events share the run's stream sequence.
+    event_sink: Any = None
 
     @property
     def enabled(self) -> bool:
@@ -107,6 +111,7 @@ class SteeringRuntime:
             attempts=self.attempts,
             audit=self.audit,
             interventions=self.interventions,
+            event_sink=self.event_sink,
         )
 
     def with_sinks(
@@ -115,6 +120,7 @@ class SteeringRuntime:
         attempts: Any | None = None,
         audit: Any | None = None,
         interventions: Any | None = None,
+        event_sink: Any | None = None,
     ) -> "SteeringRuntime":
         """Return a copy of this runtime with (possibly) replaced sinks.
 
@@ -128,7 +134,39 @@ class SteeringRuntime:
             attempts=attempts if attempts is not None else self.attempts,
             audit=audit if audit is not None else self.audit,
             interventions=interventions if interventions is not None else self.interventions,
+            event_sink=event_sink if event_sink is not None else self.event_sink,
         )
+
+    async def emit(
+        self,
+        decision: Any,
+        *,
+        tool_name: str | None = None,
+    ) -> None:
+        """Broadcast one bounded steering decision, best-effort.
+
+        The event sink is an integration-only side effect: it maintains the
+        SSE stream's shared sequence, so a failing sink must never fail the
+        run or the audit path.
+        """
+        sink = self.event_sink
+        if sink is None:
+            return
+        identity = self.identity
+        try:
+            await sink(
+                decision,
+                tool_name=tool_name,
+                node_id=(identity.node_id if identity else None),
+                agent_id=(identity.agent_id if identity else None),
+                attempt_summary={
+                    "tool_guides_per_call": self.config.tool_guides_per_call,
+                    "model_guides_per_turn": self.config.model_guides_per_turn,
+                    "total_guides_per_agent": self.config.total_guides_per_agent,
+                },
+            )
+        except Exception:
+            pass
 
     @classmethod
     def from_context(
@@ -143,6 +181,7 @@ class SteeringRuntime:
         attempts: Any = None,
         audit: Any = None,
         interventions: Any = None,
+        event_sink: Any = None,
     ) -> "SteeringRuntime":
         """Build a run-scoped runtime from WorkflowContext-style inputs."""
         return cls(
@@ -157,4 +196,5 @@ class SteeringRuntime:
             attempts=attempts,
             audit=audit,
             interventions=interventions,
+            event_sink=event_sink,
         )

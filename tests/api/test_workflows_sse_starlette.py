@@ -170,6 +170,48 @@ class TestSSEStarletteStream:
         resp = client.get("/workflows/run-1/events", params={"ticket": ticket})
         assert resp.status_code == 503
 
+    async def test_steering_frames_are_published_live(self) -> None:
+        """Redacted steering envelopes stream as their own event type."""
+        bus = RedisEventBus(redis_client=FakeRedis())
+        app = make_app(bus=bus)
+        client = TestClient(app)
+
+        steering = StreamEnvelope(type="steering", run_id="run-1", surface="docs", seq=1)
+        steering.payload = {
+            "schema_version": "1",
+            "phase": "before_tool",
+            "action": "interrupt",
+            "role": "delivery",
+            "rule": "delivery:destination",
+            "reason": "[REDACTED]",
+        }
+        done = StreamEnvelope(type="workflow_result", run_id="run-1", surface="docs", seq=2)
+        done.payload = {"status": "COMPLETED"}
+
+        def publish() -> None:
+            time.sleep(0.3)
+            loop = asyncio.new_event_loop()
+            try:
+                loop.run_until_complete(bus.publish(steering))
+                loop.run_until_complete(bus.publish(done))
+            finally:
+                loop.close()
+
+        thread = threading.Thread(target=publish, daemon=True)
+        thread.start()
+
+        ticket = await issue(app)
+        with client.stream(
+            "GET", "/workflows/run-1/events", params={"ticket": ticket}
+        ) as resp:
+            assert resp.status_code == 200
+            body = b"".join(resp.iter_bytes()).decode()
+
+        thread.join(timeout=5)
+        assert "event: steering" in body
+        assert '"action": "interrupt"' in body or '"action":"interrupt"' in body
+        assert '"rule": "delivery:destination"' in body or '"rule":"delivery:destination"' in body
+
     @pytest.mark.xfail(reason="sse-starlette replay via TestClient.stream hangs (pre-existing)")
     async def test_replays_stored_events(self) -> None:
         """NeonDB events are replayed on initial connection."""

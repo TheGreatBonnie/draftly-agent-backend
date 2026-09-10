@@ -15,10 +15,14 @@ action is returned. Persistence failures fail closed for side-effecting roles
 
 from __future__ import annotations
 
+import asyncio
+import json
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import replace
+from typing import Any, Literal
 
+from pydantic import BaseModel, Field
 from strands.vended_plugins.steering import Guide, Interrupt, Proceed, SteeringHandler
 
 from draftly.persistence.repositories.steering import InterventionRecord
@@ -27,8 +31,10 @@ from draftly.steering.decisions import (
     SteeringDecision,
     SteeringError,
     SteeringFailure,
+    SteeringPhase,
 )
 from draftly.steering.policy import RolePolicy
+from draftly.steering.redaction import redact_value, scrub_secret_values
 
 
 def _strands_tool_interrupt_id(tool_use_id: str, tool_name: str) -> str:
@@ -47,6 +53,132 @@ def _strands_tool_interrupt_id(tool_use_id: str, tool_name: str) -> str:
         f"v1:before_tool_call:{tool_use_id}:"
         f"{uuid.uuid5(uuid.NAMESPACE_OID, f'steering_input_{tool_name}')}"
     )
+
+
+DEFAULT_STEERING_JUDGE_PROMPT = (
+    "You are an isolated readiness judge for a documentation automation agent. "
+    "Given a bounded summary of a proposed action, choose exactly one of "
+    "'proceed' (safe), 'guide' (needs a bounded correction), or 'interrupt' "
+    "(needs a human). Never emit secrets or raw tool arguments."
+)
+
+
+class _JudgedSteering(BaseModel):
+    """The only structured decision an isolated LLM judge may return."""
+
+    decision: Literal["proceed", "guide", "interrupt"]
+    reason: str = Field(default="", max_length=1_000)
+
+
+_JUDGE_KINDS = {
+    "proceed": DecisionKind.PROCEED,
+    "guide": DecisionKind.GUIDE,
+    "interrupt": DecisionKind.INTERRUPT,
+}
+
+
+class _IsolatedJudge:
+    """Strands judge boundary with no tools, plugins, or Draftly steering.
+
+    The wrapped Strands ``Agent`` is constructed with ``callback_handler=None``
+    and flat ``tools``/``plugins`` lists, using its own model — never the
+    application agent under review. There is no recursive Draftly factory
+    call, so a judge can neither steer nor inherit application plugins.
+    """
+
+    def __init__(self, *, system_prompt: str, model: Any) -> None:
+        from strands import Agent
+
+        self.system_prompt = system_prompt
+        self.model = model
+        self.tools: list[Any] = []
+        self.plugins: list[Any] = []
+        self._agent = Agent(
+            system_prompt=system_prompt,
+            model=model,
+            tools=[],
+            plugins=[],
+            callback_handler=None,
+        )
+
+    def __call__(self, prompt, *, structured_output_model=None):
+        return self._agent(prompt, structured_output_model=structured_output_model)
+
+
+def build_isolated_judge(*, system_prompt: str, model: Any) -> Any:
+    """Construct the isolated Strands judge agent for optional LLM steering."""
+    return _IsolatedJudge(system_prompt=system_prompt, model=model)
+
+
+def build_steering_judge(
+    judge_agent: Any,
+    *,
+    timeout_seconds: float = 10.0,
+) -> Callable[..., Awaitable[SteeringDecision]]:
+    """Wrap an isolated Strands judge agent into the policy's async boundary.
+
+    The judge receives a bounded, redacted summary of the base decision and
+    must return the ``_JudgedSteering`` schema. A timeout, schema violation, or
+    model failure raises ``SteeringFailure`` so the policy falls back to the
+    deterministic outcome (a judge may only refine, never veto). Model-phase
+    judgments never deteriorate into ``Interrupt``.
+    """
+
+    async def judge(*, decision: SteeringDecision) -> SteeringDecision:
+        context = redact_value(
+            {
+                "phase": str(getattr(decision.phase, "value", "") or ""),
+                "role": (
+                    str(getattr(decision.role, "value", "") or "")
+                    if decision.role
+                    else None
+                ),
+                "rule": decision.rule,
+                "reason": scrub_secret_values(str(decision.reason or "")),
+            },
+            max_bytes=4 * 1024,
+        )
+        prompt = (
+            "Bound this agent decision summary and return your structured "
+            f"decision. Summary: {json.dumps(context)}"
+        )
+
+        def _invoke() -> Any:
+            return judge_agent(prompt, structured_output_model=_JudgedSteering)
+
+        loop = asyncio.get_running_loop()
+        try:
+            result = await asyncio.wait_for(
+                loop.run_in_executor(None, _invoke), timeout=timeout_seconds
+            )
+        except TimeoutError as exc:
+            raise SteeringFailure("steering judge timed out") from exc
+        except Exception as exc:
+            raise SteeringFailure(
+                f"steering judge unavailable: {type(exc).__name__}"
+            ) from exc
+
+        judged = getattr(result, "structured_output", None)
+        if not isinstance(judged, _JudgedSteering):
+            raise SteeringFailure("steering judge returned an invalid schema")
+        kind = _JUDGE_KINDS.get(judged.decision)
+        if kind is None:
+            raise SteeringFailure(
+                f"steering judge returned unsupported decision '{judged.decision}'"
+            )
+        phase = decision.phase
+        if kind is DecisionKind.INTERRUPT and phase is SteeringPhase.AFTER_MODEL:
+            kind = DecisionKind.GUIDE
+        return SteeringDecision(
+            kind=kind,
+            phase=phase,
+            reason=judged.reason,
+            role=decision.role,
+            rule=f"judge:{judged.decision}",
+            interrupt_id=decision.interrupt_id,
+        )
+
+    return judge
 
 
 class DraftlySteeringHandler(SteeringHandler):
@@ -134,19 +266,19 @@ class DraftlySteeringHandler(SteeringHandler):
         closed/open per role.
         """
         audit = self.runtime.audit
-        if audit is None:
-            return
         identity = self.runtime.identity
-        try:
-            await audit.record_step(
-                run_id=(identity.run_id if identity else self.runtime.scope.run_id),
-                agent_id=(identity.agent_id if identity else None),
-                node_id=(identity.node_id if identity else None),
-                decision=decision,
-                tool_name=tool_name,
-            )
-        except Exception as exc:
-            raise SteeringFailure(f"steering audit write failed: {exc}") from exc
+        if audit is not None:
+            try:
+                await audit.record_step(
+                    run_id=(identity.run_id if identity else self.runtime.scope.run_id),
+                    agent_id=(identity.agent_id if identity else None),
+                    node_id=(identity.node_id if identity else None),
+                    decision=decision,
+                    tool_name=tool_name,
+                )
+            except Exception as exc:
+                raise SteeringFailure(f"steering audit write failed: {exc}") from exc
+        await self.runtime.emit(decision, tool_name=tool_name)
 
     async def _persist_intervention(
         self,
