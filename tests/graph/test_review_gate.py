@@ -140,6 +140,53 @@ async def test_interrupt_reason_carries_document_content(model, tools, tmp_sessi
     assert files[0]["content"], "file content must not be empty"
 
 
+def test_interrupt_reason_includes_changelog() -> None:
+    """The gate must attach the changelog entry (changelog node output) to
+    the interrupt reason so reviewers can inspect what would be shipped."""
+    reasons: list[dict] = []
+    event = SimpleNamespace(
+        node_id="deliver",
+        invocation_state={"review_policy": "always", "run_id": "run-changelog"},
+        source=SimpleNamespace(
+            state=SimpleNamespace(
+                results={
+                    "create": SimpleNamespace(
+                        result=agent_result(
+                            {
+                                "files": [{"path": "docs/x.md", "content": "x"}],
+                                "summary": "Updated widgets guide",
+                            }
+                        )
+                    ),
+                    "changelog": SimpleNamespace(
+                        result=agent_result(
+                            {
+                                "version": "0.2.0",
+                                "date": "2026-09-10",
+                                "raw_markdown": (
+                                    "## [0.2.0] - 2026-09-10\n\n### Added\n\n"
+                                    "- OAuth code exchange\n"
+                                ),
+                            }
+                        )
+                    ),
+                }
+            )
+        ),
+        interrupt=lambda _name, *, reason: reasons.append(reason) or {"approved": True},
+        cancel_node=None,
+    )
+
+    ReviewGate().gate(event)
+
+    changelog = reasons[0]["changelog"]
+    assert changelog == {
+        "version": "0.2.0",
+        "date": "2026-09-10",
+        "raw_markdown": "## [0.2.0] - 2026-09-10\n\n### Added\n\n- OAuth code exchange\n",
+    }
+
+
 def test_risky_policy_reads_classification_from_graph_state() -> None:
     """A resumed graph must not treat every missing invocation field as risky."""
     event = SimpleNamespace(
