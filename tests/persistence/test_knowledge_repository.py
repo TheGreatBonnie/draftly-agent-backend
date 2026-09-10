@@ -41,3 +41,46 @@ def test_knowledge_repository_requires_org_id() -> None:
     repository = KnowledgeRepository(client=FakeDatabaseClient(), embedder=FakeEmbedder())
     with pytest.raises(ValueError, match="org_id"):
         repository._require_org_id("")
+
+
+def test_related_projections_remove_internal_columns() -> None:
+    source = KnowledgeRepository._source_projection(
+        {
+            "id": "source-1",
+            "org_id": "org-1",
+            "memory_item_id": "item-1",
+            "source_type": "github",
+            "source_id": "file-1",
+            "source_url": "https://example.test",
+            "repository": "acme/docs",
+            "commit_sha": "abc",
+            "evidence": "line 1",
+        }
+    )
+    link = KnowledgeRepository._link_projection(
+        {
+            "id": "link-1",
+            "org_id": "org-1",
+            "source_memory_id": "item-1",
+            "target_memory_id": "item-2",
+            "relationship": "related",
+            "confidence": 0.8,
+            "created_at": "2026-09-10T00:00:00Z",
+        }
+    )
+    feedback = KnowledgeRepository._feedback_projection(
+        {
+            "id": "feedback-1",
+            "org_id": "org-1",
+            "memory_item_id": "item-1",
+            "feedback_type": "verified",
+            "source": "reviewer",
+            "score": 1.0,
+            "comment": "confirmed",
+            "created_at": "2026-09-10T00:00:00Z",
+        }
+    )
+
+    assert "org_id" not in source and "memory_item_id" not in source
+    assert "org_id" not in link and "created_at" not in link
+    assert "org_id" not in feedback and "memory_item_id" not in feedback

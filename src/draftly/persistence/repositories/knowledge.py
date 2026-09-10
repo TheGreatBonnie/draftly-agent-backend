@@ -363,10 +363,58 @@ class KnowledgeRepository:
         self, org_id: str, item_id: str
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
         return (
-            await self.sources.list_by_memory(org_id=org_id, memory_item_id=item_id),
-            await self.links.list_by_memory(org_id=org_id, memory_item_id=item_id),
-            await self.feedback.list_by_memory(org_id=org_id, memory_item_id=item_id),
+            [
+                self._source_projection(row)
+                for row in await self.sources.list_by_memory(
+                    org_id=org_id, memory_item_id=item_id
+                )
+            ],
+            [
+                self._link_projection(row)
+                for row in await self.links.list_by_memory(
+                    org_id=org_id, memory_item_id=item_id
+                )
+            ],
+            [
+                self._feedback_projection(row)
+                for row in await self.feedback.list_by_memory(
+                    org_id=org_id, memory_item_id=item_id
+                )
+            ],
         )
+
+    @staticmethod
+    def _source_projection(row: Any) -> dict[str, Any]:
+        return {
+            "id": str(row["id"]),
+            "source_type": row["source_type"],
+            "source_id": row.get("source_id"),
+            "source_url": row.get("source_url"),
+            "repository": row.get("repository"),
+            "commit_sha": row.get("commit_sha"),
+            "evidence": row.get("evidence"),
+        }
+
+    @staticmethod
+    def _link_projection(row: Any) -> dict[str, Any]:
+        return {
+            "id": str(row["id"]),
+            "relationship": row["relationship"],
+            "source_memory_id": str(row["source_memory_id"]),
+            "target_memory_id": str(row["target_memory_id"]),
+            "confidence": row.get("confidence"),
+        }
+
+    @staticmethod
+    def _feedback_projection(row: Any) -> dict[str, Any]:
+        return {
+            "id": str(row["id"]),
+            "feedback_type": row["feedback_type"],
+            "source": row.get("source"),
+            "score": row.get("score"),
+            "comment": row.get("comment"),
+            "created_at": row.get("created_at"),
+        }
 
     @staticmethod
     def _row_to_item(row: Any) -> dict[str, Any]:
