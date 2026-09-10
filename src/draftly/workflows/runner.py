@@ -180,6 +180,7 @@ def _steering_event_sink(
         try:
             await publisher.publish(envelope)
         except Exception:
+            _metrics.increment("draftly_steering_publish_failures_total")
             logger.warning(
                 "steering_event_publish_failed",
                 run_id=run_id,
@@ -653,11 +654,14 @@ class WorkflowRunner:
             interrupt_id=interrupt_id,
             action=action,
         )
+        _metrics.increment("draftly_intervention_resume_total")
 
         pending = await self._safe_intervention_lookup(
             interventions, run_id, interrupt_id, org_id
         )
         if pending is not None and self._intervention_expired(pending):
+            _metrics.increment("draftly_steering_interrupts_expired_total")
+            _metrics.increment("draftly_intervention_resume_failures_total")
             try:
                 await interventions.resolve(
                     intervention_id=str(pending.id),
@@ -677,6 +681,11 @@ class WorkflowRunner:
             action=action,
             message=str(message) if message is not None else None,
         )
+        if pending is not None:
+            # A pending row was atomically reconciled; count the side-effect
+            # resolution (approve/deny) separately from replays of already
+            # resolved rows below.
+            _metrics.increment("draftly_side_effect_reconciled_total")
         if pending is None:
             # An identical earlier claim already resolved the row; surface its
             # terminal outcome without resuming the graph a second time.
@@ -686,6 +695,7 @@ class WorkflowRunner:
                 interrupt_id=interrupt_id,
                 action=action,
             )
+            _metrics.increment("draftly_intervention_resume_success_total")
             return await self._replay_outcome(event, run_id, surface)
 
         approved = action in {"approve", "approve_and_review"}
@@ -747,6 +757,7 @@ class WorkflowRunner:
                 reason="session_lost",
             )
             state = WorkflowState(run_id=run_id, event=event, surface=surface)
+            _metrics.increment("draftly_intervention_resume_failures_total")
             await self._mark(event, "failed")
             await self._persist_lifecycle(
                 event,
@@ -786,6 +797,7 @@ class WorkflowRunner:
             )
         except Exception as exc:
             state.errors.append(str(exc))
+            _metrics.increment("draftly_intervention_resume_failures_total")
             await self._mark(event, "failed")
             await self._persist_lifecycle(
                 event,
@@ -812,6 +824,7 @@ class WorkflowRunner:
             reset_installation_id(installation_token)
 
         resumed = await self._finish_result(event, surface, result, state)
+        _metrics.increment("draftly_intervention_resume_success_total")
         logger.info(
             "workflow_intervention_resume_done",
             run_id=run_id,
@@ -1091,6 +1104,7 @@ class WorkflowRunner:
             status="pending_intervention",
             surface=surface,
         )
+        _metrics.increment("draftly_run_pending_interventions_total")
         logger.info(
             "workflow_pending_intervention",
             run_id=state.run_id,

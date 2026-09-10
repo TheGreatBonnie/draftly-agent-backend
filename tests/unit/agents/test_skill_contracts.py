@@ -74,3 +74,19 @@ def _loaded_skill_names(agent: object) -> set[str]:
         if isinstance(plugin, AgentSkills):
             return {s.name for s in plugin.get_available_skills()}
     return set()
+
+
+def test_agent_builders_are_offline_constructible() -> None:
+    """No application agent factory requires live provider keys or an event at
+    construction time (final verification, plan Task 10 no-live-key)."""
+    from draftly.agents.documentation.analyzer import build_impact_agent
+    from draftly.agents.shared import build_classifier, build_delivery_agent
+    from draftly.agents.shared.context import build_context_agent
+    from draftly.app.composition.tools import build_tools
+    from tests.stub_model import StubModel
+
+    tools = build_tools()
+    build_classifier(StubModel())
+    build_context_agent(StubModel(), [])
+    build_delivery_agent(StubModel(), [])
+    build_impact_agent(StubModel(), [tools.semantic_search, tools.keyword_search])

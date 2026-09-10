@@ -66,3 +66,25 @@ async def test_run_node_empty_results_is_not_passed_all() -> None:
     out = json.loads(txt)
     assert out["results"] == []
     assert out["passed_all"] is False
+
+
+async def test_run_node_records_provider_failure_without_hanging() -> None:
+    """A live-run provider crash must degrade to a recorded error, not hang
+    the node or crash the run (regression: provider failure == dataset
+    failure, isolated per dataset like a timeout)."""
+    import json
+
+    async def failing_runner(dataset):
+        raise RuntimeError("provider unavailable")
+
+    node = RunExperimentsNode(runner=failing_runner, dataset_timeout=0.05)
+    payload = json.dumps({"datasets": [{"name": "down", "cases": []}]})
+    header = "Original Task: {}\nInputs from previous nodes:\nFrom load:"
+    task = [{"text": f"{header}\n  - Agent: {payload}"}]
+    result = await node.invoke_async(task)
+    agent_result = result.results["run"].result
+    text = agent_result.message["content"][0]["text"]
+    output = json.loads(text)
+    assert output["errors"], "provider failure must be recorded, not swallowed"
+    assert "provider unavailable" in output["errors"][0]
+    assert output["passed_all"] is False

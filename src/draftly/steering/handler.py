@@ -25,6 +25,8 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 from strands.vended_plugins.steering import Guide, Interrupt, Proceed, SteeringHandler
 
+from draftly.observability.metrics import Metrics
+from draftly.observability.metrics import metrics as _default_metrics
 from draftly.persistence.repositories.steering import InterventionRecord
 from draftly.steering.decisions import (
     DecisionKind,
@@ -35,6 +37,20 @@ from draftly.steering.decisions import (
 )
 from draftly.steering.policy import RolePolicy
 from draftly.steering.redaction import redact_value, scrub_secret_values
+
+_metrics: Metrics = _default_metrics
+
+
+def _record_decision_metrics(decision: SteeringDecision, surface: str) -> None:
+    """Increment the flat decision-dimension counters (no labels)."""
+    _metrics.increment("draftly_steering_decisions_total")
+    _metrics.increment(f"draftly_steering_actions_{decision.kind.value}_total")
+    _metrics.increment(f"draftly_steering_phases_{decision.phase.value}_total")
+    role = decision.role.value if decision.role else "none"
+    _metrics.increment(f"draftly_steering_roles_{role}_total")
+    _metrics.increment(f"draftly_steering_surfaces_{surface or 'none'}_total")
+    if (decision.rule or "").startswith("limit:"):
+        _metrics.increment("draftly_steering_guide_limits_total")
 
 
 def _strands_tool_interrupt_id(tool_use_id: str, tool_name: str) -> str:
@@ -148,21 +164,26 @@ def build_steering_judge(
 
         loop = asyncio.get_running_loop()
         try:
-            result = await asyncio.wait_for(
-                loop.run_in_executor(None, _invoke), timeout=timeout_seconds
-            )
+            with _metrics.timer("draftly_steering_judge_latency_ms"):
+                result = await asyncio.wait_for(
+                    loop.run_in_executor(None, _invoke), timeout=timeout_seconds
+                )
         except TimeoutError as exc:
+            _metrics.increment("draftly_steering_judge_fallbacks_total")
             raise SteeringFailure("steering judge timed out") from exc
         except Exception as exc:
+            _metrics.increment("draftly_steering_judge_fallbacks_total")
             raise SteeringFailure(
                 f"steering judge unavailable: {type(exc).__name__}"
             ) from exc
 
         judged = getattr(result, "structured_output", None)
         if not isinstance(judged, _JudgedSteering):
+            _metrics.increment("draftly_steering_judge_fallbacks_total")
             raise SteeringFailure("steering judge returned an invalid schema")
         kind = _JUDGE_KINDS.get(judged.decision)
         if kind is None:
+            _metrics.increment("draftly_steering_judge_fallbacks_total")
             raise SteeringFailure(
                 f"steering judge returned unsupported decision '{judged.decision}'"
             )
@@ -229,30 +250,54 @@ class DraftlySteeringHandler(SteeringHandler):
     async def _handle_tool(self, *, agent, tool_use, **kwargs):
         tool_name = (tool_use or {}).get("name", "")
         tool_use_id = (tool_use or {}).get("toolUseId") or ""
+        enforcement = self.runtime.config.enforcement_enabled
         try:
-            decision = await self.policy.evaluate_tool_async(
-                runtime=self.runtime,
-                tool_name=tool_name,
-                tool_use=tool_use,
-                judge=self.judge,
-            )
+            if enforcement:
+                decision = await self.policy.evaluate_tool_async(
+                    runtime=self.runtime,
+                    tool_name=tool_name,
+                    tool_use=tool_use,
+                    judge=self.judge,
+                )
+            else:
+                decision = await self.policy.evaluate_tool_shadow(
+                    runtime=self.runtime,
+                    tool_name=tool_name,
+                    tool_use=tool_use,
+                    judge=self.judge,
+                )
         except SteeringError as exc:
             return self._on_policy_failure(exc)
-        if decision.kind is DecisionKind.INTERRUPT:
+        if decision.kind is DecisionKind.INTERRUPT and enforcement:
             decision = await self._persist_intervention(
                 decision, tool_name=tool_name, tool_use_id=tool_use_id
             )
         await self.record_decision(decision, tool_name=tool_name)
+        if not enforcement:
+            _metrics.increment("draftly_steering_shadow_decisions_total")
+            return Proceed(reason="shadow mode: steering not enforced")
         return decision.to_strands_action()
 
     async def _handle_model(self, *, agent, message, stop_reason, **kwargs):
-        decision = await self.policy.evaluate_model_async(
-            runtime=self.runtime,
-            message=message,
-            stop_reason=stop_reason,
-            judge=self.judge,
-        )
+        enforcement = self.runtime.config.enforcement_enabled
+        if enforcement:
+            decision = await self.policy.evaluate_model_async(
+                runtime=self.runtime,
+                message=message,
+                stop_reason=stop_reason,
+                judge=self.judge,
+            )
+        else:
+            decision = await self.policy.evaluate_model_shadow(
+                runtime=self.runtime,
+                message=message,
+                stop_reason=stop_reason,
+                judge=self.judge,
+            )
         await self.record_decision(decision)
+        if not enforcement:
+            _metrics.increment("draftly_steering_shadow_decisions_total")
+            return Proceed(reason="shadow mode: steering not enforced")
         if decision.kind is DecisionKind.INTERRUPT:  # defensive; model never interrupts
             return Guide(reason="model steering cannot interrupt")
         return decision.to_strands_action()
@@ -267,6 +312,7 @@ class DraftlySteeringHandler(SteeringHandler):
         """
         audit = self.runtime.audit
         identity = self.runtime.identity
+        _record_decision_metrics(decision, self.runtime.scope.surface)
         if audit is not None:
             try:
                 await audit.record_step(
@@ -277,6 +323,7 @@ class DraftlySteeringHandler(SteeringHandler):
                     tool_name=tool_name,
                 )
             except Exception as exc:
+                _metrics.increment("draftly_steering_audit_failures_total")
                 raise SteeringFailure(f"steering audit write failed: {exc}") from exc
         await self.runtime.emit(decision, tool_name=tool_name)
 
@@ -322,6 +369,7 @@ class DraftlySteeringHandler(SteeringHandler):
                     f"intervention persistence failed: {exc}"
                 ) from exc
             return decision
+        _metrics.increment("draftly_steering_interrupts_created_total")
         self.last_interrupt_id = interrupt_id
         return replace(decision, interrupt_id=interrupt_id)
 

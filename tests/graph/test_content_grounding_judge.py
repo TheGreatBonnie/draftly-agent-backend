@@ -156,10 +156,27 @@ async def test_judge_exception_fails_open() -> None:
         raise RuntimeError("model unavailable")
 
     node = ContentEvaluationNode(judge=judge)
+    block = {
+        "path": "docs/release.md",
+        "content": "v2.0.0",
+    }
     result = await node.invoke_async(
-        _task(_event_blocks(_event([{"path": "docs/release.md", "content": "v2.0.0"}]), _grounded_variants()))
+        _task(_event_blocks(_event([block]), _grounded_variants()))
     )
 
+    output = _evaluate_output(result)
+    assert output["passed"] is True
+    assert output["issues"] == []
+
+
+async def test_no_judge_configured_fails_open_to_deterministic_gate() -> None:
+    """With no live judge configured the deterministic evidence gate alone
+    decides: grounded variants still pass (fail-open, offline-safe)."""
+    evidence_content = [{"path": "docs/release.md", "content": "v2.0.0 grounding"}]
+    node = ContentEvaluationNode(judge=None)
+    result = await node.invoke_async(
+        _task(_event_blocks(_event(evidence_content), _grounded_variants()))
+    )
     output = _evaluate_output(result)
     assert output["passed"] is True
     assert output["issues"] == []

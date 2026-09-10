@@ -11,10 +11,11 @@ role's configured failure mode (``Interrupt`` for side-effecting roles,
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import PurePosixPath, PureWindowsPath
-from typing import Any, Awaitable, Callable, Mapping
+from typing import Any
 
 from draftly.steering.context import SteeringRuntime
 from draftly.steering.decisions import (
@@ -57,13 +58,17 @@ class SteeringLimits:
                 raise ValueError(f"{name} must be non-negative, got {value}")
 
 
-class PolicyViolation(SteeringError):
+class PolicyViolationError(SteeringError):
     """A deterministic policy rule was violated and no safe fallback exists."""
 
     def __init__(self, message: str, *, rule: str = "") -> None:
         super().__init__(message)
         self.rule = rule
         self.message = message
+
+
+#: Backward-compatible alias for the long-standing public name.
+PolicyViolation = PolicyViolationError
 
 
 @dataclass(frozen=True)
@@ -149,6 +154,36 @@ class RolePolicy:
         return decision
 
     # ------------------------------------------------------------------
+    # Shadow evaluation (no attempt side effects)
+    # ------------------------------------------------------------------
+
+    async def evaluate_tool_shadow(
+        self,
+        *,
+        runtime: SteeringRuntime,
+        tool_name: str,
+        tool_use: Mapping[str, Any],
+        judge: Callable[..., Awaitable[SteeringDecision]] | None = None,
+    ) -> SteeringDecision:
+        """Run the full decision pipeline (deterministic + judge) with no
+        durable attempt reservation, so a would-have guide never consumes
+        budget and a would-have limit never triggers."""
+        decision = self._evaluate_tool(runtime=runtime, tool_name=tool_name, tool_use=tool_use)
+        return await self._apply_judge(decision, judge)
+
+    async def evaluate_model_shadow(
+        self,
+        *,
+        runtime: SteeringRuntime,
+        message: Mapping[str, Any],
+        stop_reason: str,
+        judge: Callable[..., Awaitable[SteeringDecision]] | None = None,
+    ) -> SteeringDecision:
+        """Deterministic model checks + judge refinement, no guide reservation."""
+        decision = self._evaluate_model(runtime=runtime, message=message, stop_reason=stop_reason)
+        return await self._apply_judge(decision, judge)
+
+    # ------------------------------------------------------------------
     # Deterministic evaluation
     # ------------------------------------------------------------------
 
@@ -180,7 +215,11 @@ class RolePolicy:
 
         required_key = self.required_evidence.get(tool_name)
         if required_key and not _has_evidence(tool_use, required_key):
-            return _guide(runtime, rule="evidence:missing", reason=f"missing required evidence '{required_key}'")
+            return _guide(
+                runtime,
+                rule="evidence:missing",
+                reason=f"missing required evidence '{required_key}'",
+            )
 
         destination_failure = self._check_destination(runtime, tool_name, tool_use)
         if destination_failure is not None:
@@ -246,7 +285,8 @@ class RolePolicy:
             ):
                 return (
                     "delivery:destination",
-                    f"destination '{destination}' is outside authorized repo '{scope.org_id}/{scope.project_id}'",
+                    f"destination '{destination}' is outside authorized repo "
+                    f"'{scope.org_id}/{scope.project_id}'",
                 )
         scope_failure = self._check_scope(runtime, tool_name, tool_use)
         if scope_failure is not None and tool_name in self.write_tools | self.side_effect_tools:
@@ -262,7 +302,9 @@ class RolePolicy:
             return ("delivery:idempotency", "side-effecting tool requires idempotency metadata")
         return "", ""
 
-    def _check_arguments(self, tool_name: str, tool_use: Mapping[str, Any]) -> tuple[str, str] | None:
+    def _check_arguments(
+        self, tool_name: str, tool_use: Mapping[str, Any]
+    ) -> tuple[str, str] | None:
         for arg in self.required_text_args.get(tool_name, ()):
             value = tool_use.get(arg)
             if not isinstance(value, str) or not value.strip():
