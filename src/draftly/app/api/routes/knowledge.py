@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import Any
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
@@ -78,6 +79,7 @@ async def search_knowledge(
     request: Request,
     q: str = Query(min_length=1, max_length=300),
     limit: int = Query(default=20, ge=1, le=50),
+    status: KnowledgeStatus | None = None,
     token: dict[str, Any] = Depends(get_verified_token),
 ) -> KnowledgeSearchResponse:
     """Run bounded semantic search over the token organization's Knowledge."""
@@ -89,6 +91,7 @@ async def search_knowledge(
             org_id=_org_id(token),
             query=query,
             limit=limit,
+            status=status.value if status else None,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -161,6 +164,10 @@ async def get_knowledge_item(
     token: dict[str, Any] = Depends(get_verified_token),
 ) -> KnowledgeDetail:
     """Fetch one Knowledge item plus scoped provenance, relations, and feedback."""
+    try:
+        UUID(item_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid Knowledge item id") from exc
     item = await _knowledge_repo(request).detail(
         org_id=_org_id(token),
         item_id=item_id,

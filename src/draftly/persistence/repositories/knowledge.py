@@ -5,7 +5,9 @@ from __future__ import annotations
 import base64
 import binascii
 import json
+from datetime import datetime
 from typing import Any
+from uuid import UUID
 
 from draftly.integrations.database.client import DatabaseClient
 from draftly.integrations.database.memory_feedback_store import MemoryFeedbackStore
@@ -54,6 +56,8 @@ class KnowledgeRepository:
             )
             updated_at = str(payload["updated_at"])
             item_id = str(payload["id"])
+            datetime.fromisoformat(updated_at.replace("Z", "+00:00"))
+            UUID(item_id)
         except (
             KeyError,
             TypeError,
@@ -167,6 +171,7 @@ class KnowledgeRepository:
         org_id: str,
         query: str,
         limit: int = 20,
+        status: str | None = None,
     ) -> list[dict[str, Any]]:
         organization = self._require_org_id(org_id)
         if not 1 <= limit <= 50:
@@ -178,10 +183,14 @@ class KnowledgeRepository:
             limit=limit,
             org_id=organization,
         )
-        return [
+        items = [
             {**self._row_to_item(row), "similarity": row.get("similarity")}
             for row in rows
         ]
+        if status is not None:
+            self._status_clause(status)
+            items = [item for item in items if item["status"] == status]
+        return items
 
     async def detail(self, *, org_id: str, item_id: str) -> dict[str, Any] | None:
         organization = self._require_org_id(org_id)

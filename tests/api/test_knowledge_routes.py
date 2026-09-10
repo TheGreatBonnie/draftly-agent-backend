@@ -100,11 +100,15 @@ class FakeKnowledgeRepo:
             "stale": sum(i["status"] == "stale" for i in page["items"]),
         }
 
-    async def search(self, *, org_id, query, limit=20):
+    async def search(self, *, org_id, query, limit=20, status=None):
         if self.search_result is not None:
-            return self.search_result[:limit]
-        records = await self.memory.list_namespace(namespace="knowledge", org_id=org_id)
-        return [self._item(record) for record in records[:limit]]
+            items = self.search_result[:limit]
+        else:
+            records = await self.memory.list_namespace(namespace="knowledge", org_id=org_id)
+            items = [self._item(record) for record in records[:limit]]
+        if status:
+            items = [item for item in items if item["status"] == status]
+        return items
 
     async def detail(self, *, org_id, item_id):
         record = await self.memory.get(memory_id=item_id)
@@ -211,6 +215,11 @@ def test_get_unknown_returns_404() -> None:
     client = TestClient(make_app(items=[]))
     resp = client.get("/knowledge/99999999-9999-9999-9999-999999999999")
     assert resp.status_code == 404
+
+
+def test_invalid_item_id_is_rejected() -> None:
+    response = TestClient(make_app()).get("/knowledge/not-a-uuid")
+    assert response.status_code == 400
 
 
 def test_stats_counts_by_derived_status() -> None:

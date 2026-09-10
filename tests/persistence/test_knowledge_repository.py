@@ -84,3 +84,8 @@ def test_related_projections_remove_internal_columns() -> None:
     assert "org_id" not in source and "memory_item_id" not in source
     assert "org_id" not in link and "created_at" not in link
     assert "org_id" not in feedback and "memory_item_id" not in feedback
+
+
+def test_knowledge_cursor_rejects_invalid_timestamp_and_id() -> None:
+    with pytest.raises(ValueError, match="Invalid Knowledge cursor"):
+        KnowledgeRepository._decode_cursor("eyJ1cGRhdGVkX2F0IjoiYmFkIiwiaWQiOiJub3QtaWQifQ")
