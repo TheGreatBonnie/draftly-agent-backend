@@ -181,4 +181,40 @@ def list_agent_descriptors() -> tuple[AgentDescriptor, ...]:
 
 
 def get_agent_descriptor(agent_id: str) -> AgentDescriptor | None:
+    """Return the immutable descriptor for a stable dashboard id."""
     return next((item for item in AGENT_CATALOG if item.id == agent_id), None)
+
+
+def expand_tool_keys(keys: tuple[str, ...]) -> list[str]:
+    """Expand catalog tool groups from the single runtime tool registry."""
+    from draftly.app.composition.tools import build_tools
+
+    registry = build_tools()
+    result: list[str] = []
+    seen: set[str] = set()
+    for key in keys:
+        for tool in getattr(registry, key, []):
+            name = str(getattr(tool, "__name__", ""))
+            if name and name not in seen:
+                seen.add(name)
+                result.append(name)
+    return result
+
+
+def agent_id_for_node(surface: str | None, node_id: str | None) -> str | None:
+    """Resolve a graph node to an agent without guessing across surfaces."""
+    if not node_id:
+        return None
+    exact = [
+        item for item in AGENT_CATALOG
+        if node_id in item.node_ids and item.surface == (surface or "")
+    ]
+    if len(exact) == 1:
+        return exact[0].id
+    shared = [
+        item for item in AGENT_CATALOG
+        if node_id in item.node_ids and item.surface == "shared"
+    ]
+    if len(shared) == 1:
+        return shared[0].id
+    return None

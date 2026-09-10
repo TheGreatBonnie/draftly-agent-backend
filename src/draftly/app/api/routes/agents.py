@@ -6,6 +6,12 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, Request
 
+from draftly.agents.catalog import expand_tool_keys, get_agent_descriptor
+from draftly.app.api.agent_schemas import (
+    AgentDetailResponse,
+    AgentListResponse,
+    AgentRunsResponse,
+)
 from draftly.app.api.auth import get_verified_token
 
 router = APIRouter(
@@ -184,6 +190,28 @@ def _unique_tools(keys: list[str]) -> list[str]:
     return result
 
 
+def _legacy_agent_to_api(item: dict[str, Any]) -> dict[str, Any]:
+    descriptor = get_agent_descriptor(str(item["role"]))
+    return {
+        "id": descriptor.id if descriptor else str(item["role"]),
+        "role": item["role"],
+        "name": item["name"],
+        "description": item["description"],
+        "surface": descriptor.surface if descriptor else item["surface"],
+        "tools": item["tools"],
+        "availability": "enabled",
+        "last_run_status": item["status"],
+        "runs_7d": len(item["history"]),
+        "success_rate_7d": None,
+        "last_run_at": None,
+        "latest_run_id": None,
+        "legacy_steps": 0,
+        "status": item["status"],
+        "activity": item["activity"],
+        "history": item["history"],
+    }
+
+
 ROLE_NODES: dict[str, list[str]] = {
     "classifier": ["classify"],
     "context_agent": ["context"],
@@ -259,13 +287,90 @@ async def build_agent_summaries(
     return agents
 
 
-@router.get("")
+@router.get("", response_model=AgentListResponse)
 async def list_agents(
-    request: Request, token: dict[str, Any] = Depends(get_verified_token)
+    request: Request,
+    token: dict[str, Any] = Depends(get_verified_token),
+    surface: str | None = None,
+    limit: int = 100,
 ) -> dict[str, Any]:
     org_id = str(token.get("org_id") or "") or None
-    return {
-        "agents": await build_agent_summaries(
-            request.app.state.draftly, org_id=org_id
+    repo = getattr(
+        getattr(getattr(request.app.state, "draftly", None), "dependencies", None),
+        "repositories", None,
+    )
+    runs_repo = getattr(repo, "agent_runs", None)
+    if hasattr(runs_repo, "list_agent_summaries"):
+        agents = await runs_repo.list_agent_summaries(
+            org_id=org_id or "", surface=surface, limit=max(1, min(limit, 200))
         )
+        if surface:
+            agents = [item for item in agents if item.get("surface") == surface]
+        return {"agents": agents}
+    legacy_agents = await build_agent_summaries(
+        request.app.state.draftly, org_id=org_id
+    )
+    return {"agents": [_legacy_agent_to_api(item) for item in legacy_agents]}
+
+
+@router.get("/{agent_id}", response_model=AgentDetailResponse)
+async def get_agent_detail(
+    agent_id: str,
+    request: Request,
+    token: dict[str, Any] = Depends(get_verified_token),
+) -> dict[str, Any]:
+    descriptor = get_agent_descriptor(agent_id)
+    if descriptor is None:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail="Agent not found")
+    repo = request.app.state.draftly.dependencies.repositories.agent_runs
+    if hasattr(repo, "get_agent_detail"):
+        detail = await repo.get_agent_detail(
+            org_id=str(token.get("org_id") or ""), agent_id=agent_id
+        )
+        if detail is None:
+            from fastapi import HTTPException
+            raise HTTPException(status_code=404, detail="Agent not found")
+        return detail
+    # Compatibility path for reduced test compositions and older deployments.
+    summary = next(item for item in await build_agent_summaries(
+        request.app.state.draftly, org_id=str(token.get("org_id") or "")
+    ) if item.get("role") == descriptor.role)
+    summary = {
+        "id": agent_id,
+        "role": descriptor.role,
+        "name": summary["name"],
+        "description": summary["description"],
+        "surface": descriptor.surface,
+        "tools": expand_tool_keys(descriptor.tool_keys),
+        "availability": "enabled",
+        "last_run_status": summary.get("status", "idle"),
+        "runs_7d": len(summary.get("history", [])),
+        "success_rate_7d": None,
+        "last_run_at": None,
+        "latest_run_id": None,
+        "legacy_steps": 0,
     }
+    return {"agent": summary, "metrics": {"runs": summary["runs_7d"]},
+            "tools": summary["tools"], "recent_runs": []}
+
+
+@router.get("/{agent_id}/runs", response_model=AgentRunsResponse)
+async def list_agent_runs(
+    agent_id: str,
+    request: Request,
+    token: dict[str, Any] = Depends(get_verified_token),
+    limit: int = 50,
+    cursor: str | None = None,
+) -> dict[str, Any]:
+    if get_agent_descriptor(agent_id) is None:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail="Agent not found")
+    repo = request.app.state.draftly.dependencies.repositories.agent_runs
+    if not hasattr(repo, "list_agent_runs"):
+        return {"items": [], "next_cursor": None}
+    items, next_cursor = await repo.list_agent_runs(
+        org_id=str(token.get("org_id") or ""), agent_id=agent_id,
+        limit=max(1, min(limit, 200)), cursor=cursor,
+    )
+    return {"items": items, "next_cursor": next_cursor}
