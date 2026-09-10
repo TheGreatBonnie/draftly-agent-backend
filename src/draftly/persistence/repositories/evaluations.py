@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import structlog
@@ -220,6 +220,69 @@ class EvaluationRepository:
             cursor=cursor,
             limit=bounded_limit,
         )
+
+    async def list_runs(
+        self,
+        *,
+        org_id: str,
+        evaluation_type: str | None,
+        limit: int,
+        cursor: str | None,
+    ) -> tuple[list[dict[str, Any]], int, str | None]:
+        return await self.store.list_runs(
+            org_id=org_id,
+            evaluation_type=evaluation_type,
+            limit=max(1, min(limit, 200)),
+            cursor=cursor,
+        )
+
+    async def get_run_detail(
+        self,
+        *,
+        org_id: str,
+        run_id: str,
+        cases_limit: int,
+        cases_cursor: str | None,
+    ) -> dict[str, Any] | None:
+        summary = await self.get_run_summary(org_id=org_id, run_id=run_id)
+        if summary is None:
+            return None
+        cases, next_cursor = await self.list_case_results(
+            org_id=org_id,
+            run_id=run_id,
+            cursor=cases_cursor,
+            limit=cases_limit,
+        )
+        detail_available = bool(cases) or not summary.get("metrics", {}).get("granular")
+        return {
+            "summary": summary,
+            "cases": cases,
+            "next_cases_cursor": next_cursor,
+            "detail_available": detail_available,
+        }
+
+    async def aggregate_summary(self, *, org_id: str, days: int) -> dict[str, Any]:
+        return await self.store.aggregate_summary(
+            org_id=org_id,
+            since=datetime.now(UTC) - timedelta(days=days),
+            days=days,
+        )
+
+    def catalog(self) -> dict[str, list[dict[str, Any]]]:
+        datasets = []
+        for definition in self.list_datasets():
+            datasets.append(
+                {
+                    "name": definition.get("name", ""),
+                    "description": definition.get("description", ""),
+                    "surface": definition.get("surface", ""),
+                    "case_count": len(definition.get("cases", [])),
+                    "version": definition.get("version"),
+                }
+            )
+        from draftly.evaluation.runner import evaluator_catalog
+
+        return {"datasets": datasets, "evaluators": evaluator_catalog()}
 
     async def search(
         self,
