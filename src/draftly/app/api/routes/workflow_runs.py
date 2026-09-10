@@ -128,7 +128,35 @@ async def get_run(
     request: Request,
     token: dict[str, Any] = Depends(get_verified_token),
 ) -> dict[str, Any]:
-    return {"run": await _authorized_run(request, run_id, token)}
+    run = await _authorized_run(request, run_id, token)
+    pending = await _pending_interventions(request, run_id, str(token.get("org_id") or ""))
+    if pending:
+        run = {**run, "pending_interventions": pending}
+    return {"run": run}
+
+
+async def _pending_interventions(
+    request: Request, run_id: str, org_id: str
+) -> list[dict[str, Any]]:
+    """Best-effort pending-intervention summary for a run; never raises."""
+    interventions = getattr(_repositories(request), "steering_interventions", None)
+    list_pending = getattr(interventions, "list_pending_for_run", None)
+    if list_pending is None:
+        return []
+    try:
+        records = await list_pending(run_id=run_id, org_id=org_id)
+    except Exception:
+        return []
+    return [
+        {
+            "interrupt_id": record.interrupt_id,
+            "status": record.status,
+            "tool_name": record.tool_name,
+            "node_id": record.node_id,
+            "created_at": record.created_at,
+        }
+        for record in records or []
+    ]
 
 
 @router.get("/{run_id}/steps")
