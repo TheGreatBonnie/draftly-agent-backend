@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from datetime import datetime
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Body, Depends, Header, HTTPException, Request
+from fastapi.responses import JSONResponse
 
 from draftly.app.api.auth import get_verified_token
 from draftly.app.api.evaluation_schemas import (
@@ -14,6 +17,7 @@ from draftly.app.api.evaluation_schemas import (
     EvaluationCaseResult,
     EvaluationCatalog,
     EvaluationRunDetail,
+    EvaluationRunRequest,
     EvaluationRunSummary,
 )
 
@@ -85,6 +89,17 @@ def _case_payload(item: dict[str, Any]) -> dict[str, Any]:
             "evidence": item.get("evidence") or [],
         }
     ).model_dump(mode="json")
+
+
+def _request_hash(payload: EvaluationRunRequest) -> str:
+    encoded = json.dumps(payload.model_dump(mode="json"), sort_keys=True).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _evaluation_environment(request: Request) -> str:
+    application = getattr(request.app.state, "draftly", None)
+    settings = getattr(application, "settings", None)
+    return str(getattr(settings, "environment", "development")).lower()
 
 
 @router.get("")
@@ -202,25 +217,76 @@ async def get_evaluation(
 @router.post("/run")
 async def run_evaluations(
     request: Request,
+    payload: EvaluationRunRequest = Body(default_factory=EvaluationRunRequest),
     token: dict[str, str] = Depends(get_verified_token),
-    live: bool = False,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    live: bool | None = None,
 ) -> dict[str, Any]:
     """Trigger the evaluation loop workflow.
 
-    Query param ``live`` (default False) enables real agent invocation with
-    LLM-judge evaluators; otherwise the deterministic offline runner is used.
+    Production requests are queued and deduplicated by organization plus
+    ``Idempotency-Key``. Development keeps the legacy inline execution path.
     """
     from uuid import uuid4
 
     org_id = str(token.get("org_id") or "")
+    requested_live = payload.live if live is None else live
+    environment = _evaluation_environment(request)
+    if environment == "production" and not idempotency_key:
+        raise HTTPException(status_code=400, detail="Idempotency-Key header is required")
+    idempotency_key = idempotency_key or f"legacy-{uuid4()}"
+    try:
+        repo = _evaluations(request)
+    except (HTTPException, AttributeError):
+        repo = None
+    idempotency = getattr(repo, "idempotency_store", None)
+    if idempotency is not None:
+        request_hash = _request_hash(payload)
+        existing = await idempotency.get(org_id=org_id, idempotency_key=idempotency_key)
+        if existing is not None:
+            if existing.get("request_hash") != request_hash:
+                raise HTTPException(status_code=409, detail="Idempotency-Key request mismatch")
+            return existing.get("response") or {}
+    else:
+        request_hash = _request_hash(payload)
     run_id = str(uuid4())
+    response = {
+        "run_id": run_id,
+        "status": "queued",
+        "stream_ticket": None,
+    }
+    if idempotency is not None:
+        await idempotency.create(
+            org_id=org_id,
+            idempotency_key=idempotency_key,
+            request_hash=request_hash,
+            run_id=run_id,
+            response=response,
+        )
     application = request.app.state.draftly
     worker = getattr(application, "worker", None)
     if worker is not None and worker.task_runner.has_task("evaluation.loop"):
+        if environment == "production":
+            import asyncio
+
+            asyncio.create_task(
+                worker.run_task(
+                    "evaluation.loop",
+                    org_id=org_id,
+                    run_id=run_id,
+                    live=requested_live,
+                    datasets=payload.datasets,
+                )
+            )
+            return JSONResponse(status_code=202, content=response)
         result = await worker.run_task(
-            "evaluation.loop", org_id=org_id, run_id=run_id, live=live
+            "evaluation.loop", org_id=org_id, run_id=run_id, live=requested_live,
+            datasets=payload.datasets,
         )
         return {"status": "completed", "result": result, "run_id": run_id}
+
+    if environment == "production":
+        raise HTTPException(status_code=503, detail="Evaluation queue unavailable")
 
     # Worker disabled: invoke the workflow directly against the context.
     workflows = getattr(application, "workflows", None)
@@ -228,7 +294,13 @@ async def run_evaluations(
     func = registry.get("evaluation_loop") if registry else None
     if workflows is None or func is None:
         raise HTTPException(status_code=503, detail="Runtime not started")
-    state = await func(workflows.context, org_id=org_id, run_id=run_id, live=live)
+    state = await func(
+        workflows.context,
+        org_id=org_id,
+        run_id=run_id,
+        live=requested_live,
+        datasets=payload.datasets,
+    )
     return {
         "status": str(getattr(state, "status", "unknown")),
         "run_id": getattr(state, "run_id", None),

@@ -6,6 +6,9 @@ from typing import Any
 import structlog
 
 from draftly.evaluation.runner import StrandsEvalsRunner
+from draftly.integrations.database.evaluation_idempotency_store import (
+    EvaluationIdempotencyStore,
+)
 from draftly.integrations.database.evaluations_store import (
     DatabaseEvaluationsStore,
 )
@@ -19,6 +22,7 @@ class EvaluationRepository:
         store: DatabaseEvaluationsStore | None = None,
     ) -> None:
         self.store = store or DatabaseEvaluationsStore()
+        self.idempotency_store = EvaluationIdempotencyStore(self.store.client)
 
     async def create(
         self,
