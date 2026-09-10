@@ -160,7 +160,12 @@ async def list_evaluation_cases(
     limit: int = 50,
     cursor: str | None = None,
 ) -> dict[str, Any]:
-    items, next_cursor = await _evaluations(request).list_case_results(
+    repo = _evaluations(request)
+    if await repo.get_run_summary(
+        org_id=str(token.get("org_id") or ""), run_id=run_id
+    ) is None:
+        raise HTTPException(status_code=404, detail="Evaluation run not found")
+    items, next_cursor = await repo.list_case_results(
         org_id=str(token.get("org_id") or ""),
         run_id=run_id,
         cursor=cursor,
@@ -239,6 +244,8 @@ async def run_evaluations(
         repo = _evaluations(request)
     except (HTTPException, AttributeError):
         repo = None
+    application = request.app.state.draftly
+    worker = getattr(application, "worker", None)
     idempotency = getattr(repo, "idempotency_store", None)
     if idempotency is not None:
         request_hash = _request_hash(payload)
@@ -249,6 +256,11 @@ async def run_evaluations(
             return existing.get("response") or {}
     else:
         request_hash = _request_hash(payload)
+    if environment == "production":
+        if idempotency is None:
+            raise HTTPException(status_code=503, detail="Evaluation persistence unavailable")
+        if worker is None or not worker.task_runner.has_task("evaluation.loop"):
+            raise HTTPException(status_code=503, detail="Evaluation queue unavailable")
     run_id = str(uuid4())
     response = {
         "run_id": run_id,
@@ -263,8 +275,6 @@ async def run_evaluations(
             run_id=run_id,
             response=response,
         )
-    application = request.app.state.draftly
-    worker = getattr(application, "worker", None)
     if worker is not None and worker.task_runner.has_task("evaluation.loop"):
         if environment == "production":
             import asyncio
@@ -284,9 +294,6 @@ async def run_evaluations(
             datasets=payload.datasets,
         )
         return {"status": "completed", "result": result, "run_id": run_id}
-
-    if environment == "production":
-        raise HTTPException(status_code=503, detail="Evaluation queue unavailable")
 
     # Worker disabled: invoke the workflow directly against the context.
     workflows = getattr(application, "workflows", None)
