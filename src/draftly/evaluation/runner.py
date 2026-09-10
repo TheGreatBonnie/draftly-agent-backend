@@ -402,6 +402,60 @@ def report_detail_rows(
     return rows
 
 
+def evaluator_catalog() -> list[dict[str, Any]]:
+    """Stable evaluator metadata used by the dashboard catalog."""
+    return [
+        {
+            "key": "expected_contains",
+            "display_name": "Expected content coverage",
+            "description": "Checks significant expected concepts in the actual output.",
+            "threshold": ExpectedContains.COVERAGE_THRESHOLD,
+            "version": "1",
+            "enabled": True,
+        },
+        {
+            "key": "expected_tools",
+            "display_name": "Expected tools",
+            "description": "Checks that declared grounding tools were called.",
+            "threshold": None,
+            "version": "1",
+            "enabled": True,
+        },
+        {
+            "key": "expected_authoring_action",
+            "display_name": "Authoring action",
+            "description": "Checks create, update, or no-change behavior.",
+            "threshold": None,
+            "version": "1",
+            "enabled": True,
+        },
+        {
+            "key": "expected_delivered",
+            "display_name": "Delivery receipt",
+            "description": "Checks that required authoring reached delivery.",
+            "threshold": None,
+            "version": "1",
+            "enabled": True,
+        },
+        {
+            "key": "expected_interrupt",
+            "display_name": "Review interruption",
+            "description": "Checks that the review gate interrupted when required.",
+            "threshold": None,
+            "version": "1",
+            "enabled": True,
+        },
+        {
+            "key": "expected_passthrough",
+            "display_name": "Review passthrough",
+            "description": "Checks that low-risk or disabled review reached delivery.",
+            "threshold": None,
+            "version": "1",
+            "enabled": True,
+        },
+    ]
+
+
 def report_rows(dataset_name: str, report: Any) -> list[dict[str, Any]]:
     """Flatten a report into per-evaluation row dicts.
 
@@ -1241,9 +1295,11 @@ __all__ = [
     "ExpectedToolCalled",
     "NoFalsePositiveGap",
     "NodeToolCalled",
+    "evaluator_catalog",
     "run_dataset_sync",
     "run_dataset_live",
     "run_dataset_online",
     "build_live_evaluators",
     "report_rows",
+    "report_detail_rows",
 ]
