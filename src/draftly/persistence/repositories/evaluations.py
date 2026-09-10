@@ -182,6 +182,45 @@ class EvaluationRepository:
     ) -> dict[str, Any] | None:
         return await self.store.get(evaluation_id=evaluation_id)
 
+    async def save_case_results(
+        self,
+        *,
+        org_id: str,
+        evaluation_id: str,
+        run_id: str,
+        results: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        return await self.store.insert_case_results(
+            org_id=org_id,
+            evaluation_id=evaluation_id,
+            run_id=run_id,
+            results=results,
+        )
+
+    async def get_run_summary(
+        self,
+        *,
+        org_id: str,
+        run_id: str,
+    ) -> dict[str, Any] | None:
+        return await self.store.get_by_run_id(org_id=org_id, run_id=run_id)
+
+    async def list_case_results(
+        self,
+        *,
+        org_id: str,
+        run_id: str,
+        cursor: str | None,
+        limit: int,
+    ) -> tuple[list[dict[str, Any]], str | None]:
+        bounded_limit = max(1, min(limit, 200))
+        return await self.store.list_case_results(
+            org_id=org_id,
+            run_id=run_id,
+            cursor=cursor,
+            limit=bounded_limit,
+        )
+
     async def search(
         self,
         *,
