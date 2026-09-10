@@ -224,6 +224,7 @@ class DraftlyApplication:
             hooks=[],
             audit_repo=audit_repo,
             redis_client=self.redis_client,
+            session_repository=self._build_session_repository(),
         )
 
         self.events = build_event_system(
@@ -276,6 +277,27 @@ class DraftlyApplication:
             return AgentRunsRepository(self.dependencies.database)
         except Exception as exc:
             logger.warning("audit_repo_unavailable: %s", exc)
+            return None
+
+    def _build_session_repository(self) -> Any:
+        """Build the shared Strands session repository (resume-session fix).
+
+        Returns None (legacy per-run FileSessionManager) when session storage
+        is file-backed or the store cannot be built, so offline runs and tests
+        stay isolated.
+        """
+        if getattr(
+            getattr(self.settings, "strands", None), "session_storage", None
+        ) != "database":
+            return None
+        try:
+            from draftly.integrations.strands.session_storage import (
+                DatabaseSessionRepository,
+            )
+
+            return DatabaseSessionRepository()
+        except Exception as exc:
+            logger.warning("session_repository_unavailable: %s", exc)
             return None
 
     def _resolve_runtime_model(self) -> Any:

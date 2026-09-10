@@ -119,6 +119,7 @@ def _default_graph_factory(context: WorkflowContext) -> GraphFactory:
             model=context.model,
             hooks=context.hooks,
             storage_dir=context.storage_dir,
+            session_repository=getattr(context, "session_repository", None),
             audit_repo=context.audit_repo,
             memory=context.memory_bundle(),
             publisher=getattr(context, "publisher", None),
@@ -144,6 +145,7 @@ class WorkflowRunner:
     ) -> None:
         self.context = context
         self._graph_factory = graph_factory or _default_graph_factory(context)
+        self._session_repository = getattr(context, "session_repository", None)
         self.dispatcher = dispatcher or EventDispatcher()
         # When set, runs stream via graph.stream_async and publish filtered
         # envelopes; outcome handling below is identical on both paths.
@@ -356,6 +358,42 @@ class WorkflowRunner:
                 }
             }
         ]
+        # Preflight: a resume is only valid when the graph restored the
+        # interrupted state from its persisted session. When the session is
+        # gone (fresh session created during this request), the graph would
+        # treat the resume payload as a brand-new task and run it from the
+        # entry points — failing later in an unrelated node. Detect that
+        # early and keep the review actionable instead.
+        resumable = self._session_is_resumable(graph, interrupt_id)
+        if not resumable:
+            from draftly.review.resume import ReviewResumeError
+
+            message = (
+                "interrupted session state not found; the run cannot be resumed"
+            )
+            logger.warning(
+                "review_resume_blocked",
+                run_id=run_id,
+                surface=surface,
+                interrupt_id=interrupt_id,
+                reason="session_lost",
+            )
+            await self._mark(event, "pending_review")
+            await self._persist_lifecycle(
+                event,
+                "pending_review",
+                run_id=run_id,
+                error=message,
+                result={"status": "SESSION_LOST", "error": message},
+            )
+            await self._broadcast_lifecycle(
+                org_id=str(event.get("project_id") or ""),
+                run_id=run_id,
+                status="pending_review",
+                surface=surface,
+            )
+            await self._notify_reviewers(run_id)
+            raise ReviewResumeError(f"Cannot resume run {run_id}: {message}")
         state = WorkflowState(run_id=run_id, event=event, surface=surface)
         started = time.monotonic()
         installation_token = set_installation_id(event.get("installation_id"))
@@ -428,6 +466,45 @@ class WorkflowRunner:
         resumed = await self._finish_result(event, surface, result, state)
         logger.info("workflow_resume_done", run_id=run_id, status=resumed.status.value)
         return resumed
+
+    def _session_is_resumable(self, graph: Any, interrupt_id: str | None) -> bool:
+        """Mirror Strands' own resume discriminator to preflight the resume.
+
+        Strands only sets ``graph._resume_from_session`` and activates
+        ``graph._interrupt_state`` *during* ``invoke``; they are never reliable
+        before it runs. The same persisted payload it inspects there is what
+        decides whether an interrupted run can be resumed: a multi-agent
+        session that carries ``next_nodes_to_execute`` (a paused graph working
+        through the review gate) can be resumed; a fresh/empty session cannot.
+        """
+        manager = getattr(graph, "session_manager", None)
+        # A graph without any session manager does not restore state at all —
+        # nothing for this guard to validate, so defer to Strands' behavior.
+        if manager is None:
+            return True
+        if interrupt_id is None:
+            return False
+        if getattr(manager, "_is_new_session", True):
+            return False
+        try:
+            state = manager.session_repository.read_multi_agent(
+                manager.session_id, graph.id
+            )
+        except Exception:
+            return False
+        if not state:
+            return False
+        # An actual resume needs a non-empty, not-yet-finished node queue.
+        next_nodes = state.get("next_nodes_to_execute") or []
+        if not next_nodes:
+            return False
+        # When the persisted interrupt state is present, require the requested
+        # interrupt to actually be among the ones the graph is waiting on.
+        internal_state = state.get("_internal_state") or {}
+        interrupt_state = (internal_state.get("interrupt_state") or {}).get(
+            "interrupts"
+        )
+        return bool(interrupt_state is None or interrupt_id in interrupt_state)
 
     def _invocation_state(self, event: dict[str, Any], surface: str) -> dict[str, Any]:
         return {

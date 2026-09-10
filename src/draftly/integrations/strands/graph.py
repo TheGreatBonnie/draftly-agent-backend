@@ -10,7 +10,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from strands.session import FileSessionManager
+from strands.session import FileSessionManager, RepositorySessionManager
 
 from draftly.integrations.strands.models import (
     resolve_model_for_role,  # noqa: F401 - re-exported for graph builders
@@ -42,11 +42,23 @@ _BUILDERS = {
 def build_session_manager(
     run_id: str,
     storage_dir: str = DEFAULT_SESSION_STORAGE_DIR,
-) -> FileSessionManager:
-    """Create a FileSessionManager for a specific run."""
+    repository: Any | None = None,
+) -> Any:
+    """Create a session manager for a specific run.
+
+    A DB-backed ``SessionRepository`` (shared across processes/restarts) is
+    used when ``repository`` is provided; otherwise the on-disk
+    ``FileSessionManager`` keeps offline runs and tests isolated.
+    """
+    session_id = f"draftly-{run_id}"
+    if repository is not None:
+        return RepositorySessionManager(
+            session_id=session_id,
+            session_repository=repository,
+        )
     Path(storage_dir).mkdir(parents=True, exist_ok=True)
     return FileSessionManager(
-        session_id=f"draftly-{run_id}",
+        session_id=session_id,
         storage_dir=storage_dir,
     )
 
@@ -61,6 +73,7 @@ def build_graph_for_run(
     agents: Any = None,
     storage_dir: str = DEFAULT_SESSION_STORAGE_DIR,
     session_manager: Any | None = None,
+    session_repository: Any | None = None,
     audit_repo: Any = None,
     memory: Any = None,
     publisher: Any = None,
@@ -75,7 +88,9 @@ def build_graph_for_run(
     (see ``draftly.orchestration.routing.classifiers.workflow_for_event``).
     """
     builder = _BUILDERS.get(surface, build_documentation_graph)
-    manager = session_manager or build_session_manager(run_id, storage_dir)
+    manager = session_manager or build_session_manager(
+        run_id, storage_dir, repository=session_repository
+    )
 
     # The content repository is consumed exclusively by the content graph;
     # drop it for every other builder so an injected repo never leaks into an

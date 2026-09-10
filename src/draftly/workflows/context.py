@@ -30,6 +30,9 @@ class WorkflowContext:
     model: Any = None
     hooks: list[Any] = field(default_factory=list)
     storage_dir: str = DEFAULT_SESSION_STORAGE_DIR
+    #: DB-backed Strands session repository shared across processes/restarts
+    #: (resume-session fix); None ⇒ per-run FileSessionManager.
+    session_repository: Any = None
     audit_repo: Any = None
     #: RoutingDecision from the adaptive router when per-task routing ran.
     routing_decision: Any | None = None

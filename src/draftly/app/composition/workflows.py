@@ -57,6 +57,7 @@ def build_workflows(
     hooks: list[Any] | None = None,
     audit_repo: Any = None,
     redis_client: Any = None,
+    session_repository: Any = None,
 ) -> ComposedWorkflows:
     """Compose the workflow registry, context, and runner."""
     from draftly.memory.candidates.service import CandidateService
@@ -122,6 +123,7 @@ def build_workflows(
             "session_storage_dir",
             ".draftly/sessions",
         ),
+        session_repository=session_repository,
         episodic=EpisodicService(),
         procedural=ProceduralService(),
         docgraph=DocGraphService(),

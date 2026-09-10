@@ -90,9 +90,24 @@ class FakeDocumentsRepo:
 
 
 class FakeGraph:
-    def __init__(self, result):
+    _resume_from_session = True
+
+    def __init__(self, result, interrupts: set[str] | None = None):
         self.result = result
         self.calls: list[dict] = []
+        self.id = "fake-graph"
+        self._interrupt_state = SimpleNamespace(
+            activated=True, interrupts=interrupts or {"int-1"}
+        )
+        self.session_manager = SimpleNamespace(
+            _is_new_session=False,
+            session_id="fake-session",
+            session_repository=SimpleNamespace(
+                read_multi_agent=lambda session_id, graph_id: {
+                    "next_nodes_to_execute": ["review"]
+                }
+            ),
+        )
 
     async def invoke_async(self, task, invocation_state=None, **kwargs):
         del kwargs
