@@ -116,9 +116,54 @@ class SteeringPersistence:
         )
 
 
+class SteeringAuditSink:
+    """Adapt the steering handler's audit contract to ``AgentRunsRepository``.
+
+    The handler writes ``record_step(run_id, agent_id, node_id, decision,
+    tool_name)`` with a ``SteeringDecision``; the run audit repository stores
+    structured ``agent_steps`` rows, so each decision maps to one compact
+    ``kind='steering'`` step. A ``None`` repository makes the sink a no-op,
+    mirroring ``AgentRunsRepository``'s no-database behavior.
+    """
+
+    def __init__(self, repo: Any | None) -> None:
+        self._repo = repo
+
+    async def record_step(
+        self,
+        *,
+        run_id: str,
+        agent_id: str | None = None,
+        node_id: str | None = None,
+        decision: Any,
+        tool_name: str | None = None,
+    ) -> None:
+        if self._repo is None:
+            return
+        kind = str(getattr(decision, "kind", "") or "").lower()
+        await self._repo.record_step(
+            run_id=run_id,
+            kind="steering",
+            name=kind or "steering",
+            status="completed",
+            detail={
+                "decision_type": kind or "unknown",
+                "phase": str(getattr(decision, "phase", "") or ""),
+                "role": str(getattr(decision, "role", "") or ""),
+                "rule": str(getattr(decision, "rule", "") or ""),
+                "tool_name": tool_name,
+                "reason": str(getattr(decision, "reason", "") or "")[:1_000],
+            },
+            agent_id=agent_id,
+            node_id=node_id,
+            surface="",
+        )
+
+
 __all__ = [
     "InterventionConflictError",
     "InterventionNotFoundError",
     "InterventionRecord",
+    "SteeringAuditSink",
     "SteeringPersistence",
 ]

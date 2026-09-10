@@ -64,6 +64,7 @@ def build_issue_graph(
     execution_timeout: float = DEFAULT_EXECUTION_TIMEOUT,
     node_timeout: float = DEFAULT_NODE_TIMEOUT,
     evaluator_max_iterations: int = DEFAULT_EVALUATOR_MAX_ITERATIONS,
+    steering_runtime: Any = None,
 ):
     """Build the GitHub issue surface graph."""
     from draftly.agents.documentation.writer import build_writer_agent
@@ -91,7 +92,12 @@ def build_issue_graph(
 
     registry = agents
     classifier_builder = getattr(registry, "classifier", None) or build_classifier
-    classifier = classifier_builder(classifier_model)
+    classifier = classifier_builder(
+        classifier_model,
+        runtime=steering_runtime,
+        agent_id="documentation.classifier",
+        node_id="classify",
+    )
     context_builder = getattr(registry, "issue_context", None) or build_issue_context_agent
     context_agent = context_builder(
         context_model,
@@ -100,6 +106,9 @@ def build_issue_graph(
             reg.keyword_search,
             _LOCAL_CODE_SEARCH,
         ),
+        runtime=steering_runtime,
+        agent_id="issue.context",
+        node_id="context",
     )
     research_builder = getattr(registry, "issue_research_swarm", None) or build_issue_research_swarm
     research_swarm = research_builder(
@@ -111,6 +120,9 @@ def build_issue_graph(
             reg.hybrid_search,
             _LOCAL_CODE_SEARCH,
         ),
+        runtime=steering_runtime,
+        agent_id="issue.research",
+        node_id="research",
     )
     analyzer_builder = getattr(registry, "issue_analyzer", None) or build_issue_analyzer
     issue_analyzer = analyzer_builder(
@@ -120,25 +132,40 @@ def build_issue_graph(
             reg.keyword_search,
             _LOCAL_CODE_SEARCH,
         ),
+        runtime=steering_runtime,
+        agent_id="issue.impact",
+        node_id="impact",
     )
     answer_builder = getattr(registry, "answer_writer", None) or build_answer_writer
     answer_agent = answer_builder(
         support_model,
         _dedupe(reg.semantic_search, reg.keyword_search),
+        runtime=steering_runtime,
+        agent_id="issue.answer",
+        node_id="answer",
     )
     writer_builder = getattr(registry, "writer_agent", None) or build_writer_agent
     update_writer = writer_builder(
         writer_model,
         scope_writer_tools(reg.documentation_engineer, reg.documentation),
+        runtime=steering_runtime,
+        agent_id="documentation.writer",
+        node_id="update",
     )
     create_writer = writer_builder(
         writer_model,
         scope_writer_tools(reg.documentation_engineer, reg.documentation),
+        runtime=steering_runtime,
+        agent_id="documentation.writer",
+        node_id="create",
     )
     responder_builder = getattr(registry, "issue_responder", None) or build_issue_responder
     responder = responder_builder(
         intelligence_model,
         _dedupe(reg.github_intelligence),
+        runtime=steering_runtime,
+        agent_id="delivery.github",
+        node_id="deliver",
     )
 
     builder = GraphBuilder()

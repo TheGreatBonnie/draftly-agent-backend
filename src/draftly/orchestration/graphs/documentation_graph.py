@@ -112,6 +112,7 @@ def build_documentation_graph(
     grounding: str = LOCAL,
     repo_dir: str | None = None,
     comment_factory: Any = None,
+    steering_runtime: Any = None,
 ):
     """Build the unified Draftly Graph for documentation workflows.
 
@@ -157,7 +158,12 @@ def build_documentation_graph(
     changelog_rubric_grader = build_changelog_rubric_grader(grader_model)
 
     registry = agents
-    classifier = (getattr(registry, "classifier", None) or build_classifier)(classifier_model)
+    classifier = (getattr(registry, "classifier", None) or build_classifier)(
+        classifier_model,
+        runtime=steering_runtime,
+        agent_id="documentation.classifier",
+        node_id="classify",
+    )
     context_builder = getattr(registry, "documentation_context", None) or build_doc_context_agent
     if grounding == GITHUB:
         context_repo_tools = _scope_read_only_tools(reg.github_intelligence)
@@ -179,6 +185,9 @@ def build_documentation_graph(
         ),
         grounding=grounding,
         repo_dir=repo_dir,
+        runtime=steering_runtime,
+        agent_id="documentation.context",
+        node_id="context",
     )
     research_builder = (
         getattr(registry, "documentation_research_swarm", None) or build_doc_research_swarm
@@ -205,6 +214,9 @@ def build_documentation_graph(
         github_tools=swarm_github_tools,
         grounding=grounding,
         repo_dir=repo_dir,
+        runtime=steering_runtime,
+        agent_id="documentation.research",
+        node_id="research",
     )
     impact_builder = getattr(registry, "impact_agent", None) or build_impact_agent
     impact_agent = impact_builder(
@@ -215,14 +227,26 @@ def build_documentation_graph(
             reg.hybrid_search,
             reg.documentation,
         ),
+        runtime=steering_runtime,
+        agent_id="documentation.impact",
+        node_id="impact",
     )
     notify_model = resolve_model_for_role(model, "notify")
     notify_builder = getattr(registry, "notify_agent", None) or build_notify_agent
-    notify_agent = notify_builder(notify_model, [])
+    notify_agent = notify_builder(
+        notify_model,
+        [],
+        runtime=steering_runtime,
+        agent_id="documentation.notify",
+        node_id="notify",
+    )
     answer_builder = getattr(registry, "answer_writer", None) or build_answer_writer
     answer_agent = answer_builder(
         support_model,
         _dedupe(reg.semantic_search, reg.keyword_search),
+        runtime=steering_runtime,
+        agent_id="documentation.answer",
+        node_id="answer",
     )
     # Two DISTINCT instances: the SDK rejects duplicate executors.
     # Per-task routing: writer nodes resolve their own model when a
@@ -230,18 +254,36 @@ def build_documentation_graph(
     writer_model = resolve_model_for_role(model, "documentation_engineer")
     writer_tools = _scope_writer_tools(reg.documentation_engineer, reg.documentation)
     writer_builder = getattr(registry, "writer_agent", None) or build_writer_agent
-    update_writer = writer_builder(writer_model, writer_tools)
-    create_writer = writer_builder(writer_model, writer_tools)
+    update_writer = writer_builder(
+        writer_model,
+        writer_tools,
+        runtime=steering_runtime,
+        agent_id="documentation.writer",
+        node_id="update",
+    )
+    create_writer = writer_builder(
+        writer_model,
+        writer_tools,
+        runtime=steering_runtime,
+        agent_id="documentation.writer",
+        node_id="create",
+    )
     delivery_builder = getattr(registry, "delivery_agent", None) or build_delivery_agent
     delivery_agent = delivery_builder(
         delivery_model,
         _dedupe(reg.github_delivery, reg.slack_post_message, reg.discord_post_message),
         hitl=False,  # the graph-level ReviewGate owns human approval
+        runtime=steering_runtime,
+        agent_id="delivery.github",
+        node_id="deliver",
     )
     changelog_builder = getattr(registry, "changelog_agent", None) or build_changelog_agent
     changelog_agent = changelog_builder(
         writer_model,
         _scope_writer_tools(reg.documentation_engineer, reg.documentation),
+        runtime=steering_runtime,
+        agent_id="documentation.changelog",
+        node_id="changelog",
     )
     changelog_evaluator = ChangelogEvaluatorNode(
         "changelog_evaluate",

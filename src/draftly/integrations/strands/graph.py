@@ -80,12 +80,15 @@ def build_graph_for_run(
     jobs_repo: Any = None,
     grounding: str = "local",
     repo_dir: str | None = None,
+    steering_runtime: Any = None,
     **graph_kwargs: Any,
 ):
     """Build the graph for ONE surface, with its own session manager.
 
     ``surface`` is one of ``pull_request`` | ``issue`` | ``support``
     (see ``draftly.orchestration.routing.classifiers.workflow_for_event``).
+    ``steering_runtime`` is the run-scoped SteeringRuntime (Task 6); every
+    agent constructor receives it along with a stable agent/node identity.
     """
     builder = _BUILDERS.get(surface, build_documentation_graph)
     manager = session_manager or build_session_manager(
@@ -119,5 +122,6 @@ def build_graph_for_run(
         memory=memory,
         publisher=publisher,
         jobs_repo=jobs_repo,
+        steering_runtime=steering_runtime,
         **graph_kwargs,
     )

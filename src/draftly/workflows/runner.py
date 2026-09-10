@@ -46,6 +46,12 @@ from draftly.workflows.grounding import (
     set_grounding,
 )
 from draftly.workflows.state import WorkflowState, WorkflowStatus
+from draftly.workflows.steering_scope import (
+    SteeringRunScope,
+    current_steering_scope,
+    reset_steering_scope,
+    set_steering_scope,
+)
 
 logger = structlog.get_logger(__name__)
 
@@ -101,6 +107,20 @@ async def _post_run_memory(context: Any, state: Any, surface: str, *, hook: Any 
         logger.warning("post_run_memory_failed", exc_info=True)
 
 
+def _workflow_key_for(event: dict[str, Any], surface: str) -> str:
+    """Default workflow key: explicit key, else event-type default, else surface."""
+    workflow_key = str(event.get("workflow_key") or "")
+    if workflow_key:
+        return workflow_key
+    event_type = str(event.get("event_type") or "")
+    return (
+        "github_release" if event_type.startswith("release")
+        else "github_issue" if event_type.startswith("issues")
+        else "github_pr" if event_type.startswith("pull_request")
+        else surface
+    )
+
+
 def _default_graph_factory(context: WorkflowContext) -> GraphFactory:
     """Build the real per-run graph via the Phase 4 integration layer."""
 
@@ -109,6 +129,16 @@ def _default_graph_factory(context: WorkflowContext) -> GraphFactory:
         from draftly.workflows.grounding import current_grounding
 
         grounding = current_grounding()
+        steering_scope = current_steering_scope()
+        steering_runtime = None
+        if steering_scope is not None:
+            steering_runtime = context.new_steering_runtime(
+                run_id,
+                surface,
+                org_id=steering_scope.org_id,
+                project_id=steering_scope.project_id,
+                workflow_key=steering_scope.workflow_key,
+            )
 
         jobs_repo = getattr(getattr(context, "repositories", None), "jobs", None)
         return build_graph_for_run(
@@ -126,6 +156,7 @@ def _default_graph_factory(context: WorkflowContext) -> GraphFactory:
             jobs_repo=jobs_repo,
             grounding=grounding.get("mode", "local"),
             repo_dir=grounding.get("repo_dir"),
+            steering_runtime=steering_runtime,
             **context.graph_limits(),
         )
 
@@ -241,10 +272,20 @@ class WorkflowRunner:
         }
         build_token = set_support_runtime(support_runtime_for(event))
         grounding_token = set_grounding(grounding)
+        steering_token = set_steering_scope(
+            SteeringRunScope(
+                run_id=run_id,
+                surface=surface,
+                org_id=str(event.get("project_id") or ""),
+                project_id=str(event.get("project_id") or ""),
+                workflow_key=_workflow_key_for(event, surface),
+            )
+        )
         try:
             with routing_decision_scope(collect_routing_decision):
                 graph = self._graph_factory(run_id, surface)
         finally:
+            reset_steering_scope(steering_token)
             reset_grounding(grounding_token)
             reset_support_runtime(build_token)
         await self._persist_lifecycle(event, "running", run_id=run_id)
@@ -347,10 +388,20 @@ class WorkflowRunner:
             "repo_dir": event.get("repo_dir"),
         }
         grounding_token = set_grounding(grounding)
+        steering_token = set_steering_scope(
+            SteeringRunScope(
+                run_id=run_id,
+                surface=surface,
+                org_id=str(event.get("project_id") or ""),
+                project_id=str(event.get("project_id") or ""),
+                workflow_key=_workflow_key_for(event, surface),
+            )
+        )
         try:
             with routing_decision_scope(collect_routing_decision):
                 graph = self._graph_factory(run_id, surface)
         finally:
+            reset_steering_scope(steering_token)
             reset_grounding(grounding_token)
         invocation_state = self._invocation_state(event, surface)
         resume_input = [
@@ -877,15 +928,7 @@ class WorkflowRunner:
             logger.warning("canonical_run_skipped_without_org", run_id=run_id)
             return
 
-        workflow_key = str(event.get("workflow_key") or "")
-        if not workflow_key:
-            event_type = str(event.get("event_type") or "")
-            workflow_key = (
-                "github_release" if event_type.startswith("release")
-                else "github_issue" if event_type.startswith("issues")
-                else "github_pr" if event_type.startswith("pull_request")
-                else surface
-            )
+        workflow_key = _workflow_key_for(event, surface)
         definitions = getattr(repositories, "workflow_definitions", None)
         definition = None
         if definitions is not None:

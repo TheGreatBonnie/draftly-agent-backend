@@ -95,7 +95,7 @@ class ContentEvaluationNode(MultiAgentBase):
         deps = parse_node_input(task)
         event = _original_task(task)
         source_evidence_content = list(
-            ((event.get("release") or {}).get("source_evidence_content") or [])
+            (event.get("release") or {}).get("source_evidence_content") or []
         )
         variants: list[dict[str, Any]] = []
         for node_id, channel in (
@@ -259,6 +259,7 @@ def build_content_graph(
     execution_timeout: float = DEFAULT_EXECUTION_TIMEOUT,
     node_timeout: float = DEFAULT_NODE_TIMEOUT,
     evaluator_max_iterations: int = DEFAULT_EVALUATOR_MAX_ITERATIONS,
+    steering_runtime: Any = None,
 ):
     del evaluator_max_iterations
     if content_repository is None:
@@ -275,21 +276,41 @@ def build_content_graph(
     if memory is not None:
         content_tools = _dedupe(content_tools, getattr(reg, "hybrid_search", []))
     strategist = (getattr(registry, "content_strategist", None) or build_content_strategist)(
-        resolve_model_for_role(model, "content_strategist"), content_tools
+        resolve_model_for_role(model, "content_strategist"),
+        content_tools,
+        runtime=steering_runtime,
+        agent_id="content.strategist",
+        node_id="content_brief",
     )
     blog_writer = (getattr(registry, "blog_writer", None) or build_blog_writer)(
-        resolve_model_for_role(model, "content_blog_writer"), scope_read_only_tools(content_tools)
+        resolve_model_for_role(model, "content_blog_writer"),
+        scope_read_only_tools(content_tools),
+        runtime=steering_runtime,
+        agent_id="content.blog_writer",
+        node_id="content_blog",
     )
     linkedin_writer = (getattr(registry, "social_adapter", None) or build_social_adapter)(
         resolve_model_for_role(model, "content_social_adapter"),
         scope_read_only_tools(content_tools),
+        runtime=steering_runtime,
+        agent_id="content.social_adapter",
+        node_id="content_linkedin",
     )
     x_writer = (getattr(registry, "social_adapter", None) or build_social_adapter)(
         resolve_model_for_role(model, "content_social_adapter"),
         scope_read_only_tools(content_tools),
+        runtime=steering_runtime,
+        agent_id="content.social_adapter",
+        node_id="content_x",
     )
-    judge_agent = (getattr(registry, "content_grounding_judge", None) or build_content_grounding_judge)(
-        resolve_model_for_role(model, "content_judge")
+    judge_builder = (
+        getattr(registry, "content_grounding_judge", None) or build_content_grounding_judge
+    )
+    judge_agent = judge_builder(
+        resolve_model_for_role(model, "content_judge"),
+        runtime=steering_runtime,
+        agent_id="content.judge",
+        node_id="evaluate",
     )
 
     builder = GraphBuilder()

@@ -6,6 +6,7 @@ workflow, plus the shared ``WorkflowRunner`` used by webhook routes.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -15,6 +16,71 @@ from .agents import AgentRegistry
 from .tools import ToolRegistry
 
 logger = structlog.get_logger(__name__)
+
+
+def _steering_runtime_factory(
+    *,
+    repositories: Any,
+    config: Any,
+) -> Callable[..., Any]:
+    """Compose ONE SteeringRuntime per run from config + persistence sinks.
+
+    Config knobs snapshot into a frozen ``SteeringRuntimeConfig``; steering
+    attempts/interventions flow through ``SteeringPersistence`` and steering
+    audit decisions through ``SteeringAuditSink`` over the run audit repo.
+    Missing repositories degrade to ``None`` sinks (policy records without
+    persistence) rather than failing the run.
+    """
+    from draftly.steering.context import SteeringRuntime, SteeringRuntimeConfig
+    from draftly.steering.persistence import SteeringAuditSink, SteeringPersistence
+
+    strands = getattr(config, "strands", None)
+    attempts_repo = getattr(repositories, "steering_attempts", None)
+    interventions_repo = getattr(repositories, "steering_interventions", None)
+    audit_repo = getattr(repositories, "agent_runs", None)
+
+    persistence = (
+        SteeringPersistence(attempts=attempts_repo, interventions=interventions_repo)
+        if attempts_repo is not None and interventions_repo is not None
+        else None
+    )
+    audit = SteeringAuditSink(audit_repo)
+
+    runtime_config = SteeringRuntimeConfig(
+        enabled=bool(getattr(strands, "steering_enabled", False)),
+        enforcement_enabled=bool(getattr(strands, "steering_enforcement_enabled", False)),
+        policy_version=str(getattr(strands, "steering_policy_version", "v1") or "v1"),
+        llm_enabled=bool(getattr(strands, "steering_llm_enabled", False)),
+        tool_guides_per_call=int(getattr(strands, "steering_tool_guides_per_call", 2) or 2),
+        model_guides_per_turn=int(getattr(strands, "steering_model_guides_per_turn", 2) or 2),
+        total_guides_per_agent=int(getattr(strands, "steering_total_guides_per_agent", 5) or 5),
+        judge_timeout_seconds=(
+            float(getattr(strands, "steering_judge_timeout_seconds", 10.0) or 10.0)
+        ),
+        reason_max_chars=int(getattr(strands, "steering_reason_max_chars", 1_000) or 1_000),
+        payload_max_bytes=int(getattr(strands, "steering_payload_max_bytes", 4 * 1024) or 4 * 1024),
+    )
+
+    def factory(
+        run_id: str,
+        surface: str,
+        org_id: str,
+        project_id: str,
+        workflow_key: str | None,
+    ) -> SteeringRuntime:
+        return SteeringRuntime.from_context(
+            run_id=run_id,
+            surface=surface,
+            org_id=org_id,
+            project_id=project_id,
+            workflow_key=workflow_key,
+            config=runtime_config,
+            attempts=persistence,
+            audit=audit,
+            interventions=persistence,
+        )
+
+    return factory
 
 
 class _TeePublisher:
@@ -128,6 +194,10 @@ def build_workflows(
         procedural=ProceduralService(),
         docgraph=DocGraphService(),
         candidates=CandidateService(),
+        steering_runtime_factory=_steering_runtime_factory(
+            repositories=repositories,
+            config=config,
+        ),
     )
 
     registry = WorkflowRegistry()
