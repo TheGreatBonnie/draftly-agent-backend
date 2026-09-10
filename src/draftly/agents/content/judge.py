@@ -18,8 +18,11 @@ from strands import Agent
 
 from draftly.agents.content.prompts import CONTENT_GROUNDING_JUDGE_PROMPT
 from draftly.agents.content.schemas import ContentJudgeVerdict
+from draftly.agents.factory import build_draftly_agent
 from draftly.agents.prompts import build_prompt
 from draftly.content.models import ContentVariant
+from draftly.steering.context import SteeringRuntime
+from draftly.steering.decisions import AgentRole
 
 logger = structlog.get_logger(__name__)
 
@@ -28,15 +31,28 @@ Judge = Callable[..., Awaitable[ContentJudgeVerdict]]
 DEFAULT_BLOCKING_MESSAGE = "content makes claims unsupported by the provided evidence"
 
 
-def build_content_grounding_judge(model: Any) -> Agent:
-    return Agent(
-        name="content_grounding_judge",
+def build_content_grounding_judge(
+    model: Any,
+    *,
+    runtime: SteeringRuntime | None = None,
+    agent_id: str | None = None,
+    node_id: str | None = None,
+) -> Agent:
+    return build_draftly_agent(
+        role=AgentRole.JUDGE,
         system_prompt=build_prompt(
             CONTENT_GROUNDING_JUDGE_PROMPT, output_model=ContentJudgeVerdict
         ),
         model=model,
         structured_output_model=ContentJudgeVerdict,
-        description="Verifies content draft claims against the provided evidence before publication.",
+        runtime=runtime or SteeringRuntime.disabled(),
+        agent_id=agent_id or "content_grounding_judge",
+        node_id=node_id or "content_grounding_judge",
+        name="content_grounding_judge",
+        description=(
+            "Verifies content draft claims against the provided evidence "
+            "before publication."
+        ),
     )
 
 
@@ -62,7 +78,9 @@ def make_grounding_judge(judge_agent: Agent) -> Judge:
     the ``ContentEvaluationNode`` expects, failing open on errors so a judge
     outage never blocks the deterministic gate's decision."""
 
-    async def judge(variant: ContentVariant, evidence_content: list[dict[str, str]]) -> ContentJudgeVerdict:
+    async def judge(
+        variant: ContentVariant, evidence_content: list[dict[str, str]]
+    ) -> ContentJudgeVerdict:
         prompt = _render_judge_prompt(variant, evidence_content)
         try:
             return await judge_agent.structured_output_async(ContentJudgeVerdict, prompt)

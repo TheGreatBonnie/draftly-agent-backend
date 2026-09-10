@@ -7,18 +7,25 @@ from typing import Any
 from strands import Agent
 from strands.vended_plugins.skills import AgentSkills
 
+from draftly.agents.factory import build_draftly_agent
 from draftly.agents.prompts import ANSWER_WRITER_PROMPT, build_prompt, load_skills
 from draftly.agents.schemas import AnswerDraft
+from draftly.steering.context import SteeringRuntime
+from draftly.steering.decisions import AgentRole
 
 
 def build_answer_writer(
     model: Any,
     tools: list[Any],
+    *,
+    runtime: SteeringRuntime | None = None,
+    agent_id: str | None = None,
+    node_id: str | None = None,
 ) -> Agent:
     """Build the support answer writer agent."""
 
-    return Agent(
-        name="support_writer",
+    return build_draftly_agent(
+        role=AgentRole.SUPPORT,
         system_prompt=build_prompt(
             ANSWER_WRITER_PROMPT,
             output_model=AnswerDraft,
@@ -34,5 +41,9 @@ def build_answer_writer(
                 )
             )
         ],
+        runtime=runtime or SteeringRuntime.disabled(),
+        agent_id=agent_id or "support_writer",
+        node_id=node_id or "support_writer",
+        name="support_writer",
         description="Writes answers to support questions.",
     )
