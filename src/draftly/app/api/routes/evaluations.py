@@ -268,13 +268,15 @@ async def run_evaluations(
         "stream_ticket": None,
     }
     if idempotency is not None:
-        await idempotency.create(
+        stored = await idempotency.create(
             org_id=org_id,
             idempotency_key=idempotency_key,
             request_hash=request_hash,
             run_id=run_id,
             response=response,
         )
+        if str(stored.get("run_id") or "") != run_id:
+            return stored.get("response") or response
     if worker is not None and worker.task_runner.has_task("evaluation.loop"):
         if environment == "production":
             import asyncio
