@@ -378,7 +378,7 @@ async def _persist_summary(
         return None
     try:
         completed_at = datetime.now(UTC)
-        return await saver(
+        record = await saver(
             summary=data,
             org_id=org_id,
             run_id=state.run_id,
@@ -386,6 +386,37 @@ async def _persist_summary(
             completed_at=completed_at,
             evaluation_type=evaluation_type,
         )
+        detail_saver = getattr(repository, "save_case_results", None)
+        if record is None or detail_saver is None or not data.get("rows"):
+            return record
+
+        detail_rows = [
+            {
+                **row,
+                "case_id": str(row.get("case_id") or row.get("case") or ""),
+            }
+            for row in data["rows"]
+            if isinstance(row, dict)
+        ]
+        try:
+            await detail_saver(
+                org_id=org_id,
+                evaluation_id=str(record.get("id") or ""),
+                run_id=state.run_id,
+                results=detail_rows,
+            )
+            record = {**record, "detail_available": True}
+        except Exception:
+            # A summary is still useful when a child-row insert fails. The UI
+            # must receive an explicit unavailable flag instead of rendering
+            # placeholder evidence or output.
+            logger.exception(
+                "evaluation_loop_detail_persist_failed",
+                run_id=state.run_id,
+                evaluation_id=record.get("id"),
+            )
+            record = {**record, "detail_available": False}
+        return record
     except Exception:
         logger.exception("evaluation_loop_persist_failed")
         return None
