@@ -50,6 +50,10 @@ from draftly.persistence.repositories.reviewers import ReviewersRepository
 from draftly.persistence.repositories.reviews import ReviewsRepository
 from draftly.persistence.repositories.routing import PerformanceRepository, RoutingRepository
 from draftly.persistence.repositories.slack import SlackWorkflowRepository
+from draftly.persistence.repositories.steering import (
+    SteeringAttemptsRepository,
+    SteeringInterventionsRepository,
+)
 from draftly.persistence.repositories.support import SupportRepository
 from draftly.persistence.repositories.workflow_events import WorkflowEventRepositoryImpl
 from draftly.persistence.repositories.workflows import (
@@ -271,6 +275,9 @@ class RepositoryDependencies:
     workflow_templates: WorkflowTemplatesRepository
     workflow_runs: WorkflowRunsRepository
 
+    steering_attempts: SteeringAttemptsRepository
+    steering_interventions: SteeringInterventionsRepository
+
 
 def build_repositories(
     database: DatabaseClient,
@@ -368,6 +375,9 @@ def build_repositories(
     workflow_templates = WorkflowTemplatesRepository(database=database)
     workflow_runs = WorkflowRunsRepository(database=database)
 
+    steering_attempts = SteeringAttemptsRepository(database=database)
+    steering_interventions = SteeringInterventionsRepository(database=database)
+
     return RepositoryDependencies(
         delivery=delivery,
         events=events,
@@ -396,6 +406,8 @@ def build_repositories(
         workflow_definitions=workflow_definitions,
         workflow_templates=workflow_templates,
         workflow_runs=workflow_runs,
+        steering_attempts=steering_attempts,
+        steering_interventions=steering_interventions,
     )
 
 
