@@ -182,10 +182,6 @@ class AgentRunsRepository:
         from draftly.agents.catalog import expand_tool_keys, list_agent_descriptors
 
         params: list[Any] = [org_id]
-        surface_clause = ""
-        if surface:
-            params.append(surface)
-            surface_clause = f" AND COALESCE(ar.surface, '') = ${len(params)}"
         params.append(max(1, min(limit, 200)))
         rows = await self.database.fetch_all(
             f"""
@@ -194,7 +190,7 @@ class AgentRunsRepository:
                    ar.completed_at, ar.event_type
             FROM agent_steps s
             JOIN agent_runs ar ON ar.run_id = s.run_id
-            WHERE ar.org_id = $1{surface_clause}
+            WHERE ar.org_id = $1
             ORDER BY ar.started_at DESC NULLS LAST, ar.run_id DESC, s.seq DESC
             LIMIT ${len(params)}
             """,
@@ -241,6 +237,8 @@ class AgentRunsRepository:
                 "latest_run_id": grouped["legacy"][0].get("run_id"),
                 "legacy_steps": len(grouped["legacy"]),
             })
+        if surface:
+            summaries = [item for item in summaries if item["surface"] == surface]
         return summaries
 
     async def get_agent_detail(

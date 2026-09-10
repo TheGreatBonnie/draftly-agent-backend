@@ -77,3 +77,16 @@ async def test_unknown_agent_detail_returns_none() -> None:
     assert await AgentRunsRepository(QueryDatabase([])).get_agent_detail(
         org_id="org-1", agent_id="not-real"
     ) is None
+
+
+@pytest.mark.asyncio
+async def test_catalog_surface_filter_does_not_confuse_run_surface() -> None:
+    db = QueryDatabase([{
+        "agent_id": "writer_agent", "step_surface": "pull_request",
+        "step_status": "completed", "run_id": "run-1", "run_status": "completed",
+        "started_at": datetime.now(UTC), "event_type": "pull_request.opened",
+    }])
+    summaries = await AgentRunsRepository(db).list_agent_summaries(
+        org_id="org-1", surface="documentation"
+    )
+    assert next(item for item in summaries if item["id"] == "writer_agent")["runs_7d"] == 1
