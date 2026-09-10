@@ -555,7 +555,7 @@ async def resume_review(
             approved=decision.approved,
             decision=decision_kind,
             reviewer_id=str(token.get("user_id") or token.get("sub") or ""),
-            comment=decision.comment,
+            comment=decision.comment or "",
             app_state=app_state,
             org_id=org_id,
         )

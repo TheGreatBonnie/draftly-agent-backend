@@ -30,16 +30,18 @@ class ReviewDecision(BaseModel):
 
     ``approved`` remains optional for backwards compatibility with the
     existing Slack, Discord, and API callers. New callers should send the
-    explicit ``decision`` value.
+    explicit ``decision`` value. ``review_id`` defaults to empty because the
+    resume route resolves the stored review by ``run_id``; ``comment`` is
+    nullable so dashboards can omit it.
     """
 
     model_config = ConfigDict(extra="allow")
 
-    review_id: str
+    review_id: str = ""
     reviewer_id: str
     approved: bool | None = None
     decision: Literal["approve", "request_changes", "reject"] | None = None
-    comment: str = ""
+    comment: str | None = None
     decided_at: datetime | None = None
 
     def normalized_decision(self) -> Literal["approve", "request_changes", "reject"]:

@@ -312,6 +312,40 @@ class TestReviewResumeRoute:
         decisions = client.app.state.draftly.dependencies.repositories.reviews.decisions  # type: ignore[attr-defined]
         assert decisions[0]["decision"] == "needs_changes"
 
+    def test_approve_with_dashboard_body_without_review_id(
+        self, client: TestClient
+    ) -> None:
+        """The dashboard sends decision/reviewer_id/comment and no review_id.
+
+        Regression: ReviewDecision treated review_id as required, so the UI's
+        payload (which relies on the server-stored review identity) 422'd.
+        """
+        response = client.post(
+            "/api/github/review/run-1",
+            json={
+                "decision": "approve",
+                "reviewer_id": "",
+                "comment": "ship it",
+            },
+        )
+        assert response.status_code == 200
+        body = response.json()
+        assert body["status"] == "resumed"
+        assert body["workflow_status"] == "delivered"
+
+    def test_comment_null_accepted(self, client: TestClient) -> None:
+        """A dashboard without a comment sends comment: null, which is valid."""
+        response = client.post(
+            "/api/github/review/run-1",
+            json={
+                "decision": "reject",
+                "reviewer_id": "u-1",
+                "comment": None,
+            },
+        )
+        assert response.status_code == 200
+        assert response.json()["status"] == "rejected"
+
     def test_approve_non_resumable_surface_409(self, client: TestClient) -> None:
         state = client.app.state.draftly  # type: ignore[attr-defined]
         repo = state.dependencies.repositories.reviews
