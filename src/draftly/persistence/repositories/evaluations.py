@@ -22,7 +22,8 @@ class EvaluationRepository:
         store: DatabaseEvaluationsStore | None = None,
     ) -> None:
         self.store = store or DatabaseEvaluationsStore()
-        self.idempotency_store = EvaluationIdempotencyStore(self.store.client)
+        client = getattr(self.store, "client", None)
+        self.idempotency_store = EvaluationIdempotencyStore(client) if client else None
 
     async def create(
         self,
@@ -147,6 +148,8 @@ class EvaluationRepository:
             "failed": failed,
             "granular": granular,
         }
+        if summary.get("evaluation_types"):
+            metrics["evaluation_types"] = list(summary["evaluation_types"])
 
         # Run-level summary row. Populate the columns the schema defines for a
         # run: ``passed`` reflects whether every case passed (the old code never
@@ -257,7 +260,31 @@ class EvaluationRepository:
             cursor=cases_cursor,
             limit=cases_limit,
         )
-        detail_available = bool(cases) or not summary.get("metrics", {}).get("granular")
+        if not cases:
+            legacy_rows = (summary.get("metrics") or {}).get("granular") or []
+            cases = [
+                {
+                    "id": f"{summary.get('id', run_id)}:{index}",
+                    "evaluation_id": str(summary.get("id") or ""),
+                    "run_id": run_id,
+                    "dataset": row.get("dataset", ""),
+                    "case_id": row.get("case") or row.get("case_id", ""),
+                    "metric": row.get("metric", ""),
+                    "threshold": row.get("threshold"),
+                    "score": row.get("score"),
+                    "passed": bool(row.get("test_pass", row.get("passed", False))),
+                    "reason": row.get("reason", ""),
+                    "input": None,
+                    "expected_output": None,
+                    "actual_output": None,
+                    "evidence": [],
+                    "trace_id": None,
+                    "duration_ms": None,
+                }
+                for index, row in enumerate(legacy_rows)
+                if isinstance(row, dict)
+            ]
+        detail_available = bool(cases)
         return {
             "summary": summary,
             "cases": cases,
