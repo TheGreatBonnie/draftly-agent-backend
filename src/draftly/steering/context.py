@@ -45,6 +45,7 @@ class RuntimeScope:
     org_id: str
     project_id: str
     workflow_key: str | None = None
+    repo_checkout_root: str | None = None
 
 
 @dataclass
