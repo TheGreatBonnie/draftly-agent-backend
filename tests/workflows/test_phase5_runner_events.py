@@ -208,7 +208,7 @@ def failed_result() -> GraphResult:
 
 PR_EVENT = {
     "event_id": "evt-1",
-    "event_type": "pull_request.merged",
+    "event_type": "pull_request.opened",
     "repository": "acme/api",
     "actor": "dev",
     "source": "github",
@@ -395,7 +395,7 @@ class TestRunnerOutcomes:
         assert invocation_state["review_feedback"]["comment"] == "Add the migration example."
 
 
-class TestRunnerMergedOnlyGate:
+class TestRunnerOpenedOnlyGate:
     async def _run_event(self, event_type: str) -> tuple[WorkflowState, object]:
         from draftly.workflows.runner import WorkflowRunner
 
@@ -420,10 +420,9 @@ class TestRunnerMergedOnlyGate:
         state, _ = await self._run_event("pull_request.closed")
         assert state.status.value == "skipped"
 
-    async def test_merged_pr_runs_graph(self) -> None:
-        state, context = await self._run_event("pull_request.merged")
-        assert state.status.value == "delivered"
-        assert context.events.statuses["evt-gate"] == "completed"
+    async def test_merged_pr_skips(self) -> None:
+        state, _ = await self._run_event("pull_request.merged")
+        assert state.status.value == "skipped"
 
     async def test_push_and_release_not_skipped(self) -> None:
         # Guard: push/release share the pull_request surface but must keep running.

@@ -59,7 +59,7 @@ async def test_runner_broadcasts_running_and_completed():
     await runner.run(
         {
             "event_id": "ev-1",
-            "event_type": "pull_request.merged",
+            "event_type": "pull_request.opened",
             "project_id": "org-9",
             "source": "github",
         }
@@ -88,7 +88,7 @@ async def test_runner_broadcasts_failed_on_failed_result():
     await runner.run(
         {
             "event_id": "ev-2",
-            "event_type": "pull_request.merged",
+            "event_type": "pull_request.opened",
             "project_id": "org-9",
             "source": "github",
         }

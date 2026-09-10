@@ -244,7 +244,7 @@ async def test_github_receipt_does_not_write_platform_receipt() -> None:
     await runner.run(
         {
             "event_id": "evt-1",
-            "event_type": "pull_request.merged",
+            "event_type": "pull_request.opened",
             "source": "github",
             "project_id": "org-1",
             "repository": "acme/api",
@@ -315,7 +315,7 @@ async def test_github_events_skip_delivery_lookup() -> None:
 
     state = await runner.run({
         "event_id": "evt-1",
-        "event_type": "pull_request.merged",
+        "event_type": "pull_request.opened",
         "source": "github",
         "project_id": "org-1",
         "repository": "acme/api",

@@ -13,7 +13,7 @@ from draftly.workflows.runner import WorkflowRunner
 
 PR_EVENT = {
     "event_id": "evt-1",
-    "event_type": "pull_request.merged",
+    "event_type": "pull_request.opened",
     "repository": "acme/api",
     "actor": "dev",
     "source": "github",

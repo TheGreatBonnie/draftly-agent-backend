@@ -47,6 +47,25 @@ def test_impact_agent_loads_pr_analysis_and_research_skills() -> None:
     }
 
 
+def test_github_delivery_skill_commits_to_source_pr() -> None:
+    """When the run is attached to a source PR (pull_request.head.ref), the
+    github-delivery skill must push to that branch instead of opening a fresh
+    docs PR, and record the linkage on the source PR."""
+    flat = " ".join(_markdown("github-delivery").split())
+
+    assert "source" in flat
+    assert "head branch" in flat
+    assert "do NOT open" in flat
+    assert "fresh" in flat or "new pull request" in flat
+
+
+def test_github_delivery_skill_lists_pr_tools() -> None:
+    flat = " ".join(_markdown("github-delivery").split())
+
+    assert "create_commit" in flat
+    assert "create_pull_request" in flat or "create_branch" in flat
+
+
 def _loaded_skill_names(agent: object) -> set[str]:
     from strands.vended_plugins.skills import AgentSkills
 

@@ -417,6 +417,27 @@ class TestWriterPromptDiataxisDirective:
         assert "completeness" in flat.lower()
 
 
+class TestSourcePrDeliveryDirective:
+    def test_delivery_prompt_commits_to_source_pr_head(self) -> None:
+        """When a PR-triggered run carries the source PR's head branch
+        (pull_request.head.ref), the delivery agent must push approved docs +
+        changelog commits directly to that branch — not open a fresh docs PR."""
+        flat = " ".join(DELIVERY_PROMPT.split())
+
+        assert "head.ref" in flat or '"head"' in flat or "head" in flat
+        assert "pull_request" in flat
+        assert "commit" in flat
+        assert "do NOT open" in flat
+        assert "source PR" in flat or "source pull request" in flat
+
+    def test_delivery_prompt_skips_branch_and_pr_when_attached(self) -> None:
+        flat = " ".join(DELIVERY_PROMPT.split())
+
+        assert "new branch" in flat
+        assert "new pull request" in flat or "new PR" in flat
+        assert "create_branch" in flat or "create_pull_request" in flat
+
+
 class TestImpactPromptRoutingDirective:
     def test_impact_routes_to_authoring_when_gap_stated(self) -> None:
         rendered = build_prompt(IMPACT_PROMPT, output_model=ImpactAnalysis)

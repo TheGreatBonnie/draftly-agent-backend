@@ -44,7 +44,7 @@ def _fabricate_request(event_type: str, *, event_id: str = "ev-1") -> MagicMock:
 async def test_merged_pr_creates_job_row_and_dispatches_in_process() -> None:
     from draftly.app.api.routes.github import github_webhook
 
-    request = _fabricate_request("pull_request.merged")
+    request = _fabricate_request("pull_request.opened")
     bt = MagicMock()
 
     identity = AsyncMock(return_value=("org-1", 42))
@@ -72,13 +72,13 @@ async def test_merged_pr_creates_job_row_and_dispatches_in_process() -> None:
         event=drafts.events.normalize_github.return_value,
         run_id="ev-1",
     )
-    assert result.status.startswith("pull_request.merged")
+    assert result.status.startswith("pull_request.opened")
 
 
 async def test_merged_pr_dispatches_via_rq_when_enabled() -> None:
     from draftly.app.api.routes.github import github_webhook
 
-    request = _fabricate_request("pull_request.merged")
+    request = _fabricate_request("pull_request.opened")
     request.app.state.draftly.settings.rq_enabled = True
     bt = MagicMock()
 

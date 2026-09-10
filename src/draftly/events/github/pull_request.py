@@ -42,7 +42,13 @@ class PullRequestProcessor(BaseProcessor):
             "number": pr.get("number"),
             "title": pr.get("title", ""),
             "state": pr.get("state", ""),
-            "sha": (pr.get("head") or {}).get("sha", ""),
+            # Head branch + sha of the SOURCE PR. Forwarded so the delivery
+            # agent can push approved docs + changelog commits directly to the
+            # triggering PR's branch instead of opening a fresh docs PR.
+            "head": {
+                "ref": (pr.get("head") or {}).get("ref", ""),
+                "sha": (pr.get("head") or {}).get("sha", ""),
+            },
             "base": (pr.get("base") or {}).get("ref", ""),
             "html_url": pr.get("html_url", ""),
             "action": action,
