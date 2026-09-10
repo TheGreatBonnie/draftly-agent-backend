@@ -216,6 +216,11 @@ class WorkflowRunner:
             )
             return state
 
+        # The canonical run is claimed before graph construction. This keeps
+        # retries/idempotent webhook deliveries tied to one durable resource
+        # while the existing provider/audit stores continue to be populated.
+        await self._ensure_canonical_run(event, run_id, surface)
+
         # 2. One session + one graph for this run's surface.
         routing_decisions: dict[str, Any] = {}
 
@@ -859,6 +864,93 @@ class WorkflowRunner:
     # Persistence helpers (duck-typed repositories)
     # ========================================================
 
+    async def _ensure_canonical_run(
+        self,
+        event: dict[str, Any],
+        run_id: str,
+        surface: str,
+    ) -> None:
+        repositories = getattr(self.context, "repositories", None)
+        runs = getattr(repositories, "workflow_runs", None)
+        if runs is None or not hasattr(runs, "start_or_get_idempotent"):
+            return
+        org_id = str(event.get("project_id") or "")
+        if not org_id:
+            logger.warning("canonical_run_skipped_without_org", run_id=run_id)
+            return
+
+        workflow_key = str(event.get("workflow_key") or "")
+        if not workflow_key:
+            event_type = str(event.get("event_type") or "")
+            workflow_key = (
+                "github_release" if event_type.startswith("release")
+                else "github_issue" if event_type.startswith("issues")
+                else "github_pr" if event_type.startswith("pull_request")
+                else surface
+            )
+        definitions = getattr(repositories, "workflow_definitions", None)
+        definition = None
+        if definitions is not None:
+            requested_id = event.get("workflow_definition_id")
+            if requested_id and hasattr(definitions, "get"):
+                definition = await definitions.get(org_id=org_id, workflow_id=str(requested_id))
+            if definition is None and hasattr(definitions, "find_active_by_key"):
+                definition = await definitions.find_active_by_key(
+                    org_id=org_id, workflow_key=workflow_key
+                )
+            if definition is None and hasattr(definitions, "create"):
+                from draftly.app.api.workflow_schemas import WorkflowDefinitionCreate
+
+                slug = f"default-{workflow_key.replace('_', '-')}"
+                try:
+                    definition = await definitions.create(
+                        org_id=org_id,
+                        created_by=None,
+                        payload=WorkflowDefinitionCreate(
+                            name=f"Default {workflow_key.replace('_', ' ').title()}",
+                            slug=slug,
+                            workflow_key=workflow_key,
+                            status="active",
+                            trigger_config={"source": str(event.get("source") or "webhook")},
+                        ),
+                    )
+                except Exception:
+                    # A concurrent first run may have created the same default.
+                    if hasattr(definitions, "find_active_by_key"):
+                        definition = await definitions.find_active_by_key(
+                            org_id=org_id, workflow_key=workflow_key
+                        )
+
+        pr = event.get("pull_request") or {}
+        repository = str(event.get("repository") or "") or None
+        title = str(event.get("title") or pr.get("title") or "") or None
+        target = {
+            key: pr.get(key)
+            for key in ("number", "html_url", "base", "head")
+            if pr.get(key) is not None
+        }
+        await runs.start_or_get_idempotent(
+            org_id=org_id,
+            definition_id=str(definition.get("id")) if definition else None,
+            source=str(event.get("source") or "github"),
+            source_event_id=str(event.get("event_id") or run_id),
+            title=title,
+            metadata={
+                "run_id": run_id,
+                "event_type": str(event.get("event_type") or "unknown"),
+                "repository": repository,
+                "actor": str(event.get("actor") or "") or None,
+                "target": target,
+            },
+        )
+
+    @staticmethod
+    def _safe_display_result(result: dict[str, Any] | None) -> dict[str, Any] | None:
+        if not result:
+            return None
+        allowed = {"status", "evaluation", "failed_nodes", "error"}
+        return {key: result[key] for key in allowed if key in result}
+
     async def _persist_lifecycle(
         self,
         event: dict[str, Any],
@@ -889,6 +981,23 @@ class WorkflowRunner:
             except Exception:
                 logger.exception(
                     "github_workflow_status_persist_failed",
+                    run_id=run_id,
+                    status=status,
+                )
+
+        workflow_runs = getattr(repositories, "workflow_runs", None)
+        if workflow_runs is not None and hasattr(workflow_runs, "update_state"):
+            try:
+                await workflow_runs.update_state(
+                    org_id=str(event.get("project_id") or ""),
+                    run_id=run_id,
+                    status=status,
+                    error=error,
+                    output=self._safe_display_result(result),
+                )
+            except Exception:
+                logger.exception(
+                    "canonical_workflow_run_status_persist_failed",
                     run_id=run_id,
                     status=status,
                 )

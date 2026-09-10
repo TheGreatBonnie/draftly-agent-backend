@@ -51,6 +51,11 @@ from draftly.persistence.repositories.routing import PerformanceRepository, Rout
 from draftly.persistence.repositories.slack import SlackWorkflowRepository
 from draftly.persistence.repositories.support import SupportRepository
 from draftly.persistence.repositories.workflow_events import WorkflowEventRepositoryImpl
+from draftly.persistence.repositories.workflows import (
+    WorkflowDefinitionsRepository,
+    WorkflowRunsRepository,
+    WorkflowTemplatesRepository,
+)
 from draftly.persistence.stores.routing import DatabasePerformanceStore, DatabaseRoutingStore
 
 logger = structlog.get_logger(__name__)
@@ -260,6 +265,9 @@ class RepositoryDependencies:
     discord_workflows: DiscordWorkflowRepository
 
     agent_runs: AgentRunsRepository
+    workflow_definitions: WorkflowDefinitionsRepository
+    workflow_templates: WorkflowTemplatesRepository
+    workflow_runs: WorkflowRunsRepository
 
 
 def build_repositories(
@@ -352,6 +360,9 @@ def build_repositories(
     discord_workflows = DiscordWorkflowRepository(database)
 
     agent_runs = AgentRunsRepository(database=database)
+    workflow_definitions = WorkflowDefinitionsRepository(database=database)
+    workflow_templates = WorkflowTemplatesRepository(database=database)
+    workflow_runs = WorkflowRunsRepository(database=database)
 
     return RepositoryDependencies(
         delivery=delivery,
@@ -377,6 +388,9 @@ def build_repositories(
         slack_workflows=slack_workflows,
         discord_workflows=discord_workflows,
         agent_runs=agent_runs,
+        workflow_definitions=workflow_definitions,
+        workflow_templates=workflow_templates,
+        workflow_runs=workflow_runs,
     )
 
 
