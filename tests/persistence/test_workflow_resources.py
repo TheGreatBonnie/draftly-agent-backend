@@ -204,6 +204,7 @@ async def test_summary_uses_unpaginated_aggregate_query() -> None:
             "successful": 30,
             "failed": 5,
             "pending_review": 5,
+            "pending_intervention": 2,
             "avg_duration_seconds": 12.5,
         },
         {"active": 1, "paused": 2, "draft": 3, "archived": 4},
@@ -212,5 +213,6 @@ async def test_summary_uses_unpaginated_aggregate_query() -> None:
     result = await WorkflowDefinitionsRepository(db).summary(org_id="org-1", days=30)
 
     assert result["runs"]["total"] == 42
+    assert result["runs"]["pending_intervention"] == 2
     assert result["definitions"]["draft"] == 3
     assert all("org_id" in call.args[0] for call in db.fetch_one.await_args_list)

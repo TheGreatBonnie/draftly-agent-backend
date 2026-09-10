@@ -16,8 +16,8 @@ action is returned. Persistence failures fail closed for side-effecting roles
 from __future__ import annotations
 
 import uuid
+from collections.abc import Awaitable, Callable
 from dataclasses import replace
-from typing import Any, Awaitable, Callable
 
 from strands.vended_plugins.steering import Guide, Interrupt, Proceed, SteeringHandler
 
@@ -29,6 +29,24 @@ from draftly.steering.decisions import (
     SteeringFailure,
 )
 from draftly.steering.policy import RolePolicy
+
+
+def _strands_tool_interrupt_id(tool_use_id: str, tool_name: str) -> str:
+    """Stable id matching the interrupt Strands itself will emit.
+
+    The vended SteeringHandler raises the interrupt via
+    ``event.interrupt(name=f"steering_input_{tool_name}")`` on
+    ``BeforeToolCallEvent``, whose ``_interrupt_id`` scheme is
+    ``v1:before_tool_call:{toolUseId}:{uuid5(NAMESPACE_OID, name)}``. Deriving
+    the same value here lets the runner correlate a durable
+    ``workflow_interventions`` row with ``result.interrupts[].id``.
+    """
+    if not tool_use_id:
+        return uuid.uuid4().hex
+    return (
+        f"v1:before_tool_call:{tool_use_id}:"
+        f"{uuid.uuid5(uuid.NAMESPACE_OID, f'steering_input_{tool_name}')}"
+    )
 
 
 class DraftlySteeringHandler(SteeringHandler):
@@ -78,6 +96,7 @@ class DraftlySteeringHandler(SteeringHandler):
 
     async def _handle_tool(self, *, agent, tool_use, **kwargs):
         tool_name = (tool_use or {}).get("name", "")
+        tool_use_id = (tool_use or {}).get("toolUseId") or ""
         try:
             decision = await self.policy.evaluate_tool_async(
                 runtime=self.runtime,
@@ -88,7 +107,9 @@ class DraftlySteeringHandler(SteeringHandler):
         except SteeringError as exc:
             return self._on_policy_failure(exc)
         if decision.kind is DecisionKind.INTERRUPT:
-            decision = await self._persist_intervention(decision, tool_name=tool_name)
+            decision = await self._persist_intervention(
+                decision, tool_name=tool_name, tool_use_id=tool_use_id
+            )
         await self.record_decision(decision, tool_name=tool_name)
         return decision.to_strands_action()
 
@@ -128,13 +149,19 @@ class DraftlySteeringHandler(SteeringHandler):
             raise SteeringFailure(f"steering audit write failed: {exc}") from exc
 
     async def _persist_intervention(
-        self, decision: SteeringDecision, *, tool_name: str
+        self,
+        decision: SteeringDecision,
+        *,
+        tool_name: str,
+        tool_use_id: str = "",
     ) -> SteeringDecision:
         """Create the durable intervention row before returning ``Interrupt``."""
         interventions = self.runtime.interventions
         if interventions is None:
             return decision
-        interrupt_id = decision.interrupt_id or uuid.uuid4().hex
+        interrupt_id = decision.interrupt_id or _strands_tool_interrupt_id(
+            tool_use_id, tool_name
+        )
         identity = self.runtime.identity
         record = InterventionRecord(
             run_id=(identity.run_id if identity else self.runtime.scope.run_id),

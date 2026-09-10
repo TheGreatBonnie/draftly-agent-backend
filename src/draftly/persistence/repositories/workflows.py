@@ -284,6 +284,7 @@ class WorkflowDefinitionsRepository:
                    count(*) FILTER (WHERE status = 'completed') AS successful,
                    count(*) FILTER (WHERE status = 'failed') AS failed,
                    count(*) FILTER (WHERE status = 'pending_review') AS pending_review,
+                   count(*) FILTER (WHERE status = 'pending_intervention') AS pending_intervention,
                    COALESCE(avg(EXTRACT(EPOCH FROM (completed_at - started_at)))
                        FILTER (WHERE completed_at IS NOT NULL AND started_at IS NOT NULL), 0)
                        AS avg_duration_seconds
@@ -318,6 +319,7 @@ class WorkflowDefinitionsRepository:
                 "successful": successful,
                 "failed": int(runs.get("failed", 0)),
                 "pending_review": int(runs.get("pending_review", 0)),
+                "pending_intervention": int(runs.get("pending_intervention", 0)),
                 "success_rate": round(successful / total * 100, 1) if total else 0.0,
                 "avg_duration_seconds": float(runs.get("avg_duration_seconds", 0) or 0),
                 "days": window,

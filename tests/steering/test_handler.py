@@ -1,12 +1,13 @@
 """Tests for the Strands steering handler adapter."""
 
+import uuid
 from unittest.mock import AsyncMock, Mock
 
 import pytest
 
 from draftly.persistence.repositories.steering import InterventionRecord
 from draftly.steering.context import RuntimeScope, SteeringRuntime, SteeringRuntimeConfig
-from draftly.steering.decisions import AgentRole, DecisionKind, SteeringFailure
+from draftly.steering.decisions import AgentRole, SteeringFailure
 from draftly.steering.handler import DraftlySteeringHandler
 from draftly.steering.policy import FailureMode, RolePolicy, policy_for
 
@@ -42,7 +43,9 @@ class RaisingPolicy(RolePolicy):
         super().__init__(
             role=role,
             side_effecting=role is AgentRole.DELIVERY,
-            failure_mode=FailureMode.INTERRUPT if role is AgentRole.DELIVERY else FailureMode.PROCEED,
+            failure_mode=(
+                FailureMode.INTERRUPT if role is AgentRole.DELIVERY else FailureMode.PROCEED
+            ),
         )
 
     async def evaluate_tool_async(self, **kwargs):
@@ -242,3 +245,32 @@ async def test_judge_cannot_override_process_decision(runtime, policy):
         agent=FakeAgent(), tool_use={"name": "read_file", "path": "bad"},
     )
     assert type(action).__name__ == "Guide"
+
+
+async def test_interrupt_id_matches_strands_tool_interrupt_scheme():
+    runtime = build_runtime(role=AgentRole.DELIVERY, interventions=FakeInterventions())
+    handler = DraftlySteeringHandler(
+        runtime=runtime, policy=policy_for(AgentRole.DELIVERY)
+    )
+    action = await handler.steer_before_tool(
+        agent=FakeAgent(),
+        tool_use={
+            "name": "create_comment",
+            "toolUseId": "tool-42",
+            "idempotency_key": "req-1",
+            "destination_project": "other-project",
+            "repo_dir": f"{CHECKOUT}/docs",
+            "body": "excerpt",
+        },
+    )
+    assert type(action).__name__ == "Interrupt"
+    record = runtime.interventions.create_pending.await_args.kwargs["record"]
+    assert record.interrupt_id.startswith("v1:before_tool_call:tool-42:")
+    assert record.interrupt_id.endswith(
+        str(uuid.uuid5(uuid.NAMESPACE_OID, "steering_input_create_comment"))
+    )
+    assert handler.last_interrupt_id == record.interrupt_id
+    assert (
+        runtime.audit.record_step.await_args.kwargs["decision"].interrupt_id
+        == record.interrupt_id
+    )

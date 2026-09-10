@@ -99,3 +99,16 @@ def test_manual_run_requires_editor_and_uses_idempotency_header() -> None:
     assert response.status_code == 201
     repos.runs.start_or_get_idempotent.assert_awaited_once()
     assert repos.runs.start_or_get_idempotent.await_args.kwargs["source_event_id"] == "request-1"
+
+
+def test_pending_intervention_is_a_valid_run_status() -> None:
+    app, repos = make_app()
+    row = run_row()
+    row["status"] = "pending_intervention"
+    repos.runs.list.return_value = ([row], 1, None)
+
+    response = TestClient(app).get("/workflow-runs?status=pending_intervention")
+
+    assert response.status_code == 200
+    assert response.json()["items"][0]["status"] == "pending_intervention"
+    assert repos.runs.list.await_args.kwargs["status"] == "pending_intervention"
