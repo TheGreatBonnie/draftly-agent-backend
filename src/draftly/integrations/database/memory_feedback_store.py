@@ -56,9 +56,10 @@ class MemoryFeedbackStore:
             SELECT id, org_id, memory_item_id, feedback_type, source,
                    score, comment, created_at
             FROM memory_feedback
-            WHERE memory_item_id = $1
+            WHERE org_id = $1 AND memory_item_id = $2
             ORDER BY created_at DESC
             """,
+            org_id,
             memory_item_id,
         )
         return [dict(r) for r in rows]
