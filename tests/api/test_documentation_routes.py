@@ -44,6 +44,7 @@ DOC = {
 class FakeDocsRepo:
     def __init__(self, items: list[dict[str, Any]]):
         self._items = items
+        self.last_projection: dict[str, Any] = {}
 
     async def list_by_org(
         self, *, org_id: str, limit: int = 1000
@@ -60,6 +61,7 @@ class FakeDocsRepo:
         )
 
     async def list_projection_by_org(self, **kwargs: Any) -> list[dict[str, Any]]:
+        self.last_projection = kwargs
         return [
             {key: value for key, value in item.items() if key != "content"}
             for item in await self.list_by_org(org_id=kwargs["org_id"], limit=kwargs["limit"])
@@ -159,6 +161,16 @@ def test_list_returns_projection_total_without_content() -> None:
     assert resp.status_code == 200
     assert resp.json()["total"] == 1
     assert "content" not in resp.json()["items"][0]
+
+
+def test_list_forwards_search_query_to_projection() -> None:
+    app = make_app()
+    client = TestClient(app)
+
+    response = client.get("/documentation?query=oauth")
+
+    assert response.status_code == 200
+    assert app.state.draftly.dependencies.repositories.documents.last_projection["query"] == "oauth"
 
 
 def test_save_revision_returns_conflict_details() -> None:

@@ -225,6 +225,7 @@ async def list_documentation(
     request: Request,
     repository: str | None = None,
     status: str | None = None,
+    query: str | None = None,
     limit: int = 1000,
     token: dict = Depends(get_verified_token),
 ) -> dict[str, Any]:
@@ -241,7 +242,7 @@ async def list_documentation(
             org_id=org_id,
             repository=repository,
             status=status,
-            query=None,
+            query=query,
             limit=min(limit, 1000),
             cursor=None,
         )
@@ -249,6 +250,13 @@ async def list_documentation(
         items = await docs.list_by_org(org_id=org_id, limit=min(limit, 1000))
         if repository:
             items = [i for i in items if i.get("repository") == repository]
+        if query:
+            needle = query.lower()
+            items = [
+                i for i in items
+                if needle in str(i.get("title") or "").lower()
+                or needle in str(i.get("path") or "").lower()
+            ]
         if status:
             items = [i for i in items if derive_status(i.get("status")) == status]
     return {"items": items, "total": len(items)}

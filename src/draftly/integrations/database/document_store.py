@@ -27,7 +27,8 @@ _DOCUMENT_COLUMNS = """
     unsupported_claims,
     created_at,
     updated_at,
-    last_committed_at
+    last_committed_at,
+    draft_revision_id
 """
 
 
@@ -548,6 +549,7 @@ class DocumentStore:
             "created_at": row["created_at"],
             "updated_at": row["updated_at"],
             "last_committed_at": row["last_committed_at"],
+            "draft_revision_id": row["draft_revision_id"],
         }
 
     @staticmethod
