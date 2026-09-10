@@ -166,3 +166,19 @@ def changelog_eval_passed(state: GraphState) -> bool:
         return False
     data = safe_node_data(state, "changelog_evaluate")
     return data is not None and data["passed"]
+
+
+def pull_request_opened(state: GraphState) -> bool:
+    """True when the task is a ``pull_request.opened`` event.
+
+    Pure event-type gate — never reads ``state.results`` — so it safely gates
+    the ``impact → notify`` edge for any run (release events that route to the
+    pull_request surface are excluded).
+    """
+    if not isinstance(state.task, str):
+        return False
+    try:
+        task_data = json.loads(state.task)
+    except json.JSONDecodeError:
+        return False
+    return task_data.get("event_type") == "pull_request.opened"

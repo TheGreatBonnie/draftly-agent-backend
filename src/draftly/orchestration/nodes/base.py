@@ -79,6 +79,33 @@ def safe_node_data(state: Any, node_id: str) -> dict | None:
         return None
 
 
+def original_task(task: Any) -> dict[str, Any]:
+    """Extract the original event JSON from a node's task input.
+
+    Nodes WITHOUT dependencies receive the raw task string (JSON). Nodes WITH
+    dependencies receive a ``list[ContentBlock]`` whose first section carries
+    the ``Original Task:`` block (see :func:`parse_node_input`). Returns the
+    parsed event dict, or {} when the task is unparseable.
+    """
+    if isinstance(task, str):
+        try:
+            return json.loads(task)
+        except json.JSONDecodeError:
+            return {}
+    if isinstance(task, list):
+        text = "\n".join(
+            block.get("text", "") if isinstance(block, dict) else getattr(block, "text", "")
+            for block in task
+        )
+        marker = "Original Task:"
+        if marker in text:
+            try:
+                return json.loads(text.split(marker, 1)[1].split("\nInputs", 1)[0].strip())
+            except json.JSONDecodeError:
+                return {}
+    return {}
+
+
 def parse_node_input(task: Any) -> dict[str, dict]:
     """
     Parse the graph's node input into per-dependency structured payloads.

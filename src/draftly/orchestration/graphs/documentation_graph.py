@@ -8,6 +8,7 @@ Layout (plan §6.1)::
       └─(create)─► create ─┴─► evaluate ─(passed)──► deliver
                                   │▲
                                   └─(needs_revision_of)─┘
+    impact ─(pull_request_opened)─► notify ─► notify_post   (parallel branch)
 
 Deviations from the plan, forced by strands-agents 1.52.0 behavior:
 
@@ -55,6 +56,7 @@ from draftly.orchestration.routing.conditions import (
     is_valid_surface,
     needs_revision_of,
     none_and_release,
+    pull_request_opened,
     route_to_answer,
     route_to_create,
     route_to_update,
@@ -109,6 +111,7 @@ def build_documentation_graph(
     evaluator_max_iterations: int = DEFAULT_EVALUATOR_MAX_ITERATIONS,
     grounding: str = LOCAL,
     repo_dir: str | None = None,
+    comment_factory: Any = None,
 ):
     """Build the unified Draftly Graph for documentation workflows.
 
@@ -116,6 +119,10 @@ def build_documentation_graph(
     checkout tools), ``github`` (read-only GitHub API tools for real linked
     PRs), or ``docs`` (documentation-store search only). ``repo_dir`` is the
     concrete checkout path surfaces into the LOCAL note when known.
+    ``comment_factory`` supplies the PR-notify poster (a callable returning a
+    creator of ``create_comment(repository, pull_request_number, body)``);
+    when omitted the node lazily builds a ``GitHubClient`` at invoke time so
+    the runner's installation context applies.
     """
     # Import agents (factories — one instance per graph node)
     from draftly.agents.documentation.analyzer import build_impact_agent
@@ -123,10 +130,12 @@ def build_documentation_graph(
     from draftly.agents.documentation.context import build_doc_context_agent
     from draftly.agents.documentation.research_swarm import build_doc_research_swarm
     from draftly.agents.documentation.writer import build_writer_agent
+    from draftly.agents.notify import build_notify_agent
     from draftly.agents.shared.classifier import build_classifier
     from draftly.agents.shared.delivery import build_delivery_agent
     from draftly.agents.support.answer_writer import build_answer_writer
     from draftly.orchestration.nodes.changelog_evaluate import ChangelogEvaluatorNode
+    from draftly.orchestration.nodes.notify_post import NotifyPostNode
 
     reg = tools_registry
 
@@ -207,6 +216,9 @@ def build_documentation_graph(
             reg.documentation,
         ),
     )
+    notify_model = resolve_model_for_role(model, "notify")
+    notify_builder = getattr(registry, "notify_agent", None) or build_notify_agent
+    notify_agent = notify_builder(notify_model, [])
     answer_builder = getattr(registry, "answer_writer", None) or build_answer_writer
     answer_agent = answer_builder(
         support_model,
@@ -268,6 +280,19 @@ def build_documentation_graph(
     builder.add_edge("impact", "answer", condition=route_to_answer)
     builder.add_edge("impact", "update", condition=route_to_update)
     builder.add_edge("impact", "create", condition=route_to_create)
+
+    # PR notify: a parallel branch off impact. The notify LLM composes the
+    # comment (draft-only, no tools); the deterministic notify_post node posts
+    # it. Runs for pull_request.opened events only — releases that route to
+    # this graph are excluded by the condition.
+    notify_post = NotifyPostNode(
+        "notify_post",
+        comment_factory=comment_factory,
+    )
+    builder.add_node(notify_agent, "notify")
+    builder.add_node(notify_post, "notify_post")
+    builder.add_edge("impact", "notify", condition=pull_request_opened)
+    builder.add_edge("notify", "notify_post")
 
     # Evaluation
     evaluator = EvaluatorNode(

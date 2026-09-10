@@ -12,6 +12,7 @@ from draftly.agents.schemas import (
     EventClassification,
     EvidenceBundle,
     ImpactAnalysis,
+    NotifyReceipt,
 )
 from draftly.app.composition.tools import build_tools
 from tests.stub_model import StubModel
@@ -89,6 +90,11 @@ def stub_model() -> StubModel:
                 "entries": [{"category": "Added", "text": "OAuth support."}],
                 "raw_markdown": "## [v2.0.0] - 2026-09-04\n\n### Added\n- OAuth support.\n",
             },
+            NotifyReceipt: {
+                "should_notify": True,
+                "kind": "gap_detected",
+                "body": "Draftly will generate docs for this PR:\n- docs/widgets.md",
+            },
         }
     )
 
@@ -101,6 +107,36 @@ def tools():
 @pytest.fixture
 def model():
     return stub_model()
+
+
+class _RecordingCommenter:
+    """Deterministic commenter recording create_comment calls."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple] = []
+
+    async def create_comment(
+        self,
+        repository: str,
+        pull_request_number: int,
+        body: str,
+    ) -> dict:
+        self.calls.append((repository, pull_request_number, body))
+        return {
+            "id": 1,
+            "html_url": f"https://github/{repository}/pull/{pull_request_number}#issuecomment-1",
+        }
+
+
+@pytest.fixture
+def comment_factory():
+    """Injected comment factory for PR graph runs; records posted comments.
+
+    Always returns the same recording commenter so a default graph build can
+    assert a single post (idempotency) without touching GitHub.
+    """
+    commenter = _RecordingCommenter()
+    return lambda: commenter, commenter
 
 
 @pytest.fixture
