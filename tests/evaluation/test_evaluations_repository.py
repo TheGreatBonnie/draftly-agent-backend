@@ -17,7 +17,13 @@ class FakeStore:
     async def get(self, *, evaluation_id: str):
         return None
 
-    async def search(self, *, org_id, evaluation_type, limit):
+    async def search(self, *, org_id, evaluation_type, limit, target_id=None):
+        self.last_search = {
+            "org_id": org_id,
+            "evaluation_type": evaluation_type,
+            "limit": limit,
+            "target_id": target_id,
+        }
         return []
 
 
@@ -68,6 +74,20 @@ def test_list_datasets_returns_serialized_cases(monkeypatch):
             ],
         }
     ]
+
+
+async def test_search_can_filter_by_document_target() -> None:
+    store = FakeStore()
+    repo = EvaluationRepository(store=store)
+
+    await repo.search(
+        org_id="org-1",
+        evaluation_type="documentation",
+        target_id="11111111-1111-1111-1111-111111111111",
+        limit=10,
+    )
+
+    assert store.last_search["target_id"] == "11111111-1111-1111-1111-111111111111"
 
 
 def test_list_datasets_returns_empty_when_no_datasets(monkeypatch):

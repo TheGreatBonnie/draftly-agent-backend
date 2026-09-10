@@ -97,9 +97,19 @@ class FakeRevisionRepo:
         return self.revision
 
 
+class FakeEvaluationRepo:
+    async def search(self, **kwargs: Any) -> list[dict[str, Any]]:
+        return [{"id": "eval-1", "target_id": kwargs.get("target_id"), "score": 80.0}]
+
+    async def create(self, **kwargs: Any) -> dict[str, Any]:
+        return {"id": "eval-1", **kwargs}
+
+
 def make_app(items: list[dict[str, Any]] | None = None) -> FastAPI:
     repos = SimpleNamespace(
-        documents=FakeDocsRepo(items or [DOC]), revisions=FakeRevisionRepo()
+        documents=FakeDocsRepo(items or [DOC]),
+        revisions=FakeRevisionRepo(),
+        evaluations=FakeEvaluationRepo(),
     )
     app = FastAPI()
     app.include_router(router)
@@ -172,3 +182,22 @@ def test_history_is_organization_scoped_and_typed() -> None:
     assert resp.status_code == 200
     assert resp.json()["total"] == 1
     assert resp.json()["items"][0]["revision_number"] == 1
+
+
+def test_run_document_evaluation_persists_targeted_result() -> None:
+    client = TestClient(make_app())
+
+    resp = client.post(f"/documentation/{DOC['id']}/evaluations")
+
+    assert resp.status_code == 200
+    assert resp.json()["evaluation"]["target_id"] == DOC["id"]
+    assert resp.json()["evaluation"]["evaluation_type"] == "documentation"
+
+
+def test_list_document_evaluations_is_targeted() -> None:
+    client = TestClient(make_app())
+
+    resp = client.get(f"/documentation/{DOC['id']}/evaluations")
+
+    assert resp.status_code == 200
+    assert resp.json()["items"][0]["target_id"] == DOC["id"]

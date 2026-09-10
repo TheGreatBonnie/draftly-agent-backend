@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections import Counter
+from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
@@ -12,6 +13,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from draftly.app.api.auth import get_verified_token
+from draftly.evaluation.documentation_target import evaluate_document_content
 from draftly.persistence.repositories.document_revisions import (
     DocumentationRevision,
     RevisionConflict,
@@ -59,6 +61,10 @@ class RevisionRequest(BaseModel):
     title: str | None = None
     base_source_hash: str | None = None
     base_revision_id: str | None = None
+
+
+class EvaluationRequest(BaseModel):
+    revision_id: str | None = None
 
 
 def _worker(request: Request):
@@ -392,3 +398,78 @@ async def restore_document_revision(
     except RevisionConflict as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return {"revision": _revision_payload(revision)}
+
+
+@router.get("/{document_id}/evaluations")
+async def list_document_evaluations(
+    document_id: str,
+    request: Request,
+    token: dict = Depends(get_verified_token),
+    limit: int = 20,
+) -> dict[str, Any]:
+    document = await _documents(request).get_for_org(
+        document_id=document_id,
+        org_id=str(token.get("org_id") or ""),
+    )
+    if document is None:
+        raise HTTPException(status_code=404, detail="Document not found")
+    evaluations = getattr(request.app.state.draftly.dependencies.repositories, "evaluations", None)
+    if evaluations is None:
+        raise HTTPException(status_code=503, detail="Evaluation store unavailable")
+    items = await evaluations.search(
+        org_id=str(token.get("org_id") or ""),
+        evaluation_type="documentation",
+        target_id=document_id,
+        limit=max(1, min(limit, 100)),
+    )
+    return {"items": items, "total": len(items)}
+
+
+@router.post("/{document_id}/evaluations")
+async def evaluate_document(
+    document_id: str,
+    request: Request,
+    body: EvaluationRequest | None = None,
+    token: dict = Depends(get_verified_token),
+) -> dict[str, Any]:
+    org_id = str(token.get("org_id") or "")
+    document = await _documents(request).get_for_org(
+        document_id=document_id,
+        org_id=org_id,
+    )
+    if document is None:
+        raise HTTPException(status_code=404, detail="Document not found")
+    content = str(document.get("content") or "")
+    revision_id = body.revision_id if body else document.get("draft_revision_id")
+    if revision_id:
+        draft = await _revisions(request).get_revision(
+            document_id=document_id,
+            revision_id=str(revision_id),
+            org_id=org_id,
+        )
+        if draft is None:
+            raise HTTPException(status_code=404, detail="Revision not found")
+        content = draft.content
+
+    result = evaluate_document_content(content)
+    evaluations = getattr(request.app.state.draftly.dependencies.repositories, "evaluations", None)
+    if evaluations is None:
+        raise HTTPException(status_code=503, detail="Evaluation store unavailable")
+    run_id = str(uuid4())
+    started_at = datetime.now(UTC)
+    record = await evaluations.create(
+        org_id=org_id,
+        evaluation_type="documentation",
+        run_id=run_id,
+        target_type="documentation",
+        target_id=document_id,
+        score=result["score"],
+        passed=result["passed"],
+        status=result["status"],
+        metrics={**result["metrics"], "revision_id": revision_id},
+        failures=result["failures"],
+        trace_id=run_id,
+        started_at=started_at,
+        completed_at=datetime.now(UTC),
+    )
+    return {"evaluation": record, "result": result}

@@ -188,9 +188,11 @@ class EvaluationRepository:
         org_id: str,
         evaluation_type: str | None,
         limit: int,
+        target_id: str | None = None,
     ) -> list[dict[str, Any]]:
         return await self.store.search(
             org_id=org_id,
             evaluation_type=evaluation_type,
             limit=limit,
+            target_id=target_id,
         )
