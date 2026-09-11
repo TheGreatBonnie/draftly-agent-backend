@@ -53,9 +53,11 @@ class MemoryLinksStore:
             SELECT id, org_id, source_memory_id, target_memory_id,
                    relationship, confidence, created_at
             FROM memory_links
-            WHERE source_memory_id = $1 OR target_memory_id = $1
+            WHERE org_id = $1
+              AND (source_memory_id = $2 OR target_memory_id = $2)
             ORDER BY created_at DESC
             """,
+            org_id,
             memory_item_id,
         )
         return [dict(r) for r in rows]

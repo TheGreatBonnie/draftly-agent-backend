@@ -24,6 +24,7 @@ from draftly.integrations.slack.app import build_slack_app
 from draftly.integrations.slack.auth import SlackAuth
 from draftly.integrations.slack.client import SlackClient
 from draftly.integrations.slack.installation_store import SlackInstallationStore
+from draftly.memory.embeddings import EmbeddingService
 
 # from draftly.memory.embeddings import build_memory_embedder
 # from draftly.memory.manager import MemoryManager
@@ -43,6 +44,7 @@ from draftly.persistence.repositories.github import (
     GitHubWorkflowRepository,
 )
 from draftly.persistence.repositories.jobs import JobRepositoryImpl
+from draftly.persistence.repositories.knowledge import KnowledgeRepository
 from draftly.persistence.repositories.memory import MemoryRepository
 from draftly.persistence.repositories.onboarding import OnboardingRepository
 from draftly.persistence.repositories.repository_config import RepositoryConfigRepository
@@ -50,6 +52,10 @@ from draftly.persistence.repositories.reviewers import ReviewersRepository
 from draftly.persistence.repositories.reviews import ReviewsRepository
 from draftly.persistence.repositories.routing import PerformanceRepository, RoutingRepository
 from draftly.persistence.repositories.slack import SlackWorkflowRepository
+from draftly.persistence.repositories.steering import (
+    SteeringAttemptsRepository,
+    SteeringInterventionsRepository,
+)
 from draftly.persistence.repositories.support import SupportRepository
 from draftly.persistence.repositories.workflow_events import WorkflowEventRepositoryImpl
 from draftly.persistence.repositories.workflows import (
@@ -245,6 +251,7 @@ class RepositoryDependencies:
     delivery: DeliveryRepository
     events: EventRepository
     memory: MemoryRepository
+    knowledge: KnowledgeRepository
     documents: DocumentRepository
     revisions: DocumentRevisionRepository
     github_installations: GitHubInstallationsRepository
@@ -271,9 +278,13 @@ class RepositoryDependencies:
     workflow_templates: WorkflowTemplatesRepository
     workflow_runs: WorkflowRunsRepository
 
+    steering_attempts: SteeringAttemptsRepository
+    steering_interventions: SteeringInterventionsRepository
+
 
 def build_repositories(
     database: DatabaseClient,
+    embedder: EmbeddingService | None = None,
 ) -> RepositoryDependencies:
     """
     Construct all Draftly persistence repositories.
@@ -294,6 +305,11 @@ def build_repositories(
         vector_search=VectorSearch(
             client=database,
         ),
+    )
+
+    knowledge = KnowledgeRepository(
+        client=database,
+        embedder=embedder or EmbeddingService(),
     )
 
     documents = DocumentRepository(
@@ -368,10 +384,14 @@ def build_repositories(
     workflow_templates = WorkflowTemplatesRepository(database=database)
     workflow_runs = WorkflowRunsRepository(database=database)
 
+    steering_attempts = SteeringAttemptsRepository(database=database)
+    steering_interventions = SteeringInterventionsRepository(database=database)
+
     return RepositoryDependencies(
         delivery=delivery,
         events=events,
         memory=memory,
+        knowledge=knowledge,
         documents=documents,
         revisions=revisions,
         github_installations=github_installations,
@@ -396,6 +416,8 @@ def build_repositories(
         workflow_definitions=workflow_definitions,
         workflow_templates=workflow_templates,
         workflow_runs=workflow_runs,
+        steering_attempts=steering_attempts,
+        steering_interventions=steering_interventions,
     )
 
 
@@ -490,6 +512,8 @@ class ApplicationDependencies:
     models: ModelDependencies
 
     integrations: IntegrationDependencies
+
+    embeddings: EmbeddingService
 
     repositories: RepositoryDependencies
 
@@ -643,8 +667,11 @@ def build_dependencies(
     # 3. Persistence repositories
     # --------------------------------------------------------
 
+    embeddings = EmbeddingService()
+
     repositories = build_repositories(
         database=integrations.database,
+        embedder=embeddings,
     )
 
     # --------------------------------------------------------
@@ -673,6 +700,7 @@ def build_dependencies(
         settings=settings,
         models=models,
         integrations=integrations,
+        embeddings=embeddings,
         repositories=repositories,
         # memory=memory,
         evaluation=evaluation,

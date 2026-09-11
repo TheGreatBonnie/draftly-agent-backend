@@ -44,11 +44,131 @@ class FakeMemoryRepo:
         return next((i for i in self._items if i["id"] == memory_id), None)
 
 
-def make_app(items: list[dict[str, Any]] | None = None) -> FastAPI:
-    repos = SimpleNamespace(memory=FakeMemoryRepo(items or [ITEM, ITEM_LOW_CONF]))
+class FakeKnowledgeRepo:
+    def __init__(
+        self,
+        memory: FakeMemoryRepo,
+        sources: Any = None,
+        links: Any = None,
+        feedback: Any = None,
+        search_result: list[dict[str, Any]] | None = None,
+    ) -> None:
+        self.memory = memory
+        self.sources = sources
+        self.links = links
+        self.feedback = feedback
+        self.search_result = search_result
+
+    @staticmethod
+    def _item(record: dict[str, Any]) -> dict[str, Any]:
+        confidence = float(record.get("confidence") or 0.0)
+        status = (
+            "stale"
+            if record.get("status") not in ("active", None)
+            else "verified"
+            if confidence >= 0.5
+            else "needs-verification"
+        )
+        return {
+            "id": record["id"],
+            "entity": record.get("summary") or record.get("content"),
+            "description": record.get("summary"),
+            "status": status,
+            "importance": record.get("importance"),
+            "confidence": record.get("confidence"),
+            "created_at": record.get("created_at"),
+            "updated_at": record.get("updated_at"),
+            "namespace": record.get("namespace", "knowledge"),
+            "memory_type": record.get("memory_type", "knowledge"),
+        }
+
+    async def list_page(self, *, org_id, status=None, limit=25, cursor=None):
+        records = await self.memory.list_namespace(namespace="knowledge", org_id=org_id)
+        items = [self._item(record) for record in records]
+        if status:
+            items = [item for item in items if item["status"] == status]
+        return {"items": items[:limit], "total": len(items), "next_cursor": None}
+
+    async def stats(self, *, org_id):
+        page = await self.list_page(org_id=org_id)
+        return {
+            "total": page["total"],
+            "verified": sum(i["status"] == "verified" for i in page["items"]),
+            "needs_verification": sum(
+                i["status"] == "needs-verification" for i in page["items"]
+            ),
+            "stale": sum(i["status"] == "stale" for i in page["items"]),
+        }
+
+    async def search(self, *, org_id, query, limit=20, status=None):
+        if self.search_result is not None:
+            items = self.search_result[:limit]
+        else:
+            records = await self.memory.list_namespace(namespace="knowledge", org_id=org_id)
+            items = [self._item(record) for record in records[:limit]]
+        if status:
+            items = [item for item in items if item["status"] == status]
+        return items
+
+    async def detail(self, *, org_id, item_id):
+        record = await self.memory.get(memory_id=item_id)
+        if (
+            record is None
+            or record.get("org_id") != org_id
+            or record.get("namespace") != "knowledge"
+        ):
+            return None
+        item = self._item(record)
+        item.pop("namespace", None)
+        item.pop("memory_type", None)
+        item["description"] = record.get("content")
+        item["sources"] = []
+        item["related"] = []
+        item["feedback"] = []
+        if self.sources:
+            item["sources"] = await self.sources.list_by_memory(
+                org_id=org_id, memory_item_id=item_id
+            )
+        if self.links:
+            item["related"] = await self.links.list_by_memory(
+                org_id=org_id, memory_item_id=item_id
+            )
+        if self.feedback:
+            item["feedback"] = await self.feedback.list_by_memory(
+                org_id=org_id, memory_item_id=item_id
+            )
+        return item
+
+    async def source_summaries(self, *, org_id):
+        return []
+
+    async def graph(self, *, org_id, limit_nodes=100, limit_edges=200):
+        return {"nodes": [], "edges": []}
+
+    async def topics(self, *, org_id, limit=20):
+        return []
+
+    async def embedding_stats(self, *, org_id):
+        return {
+            "total_items": 0,
+            "embedded_items": 0,
+            "coverage_percent": 0.0,
+            "models": [],
+            "last_embedded_at": None,
+        }
+
+
+def make_app(
+    items: list[dict[str, Any]] | None = None,
+    token: dict[str, Any] | None = None,
+) -> FastAPI:
+    memory = FakeMemoryRepo(items or [ITEM, ITEM_LOW_CONF])
+    repos = SimpleNamespace(memory=memory, knowledge=FakeKnowledgeRepo(memory))
     app = FastAPI()
     app.include_router(router)
-    app.dependency_overrides[get_verified_token] = lambda: {"org_id": "org-1"}
+    app.dependency_overrides[get_verified_token] = lambda: (
+        token if token is not None else {"org_id": "org-1"}
+    )
     app.state.draftly = SimpleNamespace(dependencies=SimpleNamespace(repositories=repos))
     return app
 
@@ -81,10 +201,25 @@ def test_list_filters_by_status() -> None:
     assert all(i["status"] == "verified" for i in body["items"])
 
 
+def test_missing_org_id_is_rejected() -> None:
+    response = TestClient(make_app(token={})).get("/knowledge")
+    assert response.status_code in (400, 403)
+
+
+def test_list_limit_is_bounded() -> None:
+    response = TestClient(make_app()).get("/knowledge", params={"limit": 101})
+    assert response.status_code == 422
+
+
 def test_get_unknown_returns_404() -> None:
     client = TestClient(make_app(items=[]))
     resp = client.get("/knowledge/99999999-9999-9999-9999-999999999999")
     assert resp.status_code == 404
+
+
+def test_invalid_item_id_is_rejected() -> None:
+    response = TestClient(make_app()).get("/knowledge/not-a-uuid")
+    assert response.status_code == 400
 
 
 def test_stats_counts_by_derived_status() -> None:
@@ -112,12 +247,13 @@ def make_search_app() -> FastAPI:
         async def embed(self, text: str) -> list[float]:
             return [0.1, 0.2]
 
-    repo = FakeSearchMemoryRepo([ITEM], [])
+    memory = FakeSearchMemoryRepo([ITEM], [])
+    repo = FakeKnowledgeRepo(memory, search_result=[])
     app = FastAPI()
     app.include_router(router)
     app.dependency_overrides[get_verified_token] = lambda: {"org_id": "org-1"}
     app.state.draftly = SimpleNamespace(
-        dependencies=SimpleNamespace(repositories=SimpleNamespace(memory=repo)),
+        dependencies=SimpleNamespace(repositories=SimpleNamespace(memory=memory, knowledge=repo)),
         embeddings=FakeEmbedService(),
     )
     return app
@@ -141,15 +277,30 @@ def test_get_item_includes_sources_and_related() -> None:
 
     class FakeSources:
         async def list_by_memory(self, *, org_id, memory_item_id):
-            return [{"source_type": "spec", "source_url": "https://x", "evidence": "e"}]
+            return [{
+                "id": "source-1",
+                "source_type": "spec",
+                "source_url": "https://x",
+                "evidence": "e",
+            }]
 
     class FakeLinks:
         async def list_by_memory(self, *, org_id, memory_item_id):
-            return [{"relationship": "related", "target_memory_id": "abc"}]
+            return [{
+                "id": "link-1",
+                "relationship": "related",
+                "source_memory_id": memory_item_id,
+                "target_memory_id": "abc",
+            }]
 
     class FakeFeedback:
         async def list_by_memory(self, *, org_id, memory_item_id):
-            return [{"feedback_type": "verified", "score": 1.0, "source": "FactChecker Agent"}]
+            return [{
+                "id": "feedback-1",
+                "feedback_type": "verified",
+                "score": 1.0,
+                "source": "FactChecker Agent",
+            }]
 
     app = FastAPI()
     app.include_router(router)
@@ -158,6 +309,7 @@ def test_get_item_includes_sources_and_related() -> None:
         dependencies=SimpleNamespace(
             repositories=SimpleNamespace(
                 memory=repo,
+                knowledge=FakeKnowledgeRepo(repo, FakeSources(), FakeLinks(), FakeFeedback()),
                 memory_sources=FakeSources(),
                 memory_links=FakeLinks(),
                 memory_feedback=FakeFeedback(),

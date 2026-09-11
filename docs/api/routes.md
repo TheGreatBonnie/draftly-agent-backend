@@ -104,6 +104,21 @@ All responses use JSON unless otherwise noted. Errors follow the standard FastAP
 | `GET` | `/api/documentation?repository=` | JWT | Lists generated documentation for a repository |
 | `GET` | `/api/documentation/{document_id}` | JWT | Fetches one generated document by ID |
 
+### 2.7 Knowledge
+
+| Method | Endpoint | Auth | Purpose |
+|--------|----------|------|---------|
+| `GET` | `/api/knowledge` | JWT | Lists the current organization’s curated Knowledge items. Query: `?status=verified|needs-verification|stale&limit=25&cursor=`; limit is bounded to 1–100 |
+| `GET` | `/api/knowledge/stats` | JWT | Returns organization-scoped totals for all, verified, needs-verification, and stale items |
+| `GET` | `/api/knowledge/search` | JWT | Runs bounded semantic search. Query: `?q=&limit=` (maximum 300-character query and 50 results); returns scalar similarity only |
+| `GET` | `/api/knowledge/{item_id}` | JWT | Returns one organization-scoped item with safe provenance, related links, and feedback |
+| `GET` | `/api/knowledge/sources` | JWT | Aggregates persisted provenance evidence by source type and repository; this is not connection health |
+| `GET` | `/api/knowledge/graph` | JWT | Returns bounded organization-scoped Knowledge nodes and links |
+| `GET` | `/api/knowledge/topics` | JWT | Aggregates topic metadata stored on organization-scoped Knowledge items |
+| `GET` | `/api/knowledge/embeddings` | JWT | Returns embedding coverage and model names without exposing vectors |
+
+All Knowledge reads require a non-empty `org_id` claim from the verified Clerk token. SQL predicates, including related links and feedback, enforce that organization boundary. List pagination uses an opaque keyset cursor ordered by `updated_at DESC, id DESC`. The response models exclude raw embedding vectors, prompts, credentials, and unrestricted memory metadata.
+
 ### 2.7 Evaluations
 
 | Method | Endpoint | Auth | Purpose |
