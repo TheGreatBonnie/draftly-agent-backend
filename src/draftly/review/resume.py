@@ -8,7 +8,8 @@ workflow reached the expected terminal status — records the decision.
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import Any, Literal
+from uuid import uuid4
 
 import structlog
 
@@ -65,19 +66,28 @@ async def _load_event(
 async def resume_review_decision(
     *,
     review_id: str,
-    approved: bool,
+    approved: bool | None = None,
+    decision: Literal["approve", "request_changes", "reject"] | None = None,
     reviewer_id: str,
     comment: str,
     app_state: Any,
     org_id: str | None = None,
 ) -> WorkflowState:
-    """Resume a paused workflow after a human review decision.
+    """Resume or revise a paused workflow after a human review decision.
 
     Approval requires the workflow to reach ``delivered``; rejection requires
-    ``failed``. The decision is persisted only after the resume succeeds, so a
-    failed resume leaves the review actionable and never records an approval
-    for work that did not reach delivery.
+    ``failed``. A request for changes closes the current review as
+    ``needs_changes`` and starts a fresh run carrying the reviewer's feedback;
+    that run generates a new review when it reaches the review gate.
     """
+    if decision is None:
+        if approved is None:
+            raise ReviewResumeError("A review decision is required")
+        decision = "approve" if approved else "reject"
+    approved_value = decision == "approve"
+    if decision == "request_changes" and not comment.strip():
+        raise ReviewResumeError("Request changes requires a comment")
+
     app_state = await _resolve_app_state(app_state)
     repositories = getattr(getattr(app_state, "dependencies", None), "repositories", None)
     reviews = getattr(repositories, "reviews", None)
@@ -108,6 +118,45 @@ async def resume_review_decision(
     event["project_id"] = str(_get(record, "org_id") or "")
     event["org_id"] = event["project_id"]
 
+    if decision == "request_changes":
+        outcomes = getattr(repositories, "feedback_outcomes", None)
+        service = ReviewService(repository=reviews, outcomes_repository=outcomes)
+        result = await service.decide(
+            ReviewDecision(
+                review_id=review_id,
+                reviewer_id=reviewer_id or "",
+                approved=False,
+                decision="request_changes",
+                comment=comment.strip(),
+            )
+        )
+
+        revision_event = dict(event)
+        revision_event["event_id"] = str(uuid4())
+        revision_event["review_policy"] = "always"
+        revision_event["review_revision_of"] = review_id
+        revision_event["review_feedback"] = {
+            "decision": "needs_changes",
+            "comment": comment.strip(),
+        }
+        marker = getattr(events_repo, "mark_status", None)
+        if marker is not None:
+            try:
+                await marker(run_id, "needs_changes")
+            except Exception:
+                logger.warning(
+                    "review_revision_original_event_mark_failed",
+                    run_id=run_id,
+                    exc_info=True,
+                )
+        runner = getattr(getattr(app_state, "workflows", None), "runner", None)
+        if runner is None or getattr(runner, "run", None) is None:
+            raise ReviewResumeError("Workflow runner unavailable")
+        revised_state = await runner.run(revision_event)
+        setattr(revised_state, "decision_outcome", result)
+        setattr(revised_state, "review_revision_of", review_id)
+        return revised_state
+
     runner = getattr(getattr(app_state, "workflows", None), "runner", None)
     if runner is None or getattr(runner, "resume_review", None) is None:
         raise ReviewResumeError("Workflow runner unavailable")
@@ -120,7 +169,7 @@ async def resume_review_decision(
         state = await runner.resume_review(
             event=event,
             interrupt_id=interrupt_id,
-            response={"approved": bool(approved), "comment": comment or ""},
+            response={"approved": approved_value, "comment": comment or ""},
         )
     except Exception as exc:
         logger.warning(
@@ -132,7 +181,7 @@ async def resume_review_decision(
         raise ReviewResumeError(f"Resume failed for review {review_id}") from exc
 
     status = getattr(getattr(state, "status", None), "value", "")
-    expected = "delivered" if approved else "failed"
+    expected = "delivered" if approved_value else "failed"
     if status != expected:
         raise ReviewResumeError(
             f"Review did not reach expected status {expected!r} (status={status})"
@@ -144,7 +193,8 @@ async def resume_review_decision(
         ReviewDecision(
             review_id=review_id,
             reviewer_id=reviewer_id or "",
-            approved=bool(approved),
+            approved=approved_value,
+            decision=decision,
             comment=comment or "",
         )
     )
@@ -155,7 +205,7 @@ async def resume_review_decision(
         review_id=review_id,
         run_id=run_id,
         status=status,
-        approved=bool(approved),
+        approved=approved_value,
         reviewer_id=reviewer_id,
     )
     return state

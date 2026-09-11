@@ -43,19 +43,40 @@ class ReviewService:
         return self._to_request(record) if record else None
 
     async def decide(self, decision: ReviewDecision) -> dict[str, Any]:
-        """Apply an approve/reject decision and return resume info."""
-        if decision.approved:
+        """Apply a review decision and return persistence/resume info."""
+        kind = decision.normalized_decision()
+        if kind == "approve":
             result = await self.approvals.approve(
                 review_id=decision.review_id,
                 reviewer_id=decision.reviewer_id,
                 comment=decision.comment,
             )
-        else:
+        elif kind == "reject":
             result = await self.rejections.reject(
                 review_id=decision.review_id,
                 reviewer_id=decision.reviewer_id,
                 comment=decision.comment,
             )
+        else:
+            record = await self.repository.record_decision(
+                review_id=decision.review_id,
+                reviewer_id=decision.reviewer_id,
+                decision="needs_changes",
+                comment=decision.comment or None,
+            )
+            result = {
+                "review": record,
+                "resume": {
+                    "run_id": record.thread_id,
+                    "interrupt_id": (record.tool_args or {}).get("interrupt_id"),
+                    "response": {
+                        "approved": False,
+                        "decision": "needs_changes",
+                        "comment": decision.comment,
+                    },
+                },
+                "expected_outcome": "revision_requested",
+            }
         if self.outcomes is not None:
             record = result.get("review")
             if record is not None:

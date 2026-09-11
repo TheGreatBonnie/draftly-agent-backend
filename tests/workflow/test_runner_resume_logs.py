@@ -20,11 +20,41 @@ EVENT = {
 
 
 class _InterruptGraph:
+    _resume_from_session = True
+
+    def __init__(self) -> None:
+        self.id = "graph"
+        self._interrupt_state = SimpleNamespace(activated=True, interrupts={"int-1"})
+        self.session_manager = SimpleNamespace(
+            _is_new_session=False,
+            session_id="draftly-run-1",
+            session_repository=SimpleNamespace(
+                read_multi_agent=lambda session_id, graph_id: {
+                    "next_nodes_to_execute": ["review"]
+                }
+            ),
+        )
+
     async def invoke_async(self, resume_input, invocation_state=None):
         return SimpleNamespace(status=Status.INTERRUPTED, interrupts=[])
 
 
 class _FailingGraph:
+    _resume_from_session = True
+
+    def __init__(self) -> None:
+        self.id = "graph"
+        self._interrupt_state = SimpleNamespace(activated=True, interrupts={"int-1"})
+        self.session_manager = SimpleNamespace(
+            _is_new_session=False,
+            session_id="draftly-run-1",
+            session_repository=SimpleNamespace(
+                read_multi_agent=lambda session_id, graph_id: {
+                    "next_nodes_to_execute": ["review"]
+                }
+            ),
+        )
+
     async def invoke_async(self, resume_input, invocation_state=None):
         raise RuntimeError("graph down")
 

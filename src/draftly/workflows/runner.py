@@ -15,6 +15,7 @@ import json
 import re
 import time
 from collections.abc import Callable
+from copy import deepcopy
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any
@@ -118,6 +119,7 @@ def _default_graph_factory(context: WorkflowContext) -> GraphFactory:
             model=context.model,
             hooks=context.hooks,
             storage_dir=context.storage_dir,
+            session_repository=getattr(context, "session_repository", None),
             audit_repo=context.audit_repo,
             memory=context.memory_bundle(),
             publisher=getattr(context, "publisher", None),
@@ -143,6 +145,7 @@ class WorkflowRunner:
     ) -> None:
         self.context = context
         self._graph_factory = graph_factory or _default_graph_factory(context)
+        self._session_repository = getattr(context, "session_repository", None)
         self.dispatcher = dispatcher or EventDispatcher()
         # When set, runs stream via graph.stream_async and publish filtered
         # envelopes; outcome handling below is identical on both paths.
@@ -355,6 +358,42 @@ class WorkflowRunner:
                 }
             }
         ]
+        # Preflight: a resume is only valid when the graph restored the
+        # interrupted state from its persisted session. When the session is
+        # gone (fresh session created during this request), the graph would
+        # treat the resume payload as a brand-new task and run it from the
+        # entry points — failing later in an unrelated node. Detect that
+        # early and keep the review actionable instead.
+        resumable = self._session_is_resumable(graph, interrupt_id)
+        if not resumable:
+            from draftly.review.resume import ReviewResumeError
+
+            message = (
+                "interrupted session state not found; the run cannot be resumed"
+            )
+            logger.warning(
+                "review_resume_blocked",
+                run_id=run_id,
+                surface=surface,
+                interrupt_id=interrupt_id,
+                reason="session_lost",
+            )
+            await self._mark(event, "pending_review")
+            await self._persist_lifecycle(
+                event,
+                "pending_review",
+                run_id=run_id,
+                error=message,
+                result={"status": "SESSION_LOST", "error": message},
+            )
+            await self._broadcast_lifecycle(
+                org_id=str(event.get("project_id") or ""),
+                run_id=run_id,
+                status="pending_review",
+                surface=surface,
+            )
+            await self._notify_reviewers(run_id)
+            raise ReviewResumeError(f"Cannot resume run {run_id}: {message}")
         state = WorkflowState(run_id=run_id, event=event, surface=surface)
         started = time.monotonic()
         installation_token = set_installation_id(event.get("installation_id"))
@@ -428,10 +467,49 @@ class WorkflowRunner:
         logger.info("workflow_resume_done", run_id=run_id, status=resumed.status.value)
         return resumed
 
+    def _session_is_resumable(self, graph: Any, interrupt_id: str | None) -> bool:
+        """Mirror Strands' own resume discriminator to preflight the resume.
+
+        Strands only sets ``graph._resume_from_session`` and activates
+        ``graph._interrupt_state`` *during* ``invoke``; they are never reliable
+        before it runs. The same persisted payload it inspects there is what
+        decides whether an interrupted run can be resumed: a multi-agent
+        session that carries ``next_nodes_to_execute`` (a paused graph working
+        through the review gate) can be resumed; a fresh/empty session cannot.
+        """
+        manager = getattr(graph, "session_manager", None)
+        # A graph without any session manager does not restore state at all —
+        # nothing for this guard to validate, so defer to Strands' behavior.
+        if manager is None:
+            return True
+        if interrupt_id is None:
+            return False
+        if getattr(manager, "_is_new_session", True):
+            return False
+        try:
+            state = manager.session_repository.read_multi_agent(
+                manager.session_id, graph.id
+            )
+        except Exception:
+            return False
+        if not state:
+            return False
+        # An actual resume needs a non-empty, not-yet-finished node queue.
+        next_nodes = state.get("next_nodes_to_execute") or []
+        if not next_nodes:
+            return False
+        # When the persisted interrupt state is present, require the requested
+        # interrupt to actually be among the ones the graph is waiting on.
+        internal_state = state.get("_internal_state") or {}
+        interrupt_state = (internal_state.get("interrupt_state") or {}).get(
+            "interrupts"
+        )
+        return bool(interrupt_state is None or interrupt_id in interrupt_state)
+
     def _invocation_state(self, event: dict[str, Any], surface: str) -> dict[str, Any]:
         return {
             "run_id": str(event.get("event_id") or ""),
-            "review_policy": self.context.review_policy(),
+            "review_policy": event.get("review_policy") or self.context.review_policy(),
             "delivery_summary": "",
             "evaluation": {},
             "evidence_count": 0,
@@ -441,6 +519,8 @@ class WorkflowRunner:
             "surface": surface,
             "installation_id": event.get("installation_id"),
             "repo_dir": event.get("repo_dir"),
+            "review_revision_of": event.get("review_revision_of"),
+            "review_feedback": event.get("review_feedback"),
         }
 
     async def _notify_reviewers(self, run_id: str) -> None:
@@ -1142,9 +1222,10 @@ class WorkflowRunner:
     ) -> None:
         reviews = self.context.reviews
         for interrupt in result.interrupts or []:
+            reason = await self._enrich_review_reason(interrupt.reason, state)
             record = {
                 "interrupt_id": interrupt.id,
-                "reason": interrupt.reason,
+                "reason": reason,
             }
             state.interrupts.append(record)
             if reviews is None:
@@ -1153,9 +1234,58 @@ class WorkflowRunner:
                 await reviews.store_interrupt(
                     run_id=run_id,
                     interrupt_id=interrupt.id,
-                    reason=interrupt.reason,
+                    reason=reason,
                     workflow_type=surface,
                     org_id=str(state.event.get("project_id") or ""),
                 )
             except Exception:
                 logger.exception("store_interrupt_failed", run_id=run_id)
+
+    async def _enrich_review_reason(
+        self,
+        reason: Any,
+        state: WorkflowState,
+    ) -> dict[str, Any]:
+        """Add organization-scoped original document bodies before persistence."""
+        if not isinstance(reason, dict):
+            return {}
+        enriched = deepcopy(reason)
+        document = enriched.get("document")
+        if not isinstance(document, dict):
+            return enriched
+        files = document.get("files")
+        if not isinstance(files, list):
+            return enriched
+        repository = document.get("repository")
+        documents = getattr(getattr(self.context, "repositories", None), "documents", None)
+        org_id = str(state.event.get("project_id") or "")
+        for file in files:
+            if not isinstance(file, dict):
+                continue
+            action = str(file.get("action") or "").lower()
+            if action not in {"update", "create"}:
+                continue
+            file["original_content"] = None
+            file["original_content_available"] = False
+            if action == "create" or not repository or not file.get("path") or documents is None:
+                continue
+            try:
+                existing = await documents.get_by_org_repository_path(
+                    org_id=org_id,
+                    repository=str(repository),
+                    path=str(file["path"]),
+                )
+            except Exception:
+                logger.warning(
+                    "review_original_content_lookup_failed",
+                    org_id=org_id,
+                    repository=repository,
+                    path=file.get("path"),
+                    exc_info=True,
+                )
+                continue
+            content = existing.get("content") if isinstance(existing, dict) else None
+            if isinstance(content, str):
+                file["original_content"] = content
+                file["original_content_available"] = True
+        return enriched

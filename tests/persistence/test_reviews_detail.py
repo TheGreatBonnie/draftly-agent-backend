@@ -32,6 +32,8 @@ async def test_store_interrupt_persists_structured_detail() -> None:
             "summary": "Added PKCE",
             "evaluation": {"faithfulness": 98},
             "evidence_count": 3,
+            "classification": {"urgency": "high"},
+            "evidence": [{"id": "src/auth/oauth.py:10"}],
         },
         workflow_type="pull_request",
         org_id="o-1",
@@ -43,6 +45,8 @@ async def test_store_interrupt_persists_structured_detail() -> None:
     # The detail JSON param parses back to the structured dict (not a stringified blob).
     detail_json = params[-1]
     assert json.loads(detail_json)["evaluation"]["faithfulness"] == 98
+    assert json.loads(detail_json)["classification"]["urgency"] == "high"
+    assert json.loads(detail_json)["evidence"][0]["id"] == "src/auth/oauth.py:10"
 
 
 async def test_store_interrupt_persists_document_payload() -> None:

@@ -13,6 +13,10 @@ class StrandsConfig(BaseModel):
 
     graph_id: str = "draftly-main-graph"
     session_storage_dir: str = ".draftly/sessions"
+    #: Where Strands session state lives: "database" persists interrupted
+    #: graph state in the shared Postgres/CRDB store (resumable across
+    #: restarts/instances); "file" keeps the legacy on-disk per-run sessions.
+    session_storage: str = "database"  # "database" | "file"
     max_node_executions: int = 15
     execution_timeout: int = 1800
     node_timeout: int = 600
@@ -126,6 +130,8 @@ class Settings(BaseSettings):
 
     strands_graph_id: str = "draftly-main-graph"
     strands_session_storage_dir: str = ".draftly/sessions"
+    # "database" = shared Postgres/CRDB session store; "file" = per-run on disk.
+    strands_session_storage: str = "database"
     strands_max_node_executions: int = 15
     # A delivered PR docs run executes ~8 sequential LLM nodes; 600s killed
     # those runs right before the ReviewGate could fire. Leave headroom.
@@ -143,6 +149,7 @@ class Settings(BaseSettings):
         return StrandsConfig(
             graph_id=self.strands_graph_id,
             session_storage_dir=self.strands_session_storage_dir,
+            session_storage=self.strands_session_storage,
             max_node_executions=self.strands_max_node_executions,
             execution_timeout=self.strands_execution_timeout,
             node_timeout=self.strands_node_timeout,

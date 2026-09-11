@@ -407,6 +407,28 @@ class DocumentStore:
         )
         return self._row_to_dict(row) if row else None
 
+    async def get_by_org_repository_path(
+        self,
+        *,
+        org_id: str,
+        repository: str,
+        path: str,
+    ) -> dict[str, Any] | None:
+        row = await self.client.fetch_one(
+            f"""
+            SELECT {_DOCUMENT_COLUMNS}
+            FROM documentation
+            WHERE org_id = $1
+              AND repository = $2
+              AND path = $3
+            LIMIT 1
+            """,
+            org_id,
+            repository,
+            path,
+        )
+        return self._row_to_dict(row) if row else None
+
     async def list_by_org(
         self,
         *,

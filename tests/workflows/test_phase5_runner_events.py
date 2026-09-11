@@ -90,9 +90,24 @@ class FakeDocumentsRepo:
 
 
 class FakeGraph:
-    def __init__(self, result):
+    _resume_from_session = True
+
+    def __init__(self, result, interrupts: set[str] | None = None):
         self.result = result
         self.calls: list[dict] = []
+        self.id = "fake-graph"
+        self._interrupt_state = SimpleNamespace(
+            activated=True, interrupts=interrupts or {"int-1"}
+        )
+        self.session_manager = SimpleNamespace(
+            _is_new_session=False,
+            session_id="fake-session",
+            session_repository=SimpleNamespace(
+                read_multi_agent=lambda session_id, graph_id: {
+                    "next_nodes_to_execute": ["review"]
+                }
+            ),
+        )
 
     async def invoke_async(self, task, invocation_state=None, **kwargs):
         del kwargs
@@ -356,6 +371,28 @@ class TestRunnerOutcomes:
         invocation_state = graph.calls[0]["invocation_state"]
         assert invocation_state["run_id"] == "evt-1"
         assert invocation_state["review_policy"] == "risky"
+
+    async def test_invocation_state_carries_review_revision_feedback(self) -> None:
+        context = make_context()
+        graph = FakeGraph(completed_result())
+        runner = WorkflowRunner(context, graph_factory=lambda r, s: graph)
+
+        await runner.run(
+            {
+                **PR_EVENT,
+                "review_policy": "always",
+                "review_revision_of": "review-1",
+                "review_feedback": {
+                    "decision": "needs_changes",
+                    "comment": "Add the migration example.",
+                },
+            }
+        )
+
+        invocation_state = graph.calls[0]["invocation_state"]
+        assert invocation_state["review_policy"] == "always"
+        assert invocation_state["review_revision_of"] == "review-1"
+        assert invocation_state["review_feedback"]["comment"] == "Add the migration example."
 
 
 class TestRunnerMergedOnlyGate:

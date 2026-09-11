@@ -88,6 +88,15 @@ class DocumentRepository:
     ) -> dict[str, Any] | None:
         return await self.store.get_by_org_and_path(org_id=org_id, path=path)
 
+    async def get_by_org_repository_path(
+        self, *, org_id: str, repository: str, path: str
+    ) -> dict[str, Any] | None:
+        return await self.store.get_by_org_repository_path(
+            org_id=org_id,
+            repository=repository,
+            path=path,
+        )
+
     async def list_by_org(
         self, *, org_id: str, limit: int = 1000
     ) -> list[dict[str, Any]]:

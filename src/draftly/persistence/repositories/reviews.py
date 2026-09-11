@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import base64
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from collections.abc import Iterable
 from typing import Any
 from uuid import uuid4
 
@@ -24,6 +26,8 @@ def _reason_detail(reason: Any) -> dict[str, Any]:
             "evaluation": reason.get("evaluation"),
             "evidence_count": reason.get("evidence_count"),
             "run_id": reason.get("run_id"),
+            "classification": reason.get("classification"),
+            "evidence": reason.get("evidence"),
             "document": reason.get("document"),
         }
     return {}
@@ -48,6 +52,69 @@ class ReviewRecord:
     notification_sent_at: datetime | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
     detail: dict[str, Any] | None = None
+
+
+def _normalized_score(value: Any) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    score = float(value) * 100 if value <= 1 else float(value)
+    return max(0.0, min(100.0, score))
+
+
+def review_counts_from_records(records: Iterable[ReviewRecord]) -> dict[str, int]:
+    """Calculate review queue counters from organization-scoped records."""
+    counts = {
+        "pending": 0,
+        "urgent": 0,
+        "approved": 0,
+        "needs_changes": 0,
+        "rejected": 0,
+    }
+    for record in records:
+        status = str(record.status or "").strip().lower()
+        if status in counts:
+            counts[status] += 1
+        decision = str(record.decision or "").strip().lower()
+        if status != "needs_changes" and decision == "needs_changes":
+            counts["needs_changes"] += 1
+        detail = record.detail if isinstance(record.detail, dict) else {}
+        classification = detail.get("classification")
+        classification = classification if isinstance(classification, dict) else {}
+        risk = str(
+            classification.get("risk")
+            or classification.get("risk_level")
+            or classification.get("urgency")
+            or detail.get("risk")
+            or ""
+        ).strip().lower()
+        evaluation = detail.get("evaluation")
+        evaluation = evaluation if isinstance(evaluation, dict) else {}
+        score = _normalized_score(
+            evaluation.get("overall_score", evaluation.get("score"))
+        )
+        if risk in {"high", "critical"} or (score is not None and score < 80):
+            counts["urgent"] += 1
+    return counts
+
+
+def _encode_cursor(record: ReviewRecord) -> str:
+    value = {
+        "created_at": record.created_at.isoformat(),
+        "id": record.id,
+    }
+    return base64.urlsafe_b64encode(json.dumps(value).encode()).decode().rstrip("=")
+
+
+def _decode_cursor(cursor: str) -> tuple[datetime, str]:
+    try:
+        padded = cursor + "=" * (-len(cursor) % 4)
+        value = json.loads(base64.urlsafe_b64decode(padded).decode())
+        timestamp = datetime.fromisoformat(str(value["created_at"]))
+        if timestamp.tzinfo is None:
+            timestamp = timestamp.replace(tzinfo=UTC)
+        return timestamp, str(value["id"])
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise ValueError("Invalid review cursor") from exc
 
 
 class ReviewsRepository:
@@ -173,6 +240,7 @@ class ReviewsRepository:
         status: str | None = None,
         org_id: str | None = None,
         limit: int = 100,
+        cursor: str | None = None,
     ) -> list[ReviewRecord]:
         clauses = []
         params: list[Any] = []
@@ -182,15 +250,57 @@ class ReviewsRepository:
         if org_id:
             params.append(org_id)
             clauses.append(f"org_id = ${len(params)}")
+        if cursor:
+            created_at, review_id = _decode_cursor(cursor)
+            params.extend([created_at, review_id])
+            clauses.append(
+                f"(created_at, id) > (${len(params) - 1}, ${len(params)})"
+            )
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         query = f"""
         SELECT * FROM reviews {where}
-        ORDER BY created_at ASC
+        ORDER BY created_at ASC, id ASC
         LIMIT ${len(params) + 1}
         """
         params.append(limit)
         rows = await self.database.fetch_all(query, *params)
         return [self._row_to_record(row) for row in rows]
+
+    async def review_count_summary(self, *, org_id: str) -> dict[str, Any]:
+        rows = await self.database.fetch_all(
+            "SELECT * FROM reviews WHERE org_id = $1 ORDER BY created_at ASC, id ASC",
+            org_id,
+        )
+        records = [self._row_to_record(row) for row in rows]
+        return {
+            "total": len(records),
+            "counts": review_counts_from_records(records),
+        }
+
+    async def list_reviews_page(
+        self,
+        *,
+        status: str | None = None,
+        org_id: str,
+        limit: int = 100,
+        cursor: str | None = None,
+    ) -> dict[str, Any]:
+        bounded_limit = max(1, min(limit, 200))
+        rows = await self.list_reviews(
+            status=status,
+            org_id=org_id,
+            limit=bounded_limit + 1,
+            cursor=cursor,
+        )
+        has_more = len(rows) > bounded_limit
+        items = rows[:bounded_limit]
+        summary = await self.review_count_summary(org_id=org_id)
+        return {
+            "items": items,
+            "total": summary["total"],
+            "counts": summary["counts"],
+            "next_cursor": _encode_cursor(items[-1]) if has_more and items else None,
+        }
 
     async def mark_notification_sent(self, review_id: str) -> None:
         now = datetime.now(UTC)
