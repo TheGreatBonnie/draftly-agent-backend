@@ -101,6 +101,16 @@ class FakeWorkflowRunner:
         )
 
 
+class SmokeWorker:
+    """Exposes ``task_runner`` (evaluation route) and ``run_task`` (dispatch)."""
+
+    def __init__(self, runner: Any) -> None:
+        self.task_runner = runner
+
+    async def run_task(self, name: str, **kwargs: Any) -> Any:
+        return await self.task_runner.run(name, **kwargs)
+
+
 class FakeDocumentsRepository:
     async def list_by_org(
         self, *, org_id: str, limit: int = 1000
@@ -176,18 +186,34 @@ def client() -> TestClient:
     }
 
     reviews = FakeReviewsRepository(_review_record())
-    state = SimpleNamespace(
-        dependencies=SimpleNamespace(
-            repositories=SimpleNamespace(
-                reviews=reviews,
-                events=FakeEventsRepository(),
-                documents=FakeDocumentsRepository(),
-                evaluations=FakeEvaluationsRepository(),
-                support=FakeSupportRepository(),
-            )
+
+    from draftly.app.composition.workers import _wrap_workflow
+    from draftly.app.workers.task_runner import TaskRunner
+    from draftly.review.resume import run_review_resume
+
+    repositories = SimpleNamespace(
+        reviews=reviews,
+        events=FakeEventsRepository(),
+        documents=FakeDocumentsRepository(),
+        evaluations=FakeEvaluationsRepository(),
+        support=FakeSupportRepository(),
+    )
+    runner = FakeWorkflowRunner()
+    worker = SmokeWorker(TaskRunner())
+    worker.task_runner.register(
+        "review.resume",
+        _wrap_workflow(
+            run_review_resume,
+            SimpleNamespace(repositories=repositories, runner=runner),
         ),
-        workflows=SimpleNamespace(runner=FakeWorkflowRunner()),
-        worker=None,
+    )
+    state = SimpleNamespace(
+        dependencies=SimpleNamespace(repositories=repositories),
+        workflows=SimpleNamespace(runner=runner),
+        worker=worker,
+        settings=SimpleNamespace(rq_enabled=False),
+        rq_queues=None,
+        task_handlers=None,
     )
     app.state.draftly = state
     return TestClient(app)
@@ -250,7 +276,6 @@ class TestReviewResumeRoute:
     def test_reject_records_decision_no_resume(
         self,
         client: TestClient,
-        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         response = client.post(
             "/api/github/review/run-1",
@@ -261,17 +286,15 @@ class TestReviewResumeRoute:
                 "comment": "wrong approach",
             },
         )
-        assert response.status_code == 200
-        assert response.json()["status"] == "rejected"
+        assert response.status_code == 202
+        body = response.json()
+        assert body["status"] == "queued"
+        assert body["decision"] == "reject"
         state = client.app.state.draftly  # type: ignore[attr-defined]
         assert state.dependencies.repositories.reviews.decisions[0]["decision"] == "rejected"
         assert state.workflows.runner.calls[0]["response"]["approved"] is False
 
-    def test_approve_resumes_graph(
-        self,
-        client: TestClient,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
+    def test_approve_resumes_graph(self, client: TestClient) -> None:
         response = client.post(
             "/api/github/review/run-1",
             json={
@@ -281,10 +304,10 @@ class TestReviewResumeRoute:
                 "comment": "ship it",
             },
         )
-        assert response.status_code == 200
+        assert response.status_code == 202
         body = response.json()
-        assert body["status"] == "resumed"
-        assert body["workflow_status"] == "delivered"
+        assert body["status"] == "queued"
+        assert body["run_id"] == "run-1"
         runner_call = client.app.state.draftly.workflows.runner.calls[0]  # type: ignore[attr-defined]
         assert runner_call["interrupt_id"] == "int-1"
         assert runner_call["response"]["approved"] is True
@@ -300,10 +323,10 @@ class TestReviewResumeRoute:
                 "comment": "Add the migration example.",
             },
         )
-        assert response.status_code == 200
+        assert response.status_code == 202
         body = response.json()
-        assert body["status"] == "needs_changes"
-        assert body["workflow_status"] == "pending_review"
+        assert body["status"] == "queued"
+        assert body["decision"] == "request_changes"
         runner = client.app.state.draftly.workflows.runner  # type: ignore[attr-defined]
         assert len(runner.run_calls) == 1
         revision_event = runner.run_calls[0]
@@ -328,10 +351,12 @@ class TestReviewResumeRoute:
                 "comment": "ship it",
             },
         )
-        assert response.status_code == 200
+        assert response.status_code == 202
         body = response.json()
-        assert body["status"] == "resumed"
-        assert body["workflow_status"] == "delivered"
+        assert body["status"] == "queued"
+        assert body["decision"] == "approve"
+        runner_call = client.app.state.draftly.workflows.runner.calls[0]  # type: ignore[attr-defined]
+        assert runner_call["response"]["approved"] is True
 
     def test_comment_null_accepted(self, client: TestClient) -> None:
         """A dashboard without a comment sends comment: null, which is valid."""
@@ -343,8 +368,10 @@ class TestReviewResumeRoute:
                 "comment": None,
             },
         )
-        assert response.status_code == 200
-        assert response.json()["status"] == "rejected"
+        assert response.status_code == 202
+        assert response.json()["status"] == "queued"
+        runner_call = client.app.state.draftly.workflows.runner.calls[0]  # type: ignore[attr-defined]
+        assert runner_call["response"]["comment"] == ""
 
     def test_approve_non_resumable_surface_409(self, client: TestClient) -> None:
         state = client.app.state.draftly  # type: ignore[attr-defined]

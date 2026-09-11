@@ -8,7 +8,6 @@ from fastapi.testclient import TestClient
 
 from draftly.app.api.auth import require_reviewer_role
 from draftly.app.api.routes import github as github_routes
-from draftly.review.resume import ReviewResumeError
 from draftly.review.service import ReviewService
 
 
@@ -27,8 +26,8 @@ def make_app(reviews=None, token_org="org-1"):
     return TestClient(app)
 
 
-def review(org_id="org-1"):
-    return SimpleNamespace(org_id=org_id, review_id="review-1", status="pending")
+def review(org_id="org-1", workflow="pull_request"):
+    return SimpleNamespace(org_id=org_id, review_id="review-1", status="pending", workflow=workflow)
 
 
 def test_resume_route_logs_not_found(monkeypatch):
@@ -87,17 +86,13 @@ def test_resume_route_logs_org_mismatch(monkeypatch):
     assert markers[0]["run_id"] == "run-1"
 
 
-def test_resume_route_logs_conflict(monkeypatch):
+def test_resume_route_logs_non_resumable_surface(monkeypatch):
     from structlog.testing import capture_logs
 
     async def get_pending(self, run_id):
-        return review()
-
-    async def raise_conflict(**kwargs):
-        raise ReviewResumeError("already decided")
+        return review(workflow="unknown_surface")
 
     monkeypatch.setattr(ReviewService, "get_by_run_id", get_pending)
-    monkeypatch.setattr("draftly.review.resume.resume_review_decision", raise_conflict)
     client = make_app(reviews=object())
 
     with capture_logs() as logs:
@@ -105,13 +100,13 @@ def test_resume_route_logs_conflict(monkeypatch):
             github_routes, "logger", structlog.get_logger("test.review_resume_conflict")
         )
         resp = client.post(
-    "/api/github/review/run-1",
-    json={
-        "approved": True,
-        "review_id": "review-1",
-        "reviewer_id": "user-1",
-    },
-)
+            "/api/github/review/run-1",
+            json={
+                "approved": True,
+                "review_id": "review-1",
+                "reviewer_id": "user-1",
+            },
+        )
 
     assert resp.status_code == 409
     markers = [line for line in logs if line.get("event") == "review_resume_conflict"]

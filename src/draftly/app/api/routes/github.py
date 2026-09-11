@@ -500,19 +500,22 @@ async def _handle_installation_event(payload: dict) -> WebhookResponse:
     return WebhookResponse(status=f"Installation {action} (unhandled)")
 
 
-@router.post("/review/{run_id}")
+@router.post("/review/{run_id}", status_code=202)
 async def resume_review(
     run_id: str,
     decision: ReviewDecision,
     request: Request,
+    background_tasks: BackgroundTasks,
     token: dict = Depends(require_reviewer_role),
 ) -> dict[str, Any]:
     """Resume a graph after human review (plan §9.1).
 
-    Loads the pending doc-review interrupt stored by the workflow runner,
-    verifies the reviewer's organization, resumes the paused graph — and
-    only records the decision once the workflow reached the expected terminal
-    status. The shared resume service (plan §9.6) backs all platforms.
+    Validates the review fast inline, then dispatches the shared
+    ``review.resume`` task through the durable worker path (RQ when enabled,
+    otherwise the in-process background-task fallback) — identical to the
+    webhook route. The worker runs the graph, verifies the terminal status,
+    and only then records the decision; this route returns immediately with
+    ``202 {"status": "queued"}``.
     """
     app_state = getattr(request.app.state, "draftly", None)
     if app_state is None:
@@ -546,43 +549,61 @@ async def resume_review(
         logger.warning("review_resume_org_mismatch", run_id=run_id, org_id=org_id)
         raise HTTPException(status_code=404, detail=f"No pending review for run {run_id}")
 
-    from draftly.review.resume import ReviewResumeError, resume_review_decision
-
-    try:
-        decision_kind = decision.normalized_decision()
-        state = await resume_review_decision(
-            review_id=pending.review_id,
-            approved=decision.approved,
-            decision=decision_kind,
-            reviewer_id=str(token.get("user_id") or token.get("sub") or ""),
-            comment=decision.comment or "",
-            app_state=app_state,
-            org_id=org_id,
+    surface = str(getattr(pending, "workflow", "") or "")
+    if surface not in ("pull_request", "issue", "support"):
+        logger.warning("review_resume_conflict", run_id=run_id)
+        raise HTTPException(
+            status_code=409,
+            detail=f"Workflow {surface!r} is not resumable",
         )
-    except ReviewResumeError as exc:
-        if "not pending" in str(exc) or "does not belong" in str(exc):
-            logger.warning("review_resume_not_found", run_id=run_id)
-            detail = f"No pending review for run {run_id}"
-            raise HTTPException(status_code=404, detail=detail) from exc
-        logger.warning("review_resume_conflict", run_id=run_id, error=str(exc))
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
-    status = state.status.value
-    logger.info(
-        "review_resumed",
-        run_id=run_id,
-        status=status,
-        approved=bool(decision.approved),
-        reviewer_id=str(token.get("user_id") or token.get("sub") or ""),
-    )
+    decision_kind = decision.normalized_decision()
+    dispatch_args = {
+        "review_id": pending.review_id,
+        "approved": decision.approved,
+        "decision": decision_kind,
+        "reviewer_id": str(token.get("user_id") or token.get("sub") or ""),
+        "comment": decision.comment or "",
+        "org_id": org_id,
+    }
+
+    settings = getattr(app_state, "settings", None)
+    rq_enabled = bool(getattr(settings, "rq_enabled", False)) if settings else False
+    rq_queues = getattr(app_state, "rq_queues", None)
+    task_handlers = getattr(app_state, "task_handlers", None)
+
+    job_id = ""
+    if rq_enabled and rq_queues is not None and task_handlers is not None:
+        job = enqueue_job(
+            queues=rq_queues,
+            task_handlers=task_handlers,
+            task_name="review.resume",
+            **dispatch_args,
+        )
+        job_id = str(getattr(job, "id", ""))
+        logger.info(
+            "review_resume_enqueued",
+            task_name="review.resume",
+            run_id=run_id,
+            rq_job_id=job_id,
+        )
+    else:
+        worker = getattr(app_state, "worker", None)
+        if worker is None or getattr(worker, "run_task", None) is None:
+            raise HTTPException(status_code=503, detail="Background worker is disabled")
+        background_tasks.add_task(
+            worker.run_task, "review.resume", **dispatch_args
+        )
+        logger.info(
+            "review_resume_dispatch_inprocess",
+            task_name="review.resume",
+            run_id=run_id,
+        )
+
     return {
-        "status": "needs_changes" if decision_kind == "request_changes" else (
-            "resumed" if decision_kind == "approve" else "rejected"
-        ),
+        "status": "queued",
         "run_id": run_id,
-        "workflow_status": status,
-        "review": getattr(state, "decision_outcome", None),
-        "rework_run_id": getattr(state, "run_id", None)
-        if decision_kind == "request_changes"
-        else None,
+        "review_id": pending.review_id,
+        "decision": decision_kind,
+        "rq_job_id": job_id,
     }
