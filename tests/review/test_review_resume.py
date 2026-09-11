@@ -18,6 +18,7 @@ from draftly.review.resume import (
     ReviewResumeError,
     resume_review_decision,
     resume_review_from_runtime,
+    run_review_resume,
 )
 
 
@@ -335,3 +336,54 @@ async def test_adapter_delegates_to_runtime_core():
     assert core_state.status.value == "delivered"
     assert adapter_state.status.value == "delivered"
     assert len(reviews.decisions) == 2
+
+
+async def test_worker_workflow_resumes_approval_against_composed_context():
+    app_state = fake_app_state(workflow_status="delivered")
+    context = SimpleNamespace(
+        repositories=app_state.dependencies.repositories,
+        runner=app_state.workflows.runner,
+    )
+    state = await run_review_resume(
+        context,
+        review_id="review-1",
+        approved=True,
+        reviewer_id="user-1",
+        comment="ship it",
+        org_id="org-1",
+    )
+    assert state.status.value == "delivered"
+    runner = app_state.workflows.runner
+    assert runner.calls[0]["response"] == {"approved": True, "comment": "ship it"}
+    assert app_state.dependencies.repositories.reviews.decisions[0]["decision"] == "approved"
+
+
+async def test_worker_workflow_noops_when_review_already_decided():
+    reviews = FakeReviews(_review_record(status="approved"))
+    runner = FakeRunner("delivered")
+    context = SimpleNamespace(
+        repositories=SimpleNamespace(
+            reviews=reviews,
+            events=FakeEvents(
+                {
+                    "event_id": "run-1",
+                    "event_type": "pull_request.merged",
+                    "repository": "acme/api",
+                    "source": "github",
+                }
+            ),
+            feedback_outcomes=None,
+        ),
+        runner=runner,
+    )
+    result = await run_review_resume(
+        context,
+        review_id="review-1",
+        approved=True,
+        reviewer_id="user-1",
+        comment="ship it",
+        org_id="org-1",
+    )
+    assert result is None
+    assert runner.calls == []
+    assert reviews.decisions == []

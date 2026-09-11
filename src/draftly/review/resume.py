@@ -237,6 +237,40 @@ async def resume_review_decision(
     )
 
 
+async def run_review_resume(
+    context: Any,
+    **kwargs: Any,
+) -> WorkflowState | None:
+    """Worker/registry workflow: resume a review against the composed context.
+
+    Bound to the composed ``WorkflowContext`` by ``build_task_runner`` so the
+    RQ worker and the in-process fallback run the same path as the API routes.
+    A review that is no longer pending was already decided by a prior (possibly
+    retried) attempt — treat it as a success so RQ's Retry policy cannot
+    double-resume a finished review.
+    """
+    repositories = getattr(context, "repositories", None)
+    runner = getattr(context, "runner", None)
+    if repositories is None or runner is None:
+        raise ReviewResumeError(
+            "Workflow context is not composed (missing repositories/runner)"
+        )
+    try:
+        return await resume_review_from_runtime(
+            repositories=repositories,
+            runner=runner,
+            **kwargs,
+        )
+    except ReviewResumeError as exc:
+        if "is not pending" in str(exc):
+            logger.info(
+                "review_resume_already_handled",
+                review_id=kwargs.get("review_id", ""),
+            )
+            return None
+        raise
+
+
 async def _resolve_app_state(app_state: Any) -> Any:
     """Resolve the composed draftly runtime from possible wrapper shapes."""
     candidate = app_state
