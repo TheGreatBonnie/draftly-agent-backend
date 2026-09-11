@@ -3,9 +3,9 @@
 import pytest
 
 from draftly.models.policies import (
-    AgentModelPolicy,
     FALLBACKS,
     KNOWN_PROVIDERS,
+    AgentModelPolicy,
 )
 
 

@@ -152,7 +152,7 @@ def build_model_router(
                 "tool_calling",
             ),
             priority=20,
-            
+
         )
     )
 
@@ -167,7 +167,7 @@ def build_model_router(
             ),
             capabilities=("tool_calling",),
             priority=20,
-            
+
         )
     )
 
@@ -220,7 +220,7 @@ def build_model_router(
                 "tool_calling",
             ),
             priority=30,
-            
+
         )
     )
 
@@ -238,7 +238,7 @@ def build_model_router(
                 "tool_calling",
             ),
             priority=30,
-            
+
         )
     )
 
@@ -256,7 +256,7 @@ def build_model_router(
                 "tool_calling",
             ),
             priority=30,
-            
+
         )
     )
 
@@ -274,7 +274,7 @@ def build_model_router(
                 "tool_calling",
             ),
             priority=30,
-            
+
         )
     )
 
@@ -293,7 +293,7 @@ def build_model_router(
                 "structured_output",
             ),
             priority=40,
-            
+
         )
     )
 
@@ -316,7 +316,7 @@ def build_model_router(
                 "tool_calling",
             ),
             priority=20,
-            
+
         )
     )
 
@@ -333,7 +333,7 @@ def build_model_router(
                 "structured_output",
             ),
             priority=20,
-            
+
         )
     )
 
@@ -351,7 +351,7 @@ def build_model_router(
                 "structured_output",
             ),
             priority=30,
-            
+
         )
     )
 
@@ -368,7 +368,7 @@ def build_model_router(
                 "tool_calling",
             ),
             priority=34,
-            
+
         )
     )
 
@@ -385,7 +385,7 @@ def build_model_router(
                 "structured_output",
             ),
             priority=32,
-            
+
         )
     )
 
@@ -401,7 +401,7 @@ def build_model_router(
                 "tool_calling",
             ),
             priority=33,
-            
+
         )
     )
 
@@ -418,7 +418,7 @@ def build_model_router(
                 "structured_output",
             ),
             priority=31,
-            
+
         )
     )
 
@@ -435,7 +435,7 @@ def build_model_router(
                 "structured_output",
             ),
             priority=30,
-            
+
         )
     )
 
@@ -466,7 +466,7 @@ def build_model_router(
                 "structured_output",
             ),
             priority=3,
-            
+
         )
     )
 
@@ -484,7 +484,7 @@ def build_model_router(
                 "structured_output",
             ),
             priority=3,
-            
+
             context_window=256000,
             input_cost_per_1m_tokens=0.60,
             output_cost_per_1m_tokens=2.50,
@@ -505,7 +505,7 @@ def build_model_router(
                 "structured_output",
             ),
             priority=3,
-            
+
         )
     )
 
@@ -523,7 +523,7 @@ def build_model_router(
                 "structured_output",
             ),
             priority=3,
-            
+
         )
     )
 
@@ -540,7 +540,7 @@ def build_model_router(
                 "structured_output",
             ),
             priority=3,
-            
+
         )
     )
 
@@ -557,7 +557,7 @@ def build_model_router(
                 "tool_calling",
             ),
             priority=3,
-            
+
         )
     )
 
@@ -575,7 +575,7 @@ def build_model_router(
                 "structured_output",
             ),
             priority=3,
-            
+
         )
     )
 
