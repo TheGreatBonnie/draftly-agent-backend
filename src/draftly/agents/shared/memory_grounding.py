@@ -29,6 +29,32 @@ MAX_EPISODE_ITEMS = 2
 MAX_PROCEDURE_ITEMS = 1
 GROUNDING_HEADER = "Relevant organizational knowledge:"
 
+#: Appended to the grounded task when the inner context agent lost its
+#: EvidenceBundle to a Strands tool-input parse-drop (items==0). The agent is
+#: asked to re-emit the bundle it already collected, not to invent evidence.
+EVIDENCE_RETRY_SUFFIX = (
+    "\n\nYour previous structured evidence output was lost before it reached "
+    "the gate (its tool-input JSON did not parse). Re-emit the complete "
+    "EvidenceBundle exactly as you collected it, ensuring items[] is present."
+)
+
+
+def _bundle_items_empty(structured: Any) -> bool:
+    """True when a structured EvidenceBundle arrived with zero items.
+
+    A Strands tool-input parse-drop deserializes the bundle from ``{}``, so a
+    ``items==[]`` bundle is the signature of lost evidence rather than a
+    genuine "nothing to cite" result.
+    """
+    if structured is None:
+        return False
+    items = (
+        structured.get("items")
+        if isinstance(structured, dict)
+        else getattr(structured, "items", None)
+    )
+    return isinstance(items, list) and len(items) == 0
+
 
 async def _call_source(source: Any, query: str, *, limit: int, org_id: str | None) -> Any:
     """Call memory sources with tenant scope while keeping legacy adapters valid."""
@@ -69,6 +95,31 @@ class MemoryGroundedNode(MultiAgentBase):
             invocation_state=invocation_state,
             **kwargs,
         )
+        if (
+            isinstance(result, AgentResult)
+            and _bundle_items_empty(getattr(result, "structured_output", None))
+        ):
+            # Parse-drop signature: the EvidenceBundle arrived as items==[].
+            # Re-emit once (transient loss), then degrade loudly if the agent
+            # genuinely has no evidence — never silently waiver the gate's
+            # coverage signals on a zero-item bundle.
+            logger.warning(
+                "memory_grounded_empty_evidence_retrying",
+                agent=self.name,
+            )
+            result = await self.inner.invoke_async(
+                f"{grounded_task}{EVIDENCE_RETRY_SUFFIX}",
+                invocation_state=invocation_state,
+                **kwargs,
+            )
+            if (
+                isinstance(result, AgentResult)
+                and _bundle_items_empty(getattr(result, "structured_output", None))
+            ):
+                logger.warning(
+                    "memory_grounded_empty_evidence_degraded",
+                    agent=self.name,
+                )
         execution_ms = round((time.monotonic() - started) * 1000)
 
         if isinstance(result, MultiAgentResult):

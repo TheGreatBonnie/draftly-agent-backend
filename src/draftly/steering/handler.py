@@ -142,6 +142,11 @@ def build_steering_judge(
     judgments never deteriorate into ``Interrupt``.
     """
 
+    # Serializes the Strands judge agent across every invocation of this
+    # adapter: the wrapped agent is not reentrant and concurrent before_tool
+    # steering callbacks crashed it via the default ThreadPoolExecutor.
+    _judge_lock = asyncio.Lock()
+
     async def judge(*, decision: SteeringDecision) -> SteeringDecision:
         context = redact_value(
             {
@@ -165,21 +170,50 @@ def build_steering_judge(
             return judge_agent(prompt, structured_output_model=_JudgedSteering)
 
         loop = asyncio.get_running_loop()
-        try:
-            with _metrics.timer("draftly_steering_judge_latency_ms"):
-                result = await asyncio.wait_for(
-                    loop.run_in_executor(None, _invoke), timeout=timeout_seconds
+
+        async def _judge_once() -> Any:
+            # The wrapped Strands judge agent is not reentrant: concurrent
+            # before_tool steering callbacks called it in parallel through the
+            # default ThreadPoolExecutor and crashed it (~27ms fallback burst).
+            # Serialize judge invocations so each runs to completion.
+            async with _judge_lock:
+                return await asyncio.wait_for(
+                    loop.run_in_executor(None, _invoke),
+                    timeout=timeout_seconds,
                 )
-        except TimeoutError as exc:
-            _metrics.increment("draftly_steering_judge_fallbacks_total")
-            raise SteeringFailure("steering judge timed out") from exc
-        except Exception as exc:
-            _metrics.increment("draftly_steering_judge_fallbacks_total")
-            raise SteeringFailure(
-                f"steering judge unavailable: {type(exc).__name__}"
-            ) from exc
+
+        with _metrics.timer("draftly_steering_judge_latency_ms"):
+            try:
+                result = await _judge_once()
+            except TimeoutError as exc:
+                _metrics.increment("draftly_steering_judge_fallbacks_total")
+                raise SteeringFailure("steering judge timed out") from exc
+            except Exception:
+                # Transient: retry once before failing open. Timeouts raise
+                # above and are never retried (they already consumed the budget).
+                try:
+                    result = await _judge_once()
+                except TimeoutError as exc2:
+                    raise SteeringFailure("steering judge timed out") from exc2
+                except Exception as exc2:
+                    _metrics.increment("draftly_steering_judge_fallbacks_total")
+                    raise SteeringFailure(
+                        f"steering judge unavailable: {type(exc2).__name__}"
+                    ) from exc2
 
         judged = getattr(result, "structured_output", None)
+        if judged is None or (isinstance(judged, dict) and not judged):
+            # A tool-input parse-drop yields an empty dict (or loses the
+            # structured output entirely); the judge never produced a schema.
+            # Treat it as "no refinement" and keep the deterministic base
+            # decision instead of burning a fallback on a non-decision.
+            logger.warning(
+                "steering_judge_no_refinement",
+                phase=decision.phase.value,
+                role=decision.role.value if decision.role else None,
+                rule=decision.rule,
+            )
+            return decision
         if not isinstance(judged, _JudgedSteering):
             _metrics.increment("draftly_steering_judge_fallbacks_total")
             raise SteeringFailure("steering judge returned an invalid schema")

@@ -8,6 +8,7 @@ workflow on a provider error.
 
 from __future__ import annotations
 
+from draftly.persistence.repositories.reviews import ReviewRecord
 from draftly.review.notifier import ReviewNotifier
 
 
@@ -160,6 +161,38 @@ async def test_notifies_only_reviewers_with_matching_pref():
     assert notifications.sent == [
         ("review-1", "slack", "U1"),
         ("review-1", "discord", "D1"),
+    ]
+
+
+async def test_review_record_without_document_does_not_raise():
+    """Regression: the pending review is a dataclass (ReviewRecord), not a
+    dict, so the no-document confidence fallback crashed on review.get()."""
+    record = ReviewRecord(
+        id="review-1",
+        org_id="org-1",
+        thread_id="thread-1",
+        workflow="documentation",
+        tool_name="update_docs",
+        tool_args={},
+        action_description="Updated widgets guide",
+        status="pending",
+        detail={"summary": "Updated widgets guide"},
+    )
+    reviews = FakeReviews(pending={"run-1": record})
+    reviewers = FakeReviewers(org="org-1", rows=[{"notify_slack": True, "slack_user_id": "U1"}])
+    slack = FakeSlack()
+    notifier = _notifier(
+        reviews=reviews,
+        reviewers=reviewers,
+        notifications=FakeNotificationRepository(),
+        slack=slack,
+    )
+
+    sent = await notifier.notify_reviewers("run-1")
+
+    assert sent == {"slack": ["U1"], "discord": [], "email": []}
+    assert slack.dms == [
+        ("U1", "Documentation Change\nUpdated widgets guide\nReview: review-1")
     ]
 
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 
 import pytest
@@ -163,6 +164,100 @@ class TestJudgeAdapter:
             judge=judge,
         )
         assert decision.kind is DecisionKind.PROCEED
+
+    async def test_judge_empty_schema_is_no_refinement(self) -> None:
+        """Regression: a tool-input parse-drop yields an empty dict instead of
+        a _JudgedSteering; that must be treated as 'judge did not refine',
+        not as a schema failure that burns a fallback."""
+        judge_agent = StubJudgeAgent(("proceed", {}))
+        judge = build_steering_judge(judge_agent, timeout_seconds=1.0)
+        base = SteeringDecision.proceed(
+            phase=SteeringPhase.BEFORE_TOOL,
+            reason="deterministic policy ok",
+            role=AgentRole.WRITER,
+            rule="policy:ok",
+        )
+
+        decision = await judge(decision=base)
+
+        assert decision is base
+        assert decision.kind is DecisionKind.PROCEED
+        assert decision.rule == "policy:ok"
+
+    async def test_judge_retries_once_on_transient_failure(self) -> None:
+        class FlakyJudgeAgent:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def __call__(self, prompt, *, structured_output_model=None):
+                del prompt, structured_output_model
+                self.calls += 1
+                if self.calls == 1:
+                    raise RuntimeError("transient bump")
+                return type(
+                    "AgentResult",
+                    (),
+                    {"structured_output": _JudgedSteering(decision="guide", reason="after retry")},
+                )()
+
+        flaky = FlakyJudgeAgent()
+        judge = build_steering_judge(flaky, timeout_seconds=2.0)
+        base = SteeringDecision.proceed(
+            phase=SteeringPhase.BEFORE_TOOL,
+            reason="deterministic policy ok",
+            role=AgentRole.WRITER,
+            rule="policy:ok",
+        )
+
+        decision = await judge(decision=base)
+
+        assert flaky.calls == 2
+        assert decision.rule == "judge:guide"
+        assert decision.reason == "after retry"
+
+    async def test_judge_serializes_concurrent_invocations(self) -> None:
+        """Regression: the shared Strands judge agent is not reentrant; the
+        before_tool burst crashed it via concurrent run_in_executor calls."""
+
+        class NonReentrantJudgeAgent:
+            def __init__(self) -> None:
+                self.in_flight = False
+                self.calls = 0
+
+            def __call__(self, prompt, *, structured_output_model=None):
+                del prompt, structured_output_model
+                if self.in_flight:
+                    raise RuntimeError("judge agent is not reentrant")
+                self.in_flight = True
+                try:
+                    self.calls += 1
+                    time.sleep(0.05)
+                finally:
+                    self.in_flight = False
+                return type(
+                    "AgentResult",
+                    (),
+                    {
+                        "structured_output": _JudgedSteering(
+                            decision="proceed", reason="serialized"
+                        )
+                    },
+                )()
+
+        judge = build_steering_judge(NonReentrantJudgeAgent(), timeout_seconds=2.0)
+        base = SteeringDecision.proceed(
+            phase=SteeringPhase.BEFORE_TOOL,
+            reason="deterministic policy ok",
+            role=AgentRole.WRITER,
+            rule="policy:ok",
+        )
+
+        results = await asyncio.gather(judge(decision=base), judge(decision=base))
+
+        assert all(result.kind is DecisionKind.PROCEED for result in results)
+        assert all(result.rule == "judge:proceed" for result in results)
+        assert results[0].reason == "serialized"
+        assert results[1].reason == "serialized"
 
 
 class TestJudgePrecedence:

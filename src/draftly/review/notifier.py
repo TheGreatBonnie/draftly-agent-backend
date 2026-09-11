@@ -44,7 +44,7 @@ def _card_context(review: Any) -> dict[str, Any]:
     title = document.get("title") or "Documentation Change"
     source = document.get("repository") or document.get("channel") or "draftly"
     confidence = None
-    raw = document.get("confidence") or review.get("confidence")
+    raw = document.get("confidence") or _get(review, "confidence")
     try:
         confidence = float(raw)
     except (TypeError, ValueError):

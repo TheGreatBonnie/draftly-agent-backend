@@ -258,3 +258,145 @@ class TestMemoryGroundedNode:
         ]
         assert len(warnings) == 1
         assert warnings[0]["agent"] == "context"
+
+
+class EmptyThenFilledInner(MultiAgentBase):
+    """Inner that returns an empty EvidenceBundle once, then a filled one —
+    the parse-drop signature (items==0) that must trigger a single re-emit."""
+
+    name = "context"
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.calls: list[Any] = []
+
+    async def invoke_async(
+        self,
+        task: Any,
+        invocation_state: dict[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> AgentResult:
+        del invocation_state, kwargs
+        self.calls.append(task)
+        structured = (
+            EvidenceBundle(
+                items=[{"id": "docs/auth.md", "topic": "authentication"}],
+                summary="retrieved",
+            )
+            if len(self.calls) > 1
+            else EvidenceBundle(items=[], summary="")
+        )
+        return AgentResult(
+            stop_reason="end_turn",
+            message=Message(content=[ContentBlock(text="evidence")], role="assistant"),
+            metrics=EventLoopMetrics(),
+            state=None,
+            structured_output=structured,
+        )
+
+
+class AlwaysEmptyInner(MultiAgentBase):
+    """Inner that always returns an empty EvidenceBundle (items==0)."""
+
+    name = "context"
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.calls = 0
+
+    async def invoke_async(
+        self,
+        task: Any,
+        invocation_state: dict[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> AgentResult:
+        del task, invocation_state, kwargs
+        self.calls += 1
+        return AgentResult(
+            stop_reason="end_turn",
+            message=Message(content=[ContentBlock(text="no evidence")], role="assistant"),
+            metrics=EventLoopMetrics(),
+            state=None,
+            structured_output=EvidenceBundle(items=[], summary=""),
+        )
+
+
+class TestEmptyEvidenceRetry:
+    async def test_empty_bundle_triggers_single_reeemit(self) -> None:
+        inner = EmptyThenFilledInner()
+        node = MemoryGroundedNode(inner, None)
+
+        result = await node.invoke_async("collect evidence")
+
+        assert len(inner.calls) == 2
+        assert "EvidenceBundle" in inner.calls[1]
+        preserved = result.results["context"].result
+        assert isinstance(preserved, AgentResult)
+        assert preserved.structured_output is not None
+        assert len(preserved.structured_output.items) == 1
+
+    async def test_persistently_empty_bundle_is_retried_once_then_degraded(
+        self, monkeypatch
+    ) -> None:
+        import structlog
+        from structlog.testing import capture_logs
+
+        import draftly.agents.shared.memory_grounding as grounding_module
+
+        inner = AlwaysEmptyInner()
+        node = MemoryGroundedNode(inner, None)
+
+        with capture_logs() as logs:
+            monkeypatch.setattr(
+                grounding_module,
+                "logger",
+                structlog.get_logger("test.memory_grounding.empty"),
+            )
+            result = await node.invoke_async("collect evidence")
+
+        assert inner.calls == 2
+        preserved = result.results["context"].result
+        assert preserved.structured_output is not None
+        assert len(preserved.structured_output.items) == 0
+        degraded = [
+            line for line in logs if line.get("event") == "memory_grounded_empty_evidence_degraded"
+        ]
+        assert len(degraded) == 1
+        assert degraded[0]["agent"] == "context"
+
+    async def test_non_empty_bundle_is_not_retried(self) -> None:
+        class CountingBundleInner(MultiAgentBase):
+            name = "context"
+
+            def __init__(self) -> None:
+                super().__init__()
+                self.calls = 0
+
+            async def invoke_async(
+                self,
+                task: Any,
+                invocation_state: dict[str, Any] | None = None,
+                **kwargs: Any,
+            ) -> AgentResult:
+                del task, invocation_state, kwargs
+                self.calls += 1
+                return AgentResult(
+                    stop_reason="end_turn",
+                    message=Message(content=[ContentBlock(text="evidence")], role="assistant"),
+                    metrics=EventLoopMetrics(),
+                    state=None,
+                    structured_output=EvidenceBundle(
+                        items=[{"id": "docs/auth.md", "topic": "authentication"}],
+                        summary="auth evidence",
+                    ),
+                )
+
+        inner = CountingBundleInner()
+        node = MemoryGroundedNode(inner, None)
+
+        result = await node.invoke_async("task")
+
+        assert inner.calls == 1
+        preserved = result.results["context"].result
+        assert preserved.structured_output is not None
+        assert len(preserved.structured_output.items) == 1
