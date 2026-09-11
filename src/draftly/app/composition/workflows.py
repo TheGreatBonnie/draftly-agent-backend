@@ -148,9 +148,9 @@ def build_workflows(
     from draftly.memory.docgraph.service import DocGraphService
     from draftly.memory.episodic.service import EpisodicService
     from draftly.memory.procedural.service import ProceduralService
+    from draftly.review.resume import run_review_resume
     from draftly.workflows.content.content_generation import run_content_workflow
     from draftly.workflows.context import WorkflowContext
-    from draftly.review.resume import run_review_resume
     from draftly.workflows.documentation.documentation_audit import (
         run_documentation_audit,
     )

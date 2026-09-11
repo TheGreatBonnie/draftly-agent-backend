@@ -558,7 +558,7 @@ async def resume_review(
         )
 
     decision_kind = decision.normalized_decision()
-    dispatch_args = {
+    dispatch_args: dict[str, Any] = {
         "review_id": pending.review_id,
         "approved": decision.approved,
         "decision": decision_kind,

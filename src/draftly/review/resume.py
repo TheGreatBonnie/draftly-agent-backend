@@ -8,7 +8,7 @@ workflow reached the expected terminal status — records the decision.
 from __future__ import annotations
 
 import json
-from typing import Any, Literal
+from typing import Any, Literal, cast
 from uuid import uuid4
 
 import structlog
@@ -152,7 +152,7 @@ async def resume_review_from_runtime(
         revised_state = await runner.run(revision_event)
         setattr(revised_state, "decision_outcome", result)
         setattr(revised_state, "review_revision_of", review_id)
-        return revised_state
+        return cast(WorkflowState, revised_state)
 
     if runner is None or getattr(runner, "resume_review", None) is None:
         raise ReviewResumeError("Workflow runner unavailable")
@@ -204,7 +204,7 @@ async def resume_review_from_runtime(
         approved=approved_value,
         reviewer_id=reviewer_id,
     )
-    return state
+    return cast(WorkflowState, state)
 
 
 async def resume_review_decision(
