@@ -16,6 +16,7 @@ from draftly.orchestration.routing.conditions import (
     is_valid_surface,
     needs_revision,
     needs_revision_of,
+    pull_request_opened,
     route_to_answer,
     route_to_create,
     route_to_update,
@@ -188,3 +189,37 @@ class TestAllDependenciesComplete:
         )
         check = all_dependencies_complete(["impact"])
         assert not check(state)
+
+
+class TestPullRequestOpened:
+    def test_opened(self) -> None:
+        state = GraphState(task=json.dumps({"event_type": "pull_request.opened"}))
+        assert pull_request_opened(state)
+
+    def test_release_not_opened(self) -> None:
+        state = GraphState(task=json.dumps({"event_type": "release.published"}))
+        assert not pull_request_opened(state)
+
+    def test_issue_not_opened(self) -> None:
+        state = GraphState(task=json.dumps({"event_type": "issues.opened"}))
+        assert not pull_request_opened(state)
+
+    def test_merged_not_opened(self) -> None:
+        state = GraphState(task=json.dumps({"event_type": "pull_request.merged"}))
+        assert not pull_request_opened(state)
+
+    def test_closed_not_opened(self) -> None:
+        state = GraphState(task=json.dumps({"event_type": "pull_request.closed"}))
+        assert not pull_request_opened(state)
+
+    def test_non_string_task(self) -> None:
+        state = GraphState(task=cast(Any, ["not", "a", "string"]))
+        assert not pull_request_opened(state)
+
+    def test_invalid_json(self) -> None:
+        state = GraphState(task="not json at all")
+        assert not pull_request_opened(state)
+
+    def test_missing_event_type(self) -> None:
+        state = GraphState(task=json.dumps({"repository": "acme/api"}))
+        assert not pull_request_opened(state)

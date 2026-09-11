@@ -18,8 +18,11 @@ from draftly.integrations.strands.graph import (
 from tests.graph.conftest import PR_TASK
 
 
-async def test_interrupted_state_restores_on_rebuild(model, tools, tmp_sessions) -> None:
+async def test_interrupted_state_restores_on_rebuild(
+    model, tools, tmp_sessions, comment_factory
+) -> None:
     run_id = "sess-1"
+    factory, _ = comment_factory
 
     first = build_graph_for_run(
         run_id,
@@ -27,6 +30,7 @@ async def test_interrupted_state_restores_on_rebuild(model, tools, tmp_sessions)
         tools_registry=tools,
         model=model,
         storage_dir=tmp_sessions,
+        comment_factory=factory,
     )
     result = await first.invoke_async(
         PR_TASK,
@@ -45,6 +49,7 @@ async def test_interrupted_state_restores_on_rebuild(model, tools, tmp_sessions)
         tools_registry=tools,
         model=model,
         storage_dir=tmp_sessions,
+        comment_factory=factory,
     )
     resumed = await second.invoke_async(
         [
@@ -62,9 +67,14 @@ async def test_interrupted_state_restores_on_rebuild(model, tools, tmp_sessions)
     assert [n.node_id for n in resumed.execution_order][-1] == "deliver"
 
 
-async def test_resume_requires_interrupt_response_format(model, tools, tmp_sessions) -> None:
-    """Resuming an activated interrupt with a plain string is a TypeError."""
-    run_id = "sess-2"
+async def test_resume_does_not_repost_notify_comment(
+    model, tools, tmp_sessions, comment_factory
+) -> None:
+    """A resumed run must not re-post the PR notify comment: strands resume
+    skips completed nodes, so notify_post fires exactly once across the
+    interrupted first pass and the resumed completion."""
+    run_id = "sess-3"
+    factory, commenter = comment_factory
 
     first = build_graph_for_run(
         run_id,
@@ -72,6 +82,55 @@ async def test_resume_requires_interrupt_response_format(model, tools, tmp_sessi
         tools_registry=tools,
         model=model,
         storage_dir=tmp_sessions,
+        comment_factory=factory,
+    )
+    result = await first.invoke_async(
+        PR_TASK,
+        invocation_state={"run_id": run_id, "review_policy": "always"},
+    )
+    assert result.status == Status.INTERRUPTED
+    assert "notify_post" in [n.node_id for n in result.execution_order]
+    assert len(commenter.calls) == 1
+
+    interrupt_id = result.interrupts[0].id
+    second = build_graph_for_run(
+        run_id,
+        surface="pull_request",
+        tools_registry=tools,
+        model=model,
+        storage_dir=tmp_sessions,
+        comment_factory=factory,
+    )
+    resumed = await second.invoke_async(
+        [
+            {
+                "interruptResponse": {
+                    "interruptId": interrupt_id,
+                    "response": {"approved": True},
+                }
+            }
+        ],
+        invocation_state={"run_id": run_id, "review_policy": "always"},
+    )
+
+    assert resumed.status == Status.COMPLETED
+    assert len(commenter.calls) == 1
+
+
+async def test_resume_requires_interrupt_response_format(
+    model, tools, tmp_sessions, comment_factory
+) -> None:
+    """Resuming an activated interrupt with a plain string is a TypeError."""
+    run_id = "sess-2"
+    factory, _ = comment_factory
+
+    first = build_graph_for_run(
+        run_id,
+        surface="pull_request",
+        tools_registry=tools,
+        model=model,
+        storage_dir=tmp_sessions,
+        comment_factory=factory,
     )
     result = await first.invoke_async(
         PR_TASK,
@@ -85,6 +144,7 @@ async def test_resume_requires_interrupt_response_format(model, tools, tmp_sessi
         tools_registry=tools,
         model=model,
         storage_dir=tmp_sessions,
+        comment_factory=factory,
     )
     import pytest
 

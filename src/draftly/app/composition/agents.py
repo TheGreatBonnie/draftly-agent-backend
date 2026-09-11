@@ -37,6 +37,7 @@ class AgentRegistry:
     issue_research_swarm: Any = None
     support_research_swarm: Any = None
     changelog_agent: Any = None
+    notify_agent: Any = None
     content_strategist: Any = None
     blog_writer: Any = None
     social_adapter: Any = None
@@ -68,6 +69,7 @@ def build_agents(
     from draftly.agents.github.issue_analyzer import build_issue_analyzer
     from draftly.agents.github.issue_responder import build_issue_responder
     from draftly.agents.github.research_swarm import build_issue_research_swarm
+    from draftly.agents.notify import build_notify_agent
     from draftly.agents.shared.classifier import build_classifier
     from draftly.agents.shared.context import build_context_agent
     from draftly.agents.shared.delivery import build_delivery_agent
@@ -99,6 +101,7 @@ def build_agents(
         issue_research_swarm=build_issue_research_swarm,
         support_research_swarm=build_support_research_swarm,
         changelog_agent=build_changelog_agent,
+        notify_agent=build_notify_agent,
         content_strategist=build_content_strategist,
         blog_writer=build_blog_writer,
         social_adapter=build_social_adapter,

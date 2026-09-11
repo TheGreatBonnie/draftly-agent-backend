@@ -28,13 +28,14 @@ def _interrupt_id(result) -> str:
     return result.interrupts[0].id
 
 
-async def _run_to_interrupt(model, tools, tmp_sessions, run_id: str):
+async def _run_to_interrupt(model, tools, tmp_sessions, run_id: str, comment_factory=None):
     graph = build_graph_for_run(
         run_id,
         surface="pull_request",
         tools_registry=tools,
         model=model,
         storage_dir=tmp_sessions,
+        comment_factory=comment_factory,
     )
     result = await graph.invoke_async(
         PR_TASK,
@@ -43,8 +44,11 @@ async def _run_to_interrupt(model, tools, tmp_sessions, run_id: str):
     return graph, result
 
 
-async def test_gate_interrupts_before_delivery(model, tools, tmp_sessions) -> None:
-    _, result = await _run_to_interrupt(model, tools, tmp_sessions, "gate-1")
+async def test_gate_interrupts_before_delivery(model, tools, tmp_sessions, comment_factory) -> None:
+    factory, _ = comment_factory
+    _, result = await _run_to_interrupt(
+        model, tools, tmp_sessions, "gate-1", comment_factory=factory
+    )
     interrupt_id = _interrupt_id(result)
 
     order = [n.node_id for n in result.execution_order]
@@ -53,8 +57,13 @@ async def test_gate_interrupts_before_delivery(model, tools, tmp_sessions) -> No
     assert interrupt_id.startswith("v1:before_node_call:")
 
 
-async def test_resume_with_approval_completes_delivery(model, tools, tmp_sessions) -> None:
-    _, first = await _run_to_interrupt(model, tools, tmp_sessions, "gate-2")
+async def test_resume_with_approval_completes_delivery(
+    model, tools, tmp_sessions, comment_factory
+) -> None:
+    factory, commenter = comment_factory
+    _, first = await _run_to_interrupt(
+        model, tools, tmp_sessions, "gate-2", comment_factory=factory
+    )
     interrupt_id = _interrupt_id(first)
 
     graph = build_graph_for_run(
@@ -63,6 +72,7 @@ async def test_resume_with_approval_completes_delivery(model, tools, tmp_session
         tools_registry=tools,
         model=model,
         storage_dir=tmp_sessions,
+        comment_factory=factory,
     )
     result = await graph.invoke_async(
         [
@@ -81,8 +91,13 @@ async def test_resume_with_approval_completes_delivery(model, tools, tmp_session
     assert order[-1] == "deliver"
 
 
-async def test_rejection_cancels_node_and_raises(model, tools, tmp_sessions) -> None:
-    _, first = await _run_to_interrupt(model, tools, tmp_sessions, "gate-3")
+async def test_rejection_cancels_node_and_raises(
+    model, tools, tmp_sessions, comment_factory
+) -> None:
+    factory, _ = comment_factory
+    _, first = await _run_to_interrupt(
+        model, tools, tmp_sessions, "gate-3", comment_factory=factory
+    )
     interrupt_id = _interrupt_id(first)
 
     graph = build_graph_for_run(
@@ -91,6 +106,7 @@ async def test_rejection_cancels_node_and_raises(model, tools, tmp_sessions) -> 
         tools_registry=tools,
         model=model,
         storage_dir=tmp_sessions,
+        comment_factory=factory,
     )
     with pytest.raises(RuntimeError, match="Rejected by reviewer"):
         await graph.invoke_async(
@@ -106,13 +122,15 @@ async def test_rejection_cancels_node_and_raises(model, tools, tmp_sessions) -> 
         )
 
 
-async def test_policy_never_skips_the_gate(model, tools, tmp_sessions) -> None:
+async def test_policy_never_skips_the_gate(model, tools, tmp_sessions, comment_factory) -> None:
+    factory, _ = comment_factory
     graph = build_graph_for_run(
         "gate-4",
         surface="pull_request",
         tools_registry=tools,
         model=model,
         storage_dir=tmp_sessions,
+        comment_factory=factory,
     )
     result = await graph.invoke_async(
         PR_TASK,
@@ -123,10 +141,15 @@ async def test_policy_never_skips_the_gate(model, tools, tmp_sessions) -> None:
     assert [n.node_id for n in result.execution_order][-1] == "deliver"
 
 
-async def test_interrupt_reason_carries_document_content(model, tools, tmp_sessions) -> None:
+async def test_interrupt_reason_carries_document_content(
+    model, tools, tmp_sessions, comment_factory
+) -> None:
     """The gate must attach the proposed document (writer output) to the
     interrupt reason so reviewers can see what they are approving."""
-    _, result = await _run_to_interrupt(model, tools, tmp_sessions, "gate-5")
+    factory, _ = comment_factory
+    _, result = await _run_to_interrupt(
+        model, tools, tmp_sessions, "gate-5", comment_factory=factory
+    )
     _interrupt_id(result)
 
     reason = result.interrupts[0].reason

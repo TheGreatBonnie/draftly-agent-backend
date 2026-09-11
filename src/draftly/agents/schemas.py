@@ -114,3 +114,23 @@ class DeliveryReceipt(BaseModel):
     surface: str = ""
     reference: str = ""
     status: str = "completed"
+
+
+class NotifyReceipt(BaseModel):
+    """Draft of the PR notify comment produced by the notify agent.
+
+    The notify agent is strictly a draft composer (no tools): it reads the
+    impact verdict from ``From impact:`` and returns this receipt. A
+    deterministic ``notify_post`` node posts ``body`` as a PR comment when
+    ``should_notify`` is true.
+    """
+
+    should_notify: bool = False
+    kind: str = Field(
+        default="",
+        description='One of "gap_detected" | "no_gap"',
+    )
+    body: str = Field(
+        default="",
+        description="Author-facing markdown comment explaining Draftly's work for this PR",
+    )

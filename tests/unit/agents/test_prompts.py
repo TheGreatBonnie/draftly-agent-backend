@@ -18,6 +18,7 @@ from draftly.agents.prompts import (
     ISSUE_ANALYZER_PROMPT,
     ISSUE_LOCAL_RESEARCHER_PROMPT,
     ISSUE_RESPONDER_PROMPT,
+    NOTIFY_PROMPT,
     RESEARCH_PROMPT,
     REVIEWER_PROMPT,
     SUPPORT_LOCAL_RESEARCHER_PROMPT,
@@ -32,6 +33,7 @@ from draftly.agents.schemas import (
     EventClassification,
     EvidenceBundle,
     ImpactAnalysis,
+    NotifyReceipt,
 )
 
 
@@ -68,6 +70,7 @@ RENDER_MATRIX = (
     (ISSUE_ANALYZER_PROMPT, ImpactAnalysis, ("action",)),
     (ISSUE_RESPONDER_PROMPT, AnswerDraft, ("sources",)),
     (DELIVERY_PROMPT, DeliveryReceipt, ("reference", "status")),
+    (NOTIFY_PROMPT, NotifyReceipt, ("should_notify", "kind", "body")),
 )
 
 

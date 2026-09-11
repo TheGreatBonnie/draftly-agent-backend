@@ -10,6 +10,7 @@ from strands.multiagent.graph import GraphState
 from draftly.orchestration.nodes.base import (
     agent_result,
     node_data,
+    original_task,
     parse_node_input,
 )
 
@@ -107,3 +108,36 @@ class TestParseNodeInput:
             ]
         )
         assert parsed["update"] == payload
+
+
+class TestOriginalTask:
+    TASK = json.dumps(
+        {
+            "event_type": "pull_request.opened",
+            "repository": "acme/api",
+            "pull_request": {"number": 7},
+        }
+    )
+
+    def test_raw_string_event(self) -> None:
+        assert original_task(self.TASK)["repository"] == "acme/api"
+
+    def test_list_blocks_with_inputs_section(self) -> None:
+        blocks = [
+            {"text": f"Original Task: {self.TASK}"},
+            {"text": "\nInputs from previous nodes:"},
+            {"text": "\nFrom impact:"},
+            {"text": '  - Agent: {"action": "none"}'},
+        ]
+        event = original_task(blocks)
+        assert event["repository"] == "acme/api"
+        assert event["pull_request"]["number"] == 7
+
+    def test_invalid_json_returns_empty(self) -> None:
+        assert original_task("not json") == {}
+
+    def test_none_returns_empty(self) -> None:
+        assert original_task(None) == {}
+
+    def test_list_without_marker_returns_empty(self) -> None:
+        assert original_task([{"text": "\nFrom impact:"}]) == {}

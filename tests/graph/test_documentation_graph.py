@@ -8,14 +8,19 @@ from draftly.integrations.strands.graph import build_graph_for_run
 from tests.graph.conftest import PR_TASK, RELEASE_TASK
 
 
-async def test_full_pipeline_with_quality_gate(model, tools, tmp_sessions) -> None:
-    """A grounded change plan passes evaluation before delivery."""
+async def test_full_pipeline_with_quality_gate(
+    model, tools, tmp_sessions, comment_factory
+) -> None:
+    """A grounded change plan passes evaluation before delivery; a PR notify
+    comment (draft-then-post) runs in parallel off impact."""
+    factory, commenter = comment_factory
     graph = build_graph_for_run(
         "e2e-1",
         surface="pull_request",
         tools_registry=tools,
         model=model,
         storage_dir=tmp_sessions,
+        comment_factory=factory,
     )
 
     result = await graph.invoke_async(
@@ -29,12 +34,21 @@ async def test_full_pipeline_with_quality_gate(model, tools, tmp_sessions) -> No
     assert order[-1] == "deliver"
     assert order.count("update") == 1
     assert order.count("evaluate") == 1
-    assert order[4:] == [
-        "update",
-        "evaluate",
-        "changelog",
-        "changelog_evaluate",
-        "deliver",
+    # generate → evaluate → changelog → changelog gate → deliver keep their
+    # relative order (the strict list prefix/order changed because notify runs
+    # in parallel from impact, so assert membership + relative order instead)
+    assert order.index("impact") < order.index("update") < order.index("evaluate")
+    assert order.index("evaluate") < order.index("changelog")
+    assert order.index("changelog") < order.index("changelog_evaluate")
+    assert order.index("changelog_evaluate") < order.index("deliver")
+    # the notify branch run in parallel and posted the scripted comment once
+    assert order.index("impact") < order.index("notify") < order.index("notify_post")
+    assert commenter.calls == [
+        (
+            "acme/api",
+            7,
+            "Draftly will generate docs for this PR:\n- docs/widgets.md",
+        )
     ]
     # the wrong generation paths never ran
     assert "answer" not in order
@@ -86,10 +100,14 @@ async def test_invalid_surface_stops_after_classify(model, tools, tmp_sessions) 
     assert order == ["classify"]
 
 
-async def test_impact_none_skips_generation_and_delivery(model, tools, tmp_sessions) -> None:
-    """action='none' fans out to no generation node; graph completes."""
+async def test_impact_none_skips_generation_and_delivery(
+    model, tools, tmp_sessions, comment_factory
+) -> None:
+    """action='none' fans out to no generation node; graph completes. The PR
+    notify branch still runs (event is pull_request.opened) and posts."""
     from draftly.agents.schemas import ImpactAnalysis
 
+    factory, commenter = comment_factory
     model._structured_outputs[ImpactAnalysis] = {
         "action": "none",
         "affected_documents": [],
@@ -102,6 +120,7 @@ async def test_impact_none_skips_generation_and_delivery(model, tools, tmp_sessi
         tools_registry=tools,
         model=model,
         storage_dir=tmp_sessions,
+        comment_factory=factory,
     )
 
     result = await graph.invoke_async(
@@ -112,6 +131,16 @@ async def test_impact_none_skips_generation_and_delivery(model, tools, tmp_sessi
     assert result.status == Status.COMPLETED
     order = [n.node_id for n in result.execution_order]
     assert "impact" in order
+    # notify/notify_post are a parallel branch and fire on opened events
+    assert "notify" in order
+    assert "notify_post" in order
+    assert commenter.calls == [
+        (
+            "acme/api",
+            7,
+            "Draftly will generate docs for this PR:\n- docs/widgets.md",
+        )
+    ]
     for node in ("answer", "update", "create", "evaluate", "deliver"):
         assert node not in order
 
@@ -213,6 +242,9 @@ async def test_release_event_includes_changelog_in_order(model, tools, tmp_sessi
     changelog_idx = order.index("changelog")
     changelog_eval_idx = order.index("changelog_evaluate")
     assert eval_idx < changelog_idx < changelog_eval_idx < deliver_idx
+    # PR notify is PR-opened only: releases must not draft or post
+    assert "notify" not in order
+    assert "notify_post" not in order
 
 
 async def test_none_action_release_routes_to_changelog(model, tools, tmp_sessions) -> None:
@@ -248,6 +280,9 @@ async def test_none_action_release_routes_to_changelog(model, tools, tmp_session
     assert "changelog" in order
     assert "changelog_evaluate" in order
     assert "deliver" in order
+    # PR notify is PR-opened only: releases must not draft or post
+    assert "notify" not in order
+    assert "notify_post" not in order
 
 
 def _tool_names(tool_list: list) -> set[str]:
@@ -374,11 +409,14 @@ async def test_memory_grounded_context_reaches_delivery(
     model,
     tools,
     tmp_sessions,
+    comment_factory,
 ) -> None:
     """Regression: memory-wrapping the context node dropped its EvidenceBundle
     (an empty MultiAgentResult), so evaluation never saw evidence and the run
     looped in revision until the timeout killed it before delivery."""
     from types import SimpleNamespace
+
+    factory, _ = comment_factory
 
     class Bundle:
         async def knowledge(self, query: str, *, org_id: str | None = None):
@@ -399,6 +437,7 @@ async def test_memory_grounded_context_reaches_delivery(
         tools_registry=tools,
         model=model,
         storage_dir=tmp_sessions,
+        comment_factory=factory,
         memory=SimpleNamespace(
             knowledge=Bundle().knowledge,
             episodes=Bundle().episodes,
@@ -416,6 +455,7 @@ async def test_memory_grounded_context_reaches_delivery(
     assert order[-1] == "deliver"
     assert order.count("update") == 1
     assert order.count("evaluate") == 1
+    assert "notify_post" in order
 
 
 def test_documentation_graph_wires_required_rubric_graders(model, tools, tmp_sessions) -> None:

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from typing import Any
 from uuid import uuid4
 
@@ -37,30 +36,19 @@ from draftly.orchestration.graphs.documentation_graph import (
 )
 from draftly.orchestration.graphs.tool_scoping import scope_read_only_tools
 from draftly.orchestration.hooks.review_gate import ReviewGate
-from draftly.orchestration.nodes.base import agent_result, parse_node_input
+from draftly.orchestration.nodes.base import (
+    agent_result,
+    original_task,
+    parse_node_input,
+)
 from draftly.orchestration.routing.conditions import all_dependencies_complete, eval_passed
 
 CONTENT_GRAPH_ID = "draftly-content-graph"
 
 
 def _original_task(task: Any) -> dict[str, Any]:
-    if isinstance(task, str):
-        try:
-            return json.loads(task)
-        except json.JSONDecodeError:
-            return {}
-    if isinstance(task, list):
-        text = "\n".join(
-            block.get("text", "") if isinstance(block, dict) else getattr(block, "text", "")
-            for block in task
-        )
-        marker = "Original Task:"
-        if marker in text:
-            try:
-                return json.loads(text.split(marker, 1)[1].split("\nInputs", 1)[0].strip())
-            except json.JSONDecodeError:
-                return {}
-    return {}
+    """Backward-compatible alias for :func:`original_task` (see nodes.base)."""
+    return original_task(task)
 
 
 def _request_from_event(event: dict[str, Any]) -> ContentRequest:
