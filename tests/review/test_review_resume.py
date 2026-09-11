@@ -14,7 +14,11 @@ from typing import Any
 import pytest
 
 from draftly.persistence.repositories.reviews import ReviewRecord
-from draftly.review.resume import ReviewResumeError, resume_review_decision
+from draftly.review.resume import (
+    ReviewResumeError,
+    resume_review_decision,
+    resume_review_from_runtime,
+)
 
 
 def _review_record(workflow: str = "support", **overrides: Any) -> ReviewRecord:
@@ -275,3 +279,59 @@ async def test_unknown_review_is_rejected():
             app_state=app_state,
         )
     assert app_state.workflows.runner.calls == []
+
+
+async def test_runtime_core_approval_resumes_via_repositories_and_runner():
+    app_state = fake_app_state(workflow_status="delivered")
+    state = await resume_review_from_runtime(
+        review_id="review-1",
+        approved=True,
+        reviewer_id="user-1",
+        comment="ship it",
+        repositories=app_state.dependencies.repositories,
+        runner=app_state.workflows.runner,
+    )
+    assert state.status.value == "delivered"
+    runner = app_state.workflows.runner
+    assert runner.calls[0]["interrupt_id"] == "int-1"
+    assert runner.calls[0]["response"] == {"approved": True, "comment": "ship it"}
+    assert app_state.dependencies.repositories.reviews.decisions[0]["decision"] == "approved"
+
+
+async def test_runtime_core_requires_runner():
+    app_state = fake_app_state(workflow_status="delivered")
+    with pytest.raises(ReviewResumeError, match="Workflow runner unavailable"):
+        await resume_review_from_runtime(
+            review_id="review-1",
+            approved=True,
+            reviewer_id="user-1",
+            comment="x",
+            repositories=app_state.dependencies.repositories,
+            runner=None,
+        )
+
+
+async def test_adapter_delegates_to_runtime_core():
+    app_state = fake_app_state(workflow_status="delivered")
+    reviews = app_state.dependencies.repositories.reviews
+    core_state = await resume_review_from_runtime(
+        review_id="review-1",
+        approved=True,
+        reviewer_id="user-1",
+        comment="ship it",
+        repositories=app_state.dependencies.repositories,
+        runner=app_state.workflows.runner,
+    )
+    # record_decision sets the record to non-pending; restore status so the
+    # adapter call exercises the same pending-review path.
+    reviews.record.status = "pending"
+    adapter_state = await resume_review_decision(
+        review_id="review-1",
+        approved=True,
+        reviewer_id="user-1",
+        comment="ship it",
+        app_state=app_state,
+    )
+    assert core_state.status.value == "delivered"
+    assert adapter_state.status.value == "delivered"
+    assert len(reviews.decisions) == 2

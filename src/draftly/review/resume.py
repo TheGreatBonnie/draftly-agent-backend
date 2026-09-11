@@ -63,22 +63,22 @@ async def _load_event(
     return event
 
 
-async def resume_review_decision(
+async def resume_review_from_runtime(
     *,
     review_id: str,
     approved: bool | None = None,
     decision: Literal["approve", "request_changes", "reject"] | None = None,
     reviewer_id: str,
     comment: str,
-    app_state: Any,
+    repositories: Any,
+    runner: Any,
     org_id: str | None = None,
 ) -> WorkflowState:
     """Resume or revise a paused workflow after a human review decision.
 
-    Approval requires the workflow to reach ``delivered``; rejection requires
-    ``failed``. A request for changes closes the current review as
-    ``needs_changes`` and starts a fresh run carrying the reviewer's feedback;
-    that run generates a new review when it reaches the review gate.
+    Runtime-agnostic core: takes the concrete repositories and workflow
+    runner instead of a composed app object so the same code path serves the
+    inline API routes and the durable worker (see ``run_review_resume``).
     """
     if decision is None:
         if approved is None:
@@ -88,8 +88,6 @@ async def resume_review_decision(
     if decision == "request_changes" and not comment.strip():
         raise ReviewResumeError("Request changes requires a comment")
 
-    app_state = await _resolve_app_state(app_state)
-    repositories = getattr(getattr(app_state, "dependencies", None), "repositories", None)
     reviews = getattr(repositories, "reviews", None)
     if reviews is None or getattr(reviews, "get_review", None) is None:
         raise ReviewResumeError("Reviews store unavailable")
@@ -149,7 +147,6 @@ async def resume_review_decision(
                     run_id=run_id,
                     exc_info=True,
                 )
-        runner = getattr(getattr(app_state, "workflows", None), "runner", None)
         if runner is None or getattr(runner, "run", None) is None:
             raise ReviewResumeError("Workflow runner unavailable")
         revised_state = await runner.run(revision_event)
@@ -157,7 +154,6 @@ async def resume_review_decision(
         setattr(revised_state, "review_revision_of", review_id)
         return revised_state
 
-    runner = getattr(getattr(app_state, "workflows", None), "runner", None)
     if runner is None or getattr(runner, "resume_review", None) is None:
         raise ReviewResumeError("Workflow runner unavailable")
 
@@ -209,6 +205,36 @@ async def resume_review_decision(
         reviewer_id=reviewer_id,
     )
     return state
+
+
+async def resume_review_decision(
+    *,
+    review_id: str,
+    approved: bool | None = None,
+    decision: Literal["approve", "request_changes", "reject"] | None = None,
+    reviewer_id: str,
+    comment: str,
+    app_state: Any,
+    org_id: str | None = None,
+) -> WorkflowState:
+    """Resume or revise a paused workflow after an inline API review decision.
+
+    Thin adapter over ``resume_review_from_runtime`` for the platform routes
+    that still hold the composed runtime (GitHub, Slack, Discord, service).
+    """
+    app_state = await _resolve_app_state(app_state)
+    repositories = getattr(getattr(app_state, "dependencies", None), "repositories", None)
+    runner = getattr(getattr(app_state, "workflows", None), "runner", None)
+    return await resume_review_from_runtime(
+        review_id=review_id,
+        approved=approved,
+        decision=decision,
+        reviewer_id=reviewer_id,
+        comment=comment,
+        repositories=repositories,
+        runner=runner,
+        org_id=org_id,
+    )
 
 
 async def _resolve_app_state(app_state: Any) -> Any:
