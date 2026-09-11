@@ -17,11 +17,14 @@ from typing import Any, Literal
 
 import structlog
 from pydantic import BaseModel, Field, field_validator
-from strands import Agent
+from strands import Agent  # noqa: F401 -- patched by tests/unit/workflows/test_onboarding_stages.py
 
+from draftly.agents.factory import build_draftly_agent
 from draftly.integrations.strands.models import RoleAwareModelResolver
 from draftly.observability.metrics import Metrics
 from draftly.observability.metrics import metrics as _metrics_default
+from draftly.steering.context import SteeringRuntime
+from draftly.steering.decisions import AgentRole
 
 logger = structlog.get_logger(__name__)
 
@@ -31,6 +34,26 @@ EXTRACTION_PROMPT = """Extract structured knowledge from this documentation chun
 
 Chunk content:
 {content}"""
+
+EXTRACTION_SYSTEM_PROMPT = (
+    "You extract structured knowledge facts from documentation chunks into "
+    "the requested schema."
+)
+
+EVALUATION_SYSTEM_PROMPT = (
+    "You evaluate documentation quality dimensions (coverage, completeness, "
+    "structure, length) from the requested schema."
+)
+
+RECOMMENDER_SYSTEM_PROMPT = (
+    "You are a documentation quality advisor producing prioritized "
+    "improvement recommendations."
+)
+
+LLM_GENERATE_FALLBACK_PROMPT = (
+    "You are a structured-output helper. Respond with the requested schema "
+    "and nothing else."
+)
 
 
 VALID_RELATION_TYPES = {"IMPLEMENTS", "DOCUMENTED_BY", "AFFECTS", "DERIVED_FROM"}
@@ -269,6 +292,9 @@ async def _llm_generate(
     *,
     output_model: type[BaseModel] | None = None,
     telemetry: Callable[[bool, float], Awaitable[None]] | None = None,
+    runtime: SteeringRuntime | None = None,
+    agent_id: str | None = None,
+    node_id: str | None = None,
 ) -> BaseModel | None:
     """Generate a schema-validated response from the LLM via a Strands Agent.
 
@@ -288,7 +314,15 @@ async def _llm_generate(
         prompt_chars=len(prompt),
     )
     if agent is None:
-        agent = Agent(model=model, structured_output_model=output_model)
+        agent = build_draftly_agent(
+            role=AgentRole.RESEARCH,
+            system_prompt=LLM_GENERATE_FALLBACK_PROMPT,
+            model=model,
+            structured_output_model=output_model,
+            runtime=runtime or SteeringRuntime.disabled(),
+            agent_id=agent_id or "onboarding-llm",
+            node_id=node_id or "onboarding-llm",
+        )
     start = time.monotonic()
     try:
         result = await agent.invoke_async(
@@ -309,6 +343,12 @@ def _agent_pool(
     model: Any,
     output_model: type[BaseModel] | None,
     size: int,
+    *,
+    role: AgentRole = AgentRole.WRITER,
+    system_prompt: str = "",
+    runtime: SteeringRuntime | None = None,
+    agent_id_prefix: str = "onboarding-agent",
+    node_id: str = "onboarding",
 ) -> asyncio.Queue | None:
     """Build ``size`` Strands Agents so concurrent calls never share one.
 
@@ -319,15 +359,28 @@ def _agent_pool(
     *"Agent is already processing a request. Concurrent invocations are not
     supported."*). Giving each concurrent slot its own agent retains the
     Task-7 provider-setup reuse (bounded construction) while serializing per
-    agent. Returns ``None`` when no agent can be built so callers fall back to
-    per-call construction inside ``_llm_generate`` (``agent=None``). The pool
-    is sized to ``LLM_MAX_CONCURRENCY`` so a held ``Semaphore`` permit can
-    always acquire an agent — never a deadlock.
+    agent. Each pooled agent gets a distinct identity
+    (``{agent_id_prefix}-{i}``) sharing only the parent run runtime. Returns
+    ``None`` when no agent can be built so callers fall back to per-call
+    construction inside ``_llm_generate`` (``agent=None``). The pool is sized
+    to ``LLM_MAX_CONCURRENCY`` so a held ``Semaphore`` permit can always
+    acquire an agent — never a deadlock.
     """
     pool: asyncio.Queue = asyncio.Queue()
-    for _ in range(max(1, size)):
+    effective_runtime = runtime or SteeringRuntime.disabled()
+    for i in range(max(1, size)):
         try:
-            pool.put_nowait(Agent(model=model, structured_output_model=output_model))
+            pool.put_nowait(
+                build_draftly_agent(
+                    role=role,
+                    system_prompt=system_prompt,
+                    model=model,
+                    structured_output_model=output_model,
+                    runtime=effective_runtime,
+                    agent_id=f"{agent_id_prefix}-{i}",
+                    node_id=node_id,
+                )
+            )
         except Exception:
             # Unresolvable model degrades to per-call construction (previous
             # behavior), which _llm_generate handles with agent=None.
@@ -417,7 +470,15 @@ async def run_knowledge_construction(
     # and returned afterwards. Unbuildable models degrade to per-call
     # construction (pool=None) via _llm_generate's agent=None path.
     try:
-        agent_pool = _agent_pool(stage_model, ExtractionOutput, LLM_MAX_CONCURRENCY)
+        agent_pool = _agent_pool(
+            stage_model,
+            ExtractionOutput,
+            LLM_MAX_CONCURRENCY,
+            role=AgentRole.WRITER,
+            system_prompt=EXTRACTION_SYSTEM_PROMPT,
+            agent_id_prefix="onboarding-extraction",
+            node_id="onboarding-extraction",
+        )
     except Exception:
         agent_pool = None
     sem = asyncio.Semaphore(LLM_MAX_CONCURRENCY)
@@ -740,7 +801,15 @@ async def run_initial_evaluation(
         # as extraction: a shared Strands Agent can't run concurrently, so use a
         # pool of LLM_MAX_CONCURRENCY agents (one per concurrent slot).
         try:
-            agent_pool = _agent_pool(stage_model, EvaluationScores, LLM_MAX_CONCURRENCY)
+            agent_pool = _agent_pool(
+                stage_model,
+                EvaluationScores,
+                LLM_MAX_CONCURRENCY,
+                role=AgentRole.REVIEWER,
+                system_prompt=EVALUATION_SYSTEM_PROMPT,
+                agent_id_prefix="onboarding-evaluation",
+                node_id="onboarding-evaluation",
+            )
         except Exception:
             agent_pool = None
         sem = asyncio.Semaphore(LLM_MAX_CONCURRENCY)
@@ -892,6 +961,9 @@ async def run_recommendations(
     health_result: HealthResult,
     document_count: int,
     chunk_count: int,
+    runtime: SteeringRuntime | None = None,
+    agent_id: str | None = None,
+    node_id: str | None = None,
 ) -> list[Recommendation]:
     """Stage 5: Generate prioritized recommendations via LLM."""
     prompt = RECOMMENDATION_PROMPT.format(
@@ -914,7 +986,15 @@ async def run_recommendations(
         # Task 7: reuse one Agent for the single recommendation call (symmetry
         # with the extraction/evaluation stages).
         try:
-            agent = Agent(model=stage_model, structured_output_model=RecommendationList)
+            agent = build_draftly_agent(
+                role=AgentRole.RECOMMENDER,
+                system_prompt=RECOMMENDER_SYSTEM_PROMPT,
+                model=stage_model,
+                structured_output_model=RecommendationList,
+                runtime=runtime or SteeringRuntime.disabled(),
+                agent_id=agent_id or "onboarding-recommendation",
+                node_id=node_id or "onboarding-recommendation",
+            )
         except Exception:
             agent = None
         parsed = await _llm_generate(

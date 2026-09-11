@@ -15,6 +15,7 @@ from typing import Any
 from strands import Agent
 from strands.vended_plugins.skills import AgentSkills
 
+from draftly.agents.factory import build_draftly_agent
 from draftly.agents.prompts import (
     CONTEXT_PROMPT,
     DOC_CONTEXT_PROMPT,
@@ -24,6 +25,8 @@ from draftly.agents.prompts import (
     local_repo_note_for,
 )
 from draftly.agents.schemas import EvidenceBundle
+from draftly.steering.context import SteeringRuntime
+from draftly.steering.decisions import AgentRole
 from draftly.workflows.grounding import GITHUB, LOCAL
 
 
@@ -33,6 +36,9 @@ def build_doc_context_agent(
     *,
     grounding: str = "local",
     repo_dir: str | None = None,
+    runtime: SteeringRuntime | None = None,
+    agent_id: str | None = None,
+    node_id: str | None = None,
 ) -> Agent:
     """Build the documentation context agent for the run's grounding mode."""
 
@@ -56,8 +62,8 @@ def build_doc_context_agent(
             local_repo_note=note,
         )
 
-    return Agent(
-        name="doc_context",
+    return build_draftly_agent(
+        role=AgentRole.RESEARCH,
         system_prompt=system_prompt,
         model=model,
         tools=tools,
@@ -70,5 +76,9 @@ def build_doc_context_agent(
                 )
             )
         ],
+        runtime=runtime or SteeringRuntime.disabled(),
+        agent_id=agent_id or "doc_context",
+        node_id=node_id or "doc_context",
+        name="doc_context",
         description="Collects evidence about the event from the local repo, search, and docs.",
     )

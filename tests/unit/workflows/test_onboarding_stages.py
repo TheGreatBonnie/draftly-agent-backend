@@ -4,7 +4,7 @@ import asyncio
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import ANY, AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 import structlog
@@ -57,7 +57,7 @@ async def test_knowledge_construction_extracts_from_chunks():
     context.candidates.enqueue = AsyncMock(return_value={"id": "c-1"})
     publish = AsyncMock()
 
-    with patch("draftly.workflows.onboarding.stages.Agent") as mock_agent_cls:
+    with patch("draftly.agents.factory.Agent") as mock_agent_cls:
         mock_agent = mock_agent_cls.return_value
         mock_agent.invoke_async = AsyncMock(return_value=fake_agent_result(
             ExtractionOutput(
@@ -91,7 +91,7 @@ async def test_knowledge_construction_maps_invalid_relation_type():
     context.candidates.enqueue = AsyncMock(return_value={"id": "c-1"})
     publish = AsyncMock()
 
-    with patch("draftly.workflows.onboarding.stages.Agent") as mock_agent_cls:
+    with patch("draftly.agents.factory.Agent") as mock_agent_cls:
         mock_agent = mock_agent_cls.return_value
         mock_agent.invoke_async = AsyncMock(return_value=fake_agent_result(
             ExtractionOutput.model_validate({
@@ -122,7 +122,7 @@ async def test_knowledge_construction_preserves_valid_relation_type():
     context.candidates.enqueue = AsyncMock(return_value={"id": "c-1"})
     publish = AsyncMock()
 
-    with patch("draftly.workflows.onboarding.stages.Agent") as mock_agent_cls:
+    with patch("draftly.agents.factory.Agent") as mock_agent_cls:
         mock_agent = mock_agent_cls.return_value
         mock_agent.invoke_async = AsyncMock(return_value=fake_agent_result(
             ExtractionOutput.model_validate({
@@ -167,7 +167,7 @@ async def test_knowledge_construction_skips_failed_chunks():
     context.candidates.enqueue = AsyncMock(return_value={"id": "c-1"})
     publish = AsyncMock()
 
-    with patch("draftly.workflows.onboarding.stages.Agent") as mock_agent_cls:
+    with patch("draftly.agents.factory.Agent") as mock_agent_cls:
         mock_agent = mock_agent_cls.return_value
         mock_agent.invoke_async = AsyncMock(side_effect=[
             fake_agent_result(ExtractionOutput(facts=["APIs exist"])),
@@ -232,7 +232,7 @@ async def test_knowledge_construction_publishes_granular_stage_progress():
     context.candidates.enqueue = AsyncMock(return_value={"id": "c-1"})
     publish = AsyncMock()
 
-    with patch("draftly.workflows.onboarding.stages.Agent") as mock_agent_cls:
+    with patch("draftly.agents.factory.Agent") as mock_agent_cls:
         mock_agent = mock_agent_cls.return_value
         mock_agent.invoke_async = AsyncMock(
             return_value=fake_agent_result(ExtractionOutput(facts=["f"]))
@@ -273,7 +273,7 @@ async def test_knowledge_construction_publishes_counts_in_tool_progress():
     context.candidates.enqueue = AsyncMock(return_value={"id": "c-1"})
     publish = AsyncMock()
 
-    with patch("draftly.workflows.onboarding.stages.Agent") as mock_agent_cls:
+    with patch("draftly.agents.factory.Agent") as mock_agent_cls:
         mock_agent = mock_agent_cls.return_value
         mock_agent.invoke_async = AsyncMock(
             return_value=fake_agent_result(
@@ -329,7 +329,7 @@ async def test_initial_evaluation_publishes_granular_stage_progress():
     ])
     publish = AsyncMock()
 
-    with patch("draftly.workflows.onboarding.stages.Agent") as mock_agent_cls:
+    with patch("draftly.agents.factory.Agent") as mock_agent_cls:
         mock_agent = mock_agent_cls.return_value
         mock_agent.invoke_async = AsyncMock(return_value=fake_agent_result(
             EvaluationScores(coverage=0.8, completeness=0.7, structure=0.6, length=0.5)
@@ -407,7 +407,7 @@ async def test_initial_evaluation_blends_llm_scores():
         },
     ])
 
-    with patch("draftly.workflows.onboarding.stages.Agent") as mock_agent_cls:
+    with patch("draftly.agents.factory.Agent") as mock_agent_cls:
         mock_agent = mock_agent_cls.return_value
         mock_agent.invoke_async = AsyncMock(return_value=fake_agent_result(
             EvaluationScores(coverage=0.9, completeness=0.8, structure=0.7, length=0.6)
@@ -433,7 +433,7 @@ async def test_initial_evaluation_llm_failure_falls_back_to_heuristics():
         },
     ])
 
-    with patch("draftly.workflows.onboarding.stages.Agent") as mock_agent_cls:
+    with patch("draftly.agents.factory.Agent") as mock_agent_cls:
         mock_agent = mock_agent_cls.return_value
         mock_agent.invoke_async = AsyncMock(side_effect=RuntimeError("model down"))
 
@@ -497,7 +497,7 @@ async def test_recommendations_generates_suggestions():
         "coverage": 0.3, "structure": 0.6, "freshness": 0.8, "completeness": 0.5,
     })
 
-    with patch("draftly.workflows.onboarding.stages.Agent") as mock_agent_cls:
+    with patch("draftly.agents.factory.Agent") as mock_agent_cls:
         mock_agent = mock_agent_cls.return_value
         mock_agent.invoke_async = AsyncMock(return_value=fake_agent_result(
             RecommendationList(items=[
@@ -535,7 +535,7 @@ async def test_recommendations_handles_llm_failure():
         "coverage": 0.7, "structure": 0.7, "freshness": 0.8, "completeness": 0.7,
     })
 
-    with patch("draftly.workflows.onboarding.stages.Agent") as mock_agent_cls:
+    with patch("draftly.agents.factory.Agent") as mock_agent_cls:
         mock_agent = mock_agent_cls.return_value
         mock_agent.invoke_async = AsyncMock(side_effect=RuntimeError("model down"))
 
@@ -646,7 +646,7 @@ async def test_knowledge_construction_batches_fact_storage_per_batch():
     context.candidates.enqueue = AsyncMock(return_value={"id": "c-1"})
     publish = AsyncMock()
 
-    with patch("draftly.workflows.onboarding.stages.Agent") as mock_agent_cls:
+    with patch("draftly.agents.factory.Agent") as mock_agent_cls:
         mock_agent = mock_agent_cls.return_value
         mock_agent.invoke_async = AsyncMock(return_value=fake_agent_result(
             ExtractionOutput(facts=["Fact A", "Fact B"])
@@ -691,7 +691,7 @@ async def test_knowledge_construction_enforces_chunk_timeout(monkeypatch):
     context.candidates.enqueue = AsyncMock(return_value={"id": "c-1"})
     publish = AsyncMock()
 
-    with patch("draftly.workflows.onboarding.stages.Agent"):
+    with patch("draftly.agents.factory.Agent"):
         result = await run_knowledge_construction(
             context, org_id="test-org", publish=publish,
         )
@@ -725,7 +725,7 @@ async def test_knowledge_construction_chunk_timeout_zero_waits_for_slow_llm(
     context.candidates.enqueue = AsyncMock(return_value={"id": "c-1"})
     publish = AsyncMock()
 
-    with patch("draftly.workflows.onboarding.stages.Agent"):
+    with patch("draftly.agents.factory.Agent"):
         result = await run_knowledge_construction(
             context, org_id="test-org", publish=publish,
         )
@@ -766,7 +766,7 @@ async def test_knowledge_construction_caps_llm_concurrency(monkeypatch):
     context.candidates.enqueue = AsyncMock(return_value={"id": "c-1"})
     publish = AsyncMock()
 
-    with patch("draftly.workflows.onboarding.stages.Agent"):
+    with patch("draftly.agents.factory.Agent"):
         result = await run_knowledge_construction(
             context, org_id="test-org", publish=publish,
         )
@@ -829,7 +829,7 @@ async def test_evaluation_llm_calls_are_sampled(monkeypatch):
 
     monkeypatch.setattr(stages, "_llm_generate", fake_llm)
 
-    with patch("draftly.workflows.onboarding.stages.Agent"):
+    with patch("draftly.agents.factory.Agent"):
         await run_initial_evaluation(
             context, org_id="test-org", publish=publish,
         )
@@ -853,7 +853,7 @@ async def test_evaluation_small_corpus_calls_llm_per_doc(monkeypatch):
 
     monkeypatch.setattr(stages, "_llm_generate", fake_llm)
 
-    with patch("draftly.workflows.onboarding.stages.Agent"):
+    with patch("draftly.agents.factory.Agent"):
         await run_initial_evaluation(context, org_id="test-org", publish=publish)
 
     assert calls["n"] == 10
@@ -876,7 +876,7 @@ async def test_evaluation_heuristics_still_scan_full_corpus(monkeypatch):
 
     monkeypatch.setattr(stages, "_llm_generate", fake_llm)
 
-    with patch("draftly.workflows.onboarding.stages.Agent"):
+    with patch("draftly.agents.factory.Agent"):
         result = await run_initial_evaluation(
             context, org_id="test-org", publish=publish,
         )
@@ -919,7 +919,7 @@ def test_recommendation_list_validates_priority_literal():
 
 @pytest.mark.asyncio
 async def test_llm_generate_returns_validated_structured_output():
-    with patch("draftly.workflows.onboarding.stages.Agent") as mock_agent_cls:
+    with patch("draftly.agents.factory.Agent") as mock_agent_cls:
         mock_agent = mock_agent_cls.return_value
         mock_agent.invoke_async = AsyncMock(
             return_value=fake_agent_result(ExtractionOutput(facts=["f"]))
@@ -929,15 +929,14 @@ async def test_llm_generate_returns_validated_structured_output():
         )
     assert isinstance(out, ExtractionOutput)
     assert out.facts == ["f"]
-    mock_agent_cls.assert_called_once_with(
-        model=ANY, structured_output_model=ExtractionOutput,
-    )
+    mock_agent_cls.assert_called_once()
+    assert mock_agent_cls.call_args.kwargs["structured_output_model"] is ExtractionOutput
     mock_agent.invoke_async.assert_awaited_once()
 
 
 @pytest.mark.asyncio
 async def test_llm_generate_passes_token_budget_limits():
-    with patch("draftly.workflows.onboarding.stages.Agent") as mock_agent_cls:
+    with patch("draftly.agents.factory.Agent") as mock_agent_cls:
         mock_agent = mock_agent_cls.return_value
         mock_agent.invoke_async = AsyncMock(
             return_value=fake_agent_result(
@@ -953,7 +952,7 @@ async def test_llm_generate_passes_token_budget_limits():
 async def test_llm_generate_token_limits_none_when_cap_disabled(monkeypatch):
     monkeypatch.setattr(stages, "LLM_TOTAL_TOKENS_CAP", 0)
     monkeypatch.setattr(stages, "LLM_LIMITS", None)
-    with patch("draftly.workflows.onboarding.stages.Agent") as mock_agent_cls:
+    with patch("draftly.agents.factory.Agent") as mock_agent_cls:
         mock_agent = mock_agent_cls.return_value
         mock_agent.invoke_async = AsyncMock(return_value=fake_agent_result())
         await stages._llm_generate(MagicMock(), "p", output_model=EvaluationScores)
@@ -966,7 +965,7 @@ async def test_llm_generate_records_token_usage(monkeypatch):
 
     fake_metrics = Metrics()
     monkeypatch.setattr(stages, "_metrics", fake_metrics)
-    with patch("draftly.workflows.onboarding.stages.Agent") as mock_agent_cls:
+    with patch("draftly.agents.factory.Agent") as mock_agent_cls:
         mock_agent = mock_agent_cls.return_value
         mock_agent.invoke_async = AsyncMock(
             return_value=fake_agent_result(
@@ -986,7 +985,7 @@ async def test_llm_generate_skips_zero_token_usage(monkeypatch):
 
     fake_metrics = Metrics()
     monkeypatch.setattr(stages, "_metrics", fake_metrics)
-    with patch("draftly.workflows.onboarding.stages.Agent") as mock_agent_cls:
+    with patch("draftly.agents.factory.Agent") as mock_agent_cls:
         mock_agent = mock_agent_cls.return_value
         mock_agent.invoke_async = AsyncMock(
             return_value=fake_agent_result(usage={}),
@@ -1038,7 +1037,7 @@ async def test_llm_generate_logs_routing(monkeypatch):
         monkeypatch.setattr(
             stages, "logger", structlog.get_logger("test.llm_generate_routing"),
         )
-        with patch("draftly.workflows.onboarding.stages.Agent") as mock_agent_cls:
+        with patch("draftly.agents.factory.Agent") as mock_agent_cls:
             mock_agent = mock_agent_cls.return_value
             mock_agent.invoke_async = AsyncMock(
                 return_value=fake_agent_result(ExtractionOutput(facts=["f"]))
@@ -1089,7 +1088,7 @@ async def test_llm_generate_records_success_telemetry():
         async def invoke_async(self, prompt, **kwargs):
             return fake_agent_result(ExtractionOutput(facts=["f"]))
 
-    with patch("draftly.workflows.onboarding.stages.Agent", return_value=FakeAgent()):
+    with patch("draftly.agents.factory.Agent", return_value=FakeAgent()):
         out = await stages._llm_generate(
             MagicMock(), "p", output_model=ExtractionOutput, telemetry=telemetry,
         )
@@ -1111,7 +1110,7 @@ async def test_llm_generate_records_failure_telemetry():
         async def invoke_async(self, prompt, **kwargs):
             raise RuntimeError("provider down")
 
-    with patch("draftly.workflows.onboarding.stages.Agent", return_value=BoomAgent()):
+    with patch("draftly.agents.factory.Agent", return_value=BoomAgent()):
         with pytest.raises(RuntimeError, match="provider down"):
             await stages._llm_generate(
                 MagicMock(), "p", output_model=ExtractionOutput, telemetry=telemetry,
@@ -1146,7 +1145,7 @@ async def test_knowledge_construction_records_routing_outcomes(monkeypatch):
     context.repositories.performance = AsyncMock()
     publish = AsyncMock()
 
-    with patch("draftly.workflows.onboarding.stages.Agent"):
+    with patch("draftly.agents.factory.Agent"):
         result = await run_knowledge_construction(
             context, org_id="test-org", publish=publish,
         )
@@ -1183,7 +1182,7 @@ async def test_knowledge_construction_offline_never_records(monkeypatch):
     context.repositories.performance = AsyncMock()
     publish = AsyncMock()
 
-    with patch("draftly.workflows.onboarding.stages.Agent"):
+    with patch("draftly.agents.factory.Agent"):
         result = await run_knowledge_construction(
             context, org_id="test-org", publish=publish,
         )
@@ -1224,7 +1223,7 @@ async def test_knowledge_construction_respects_emit_tick_budget():
     publish = AsyncMock()
 
     with (
-        patch("draftly.workflows.onboarding.stages.Agent") as mock_agent_cls,
+        patch("draftly.agents.factory.Agent") as mock_agent_cls,
         patch("draftly.workflows.onboarding.stages.CHUNK_BATCH_SIZE", 1),
     ):
         mock_agent = mock_agent_cls.return_value
@@ -1256,7 +1255,7 @@ async def test_knowledge_construction_batches_relationships_and_candidates():
     context.candidates = CandidateService(store=FakeCandidatesStore())
     publish = AsyncMock()
 
-    with patch.object(stages, "Agent") as mock_agent_cls:
+    with patch("draftly.agents.factory.Agent") as mock_agent_cls:
         mock_agent = mock_agent_cls.return_value
         mock_agent.invoke_async = AsyncMock(return_value=fake_agent_result(
             ExtractionOutput(
@@ -1308,7 +1307,7 @@ async def test_knowledge_construction_times_out_slow_batch(monkeypatch):
     context.candidates.enqueue = AsyncMock()
     publish = AsyncMock()
 
-    with patch("draftly.workflows.onboarding.stages.Agent"):
+    with patch("draftly.agents.factory.Agent"):
         result = await run_knowledge_construction(
             context, org_id="test-org", publish=publish,
         )

@@ -14,6 +14,7 @@ from typing import Any
 import pytest
 from strands.multiagent.base import Status
 
+from draftly.persistence.repositories.steering import InterventionRecord
 from draftly.review.resume import ReviewResumeError
 from draftly.workflows.context import WorkflowContext
 from draftly.workflows.runner import WorkflowRunner
@@ -120,6 +121,40 @@ class FakeBroadcaster:
         self.calls.append((org_id, channel, payload))
 
 
+class FakeInterventions:
+    def __init__(self) -> None:
+        self.record = InterventionRecord(
+            id="i-1",
+            run_id="run-1",
+            interrupt_id="interv-1",
+            org_id="org-1",
+            status="pending",
+        )
+
+    async def get_pending(self, *, run_id: str, interrupt_id: str, org_id: str) -> Any:
+        if self.record is not None and self.record.status == "pending":
+            return self.record
+        return None
+
+    async def claim_response(
+        self,
+        *,
+        run_id: str,
+        interrupt_id: str,
+        org_id: str,
+        idempotency_key: str,
+        action: str,
+        message: str | None,
+    ) -> Any:
+        record = self.record
+        record.status = "approved"
+        record.idempotency_key = idempotency_key
+        record.resolver_id = action
+        record.response_message = message
+        self.record = None
+        return record
+
+
 def _event() -> dict[str, Any]:
     return {
         "event_id": "run-1",
@@ -209,6 +244,29 @@ async def test_resume_invokes_when_session_state_restored():
     assert repositories.recorded_status == [("run-1", "completed")]
     assert ("run-1", "completed") in repositories.workflow_updates
     assert state.status.value == "delivered"
+
+
+async def test_intervention_resume_blocks_when_session_state_missing():
+    graph = StubGraph(
+        resumable=False,
+        interrupt_state=StubInterruptState(activated=False, interrupts=set()),
+    )
+    repositories = FakeRepositories()
+    repositories.steering_interventions = FakeInterventions()
+    runner = _runner(graph, repositories)
+
+    state = await runner.resume_intervention(
+        event=_event(),
+        interrupt_id="interv-1",
+        response={"action": "approve", "message": "go"},
+    )
+
+    assert state.status.value == "failed"
+    assert ("run-1", "failed") in repositories.recorded_status
+    assert repositories.job_updates
+    assert repositories.job_updates[-1]["status"] == "failed"
+    assert ("run-1", "failed") in repositories.workflow_updates
+    assert context_broadcast(runner)[0][2]["status"] == "failed"
 
 
 def context_notified(runner: WorkflowRunner) -> list[str]:

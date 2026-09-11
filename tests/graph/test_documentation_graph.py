@@ -62,9 +62,9 @@ def test_graph_uses_injected_agent_factory_registry(model, tools, tmp_sessions) 
 
     calls: list[object] = []
 
-    def classifier_factory(resolved_model):
+    def classifier_factory(resolved_model, **kwargs):
         calls.append(resolved_model)
-        return build_classifier(resolved_model)
+        return build_classifier(resolved_model, **kwargs)
 
     graph = build_graph_for_run(
         "registry-1",

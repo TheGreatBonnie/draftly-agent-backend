@@ -160,3 +160,18 @@ def test_session_manager_is_per_run(tmp_sessions) -> None:
     a = build_session_manager("run-a", tmp_sessions)
     b = build_session_manager("run-b", tmp_sessions)
     assert a.session_id != b.session_id
+
+
+def test_graph_build_has_no_live_provider_requirement(tools, tmp_sessions) -> None:
+    """Offline construction: a graph must build with a bare stub model and no
+    provider keys; live credential resolution happens only at invocation."""
+    from tests.stub_model import StubModel
+
+    graph = build_graph_for_run(
+        "sess-offline",
+        surface="pull_request",
+        tools_registry=tools,
+        model=StubModel(),
+        storage_dir=tmp_sessions,
+    )
+    assert "classify" in set(graph.nodes)

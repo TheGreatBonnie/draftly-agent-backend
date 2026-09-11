@@ -26,7 +26,11 @@ from strands.multiagent.base import Status
 
 from draftly.delivery.models import PullRequestResult, SupportDeliveryReceipt
 from draftly.events.dispatcher import EventDispatcher
-from draftly.events.stream_envelope import StreamEnvelope, filter_graph_event
+from draftly.events.stream_envelope import (
+    StreamEnvelope,
+    filter_graph_event,
+    steering_envelope,
+)
 from draftly.integrations.github.runtime import (
     reset_installation_id,
     set_installation_id,
@@ -46,10 +50,21 @@ from draftly.workflows.grounding import (
     set_grounding,
 )
 from draftly.workflows.state import WorkflowState, WorkflowStatus
+from draftly.workflows.steering_scope import (
+    SteeringRunScope,
+    current_steering_scope,
+    reset_steering_scope,
+    set_steering_scope,
+)
 
 logger = structlog.get_logger(__name__)
 
 GraphFactory = Callable[[str, str], Any]
+
+
+class InterventionResumeError(ValueError):
+    """A steering intervention could not be claimed or resumed."""
+
 
 # Injectable registry (tests swap this for an isolated instance).
 _metrics: Metrics = _default_metrics
@@ -101,6 +116,81 @@ async def _post_run_memory(context: Any, state: Any, surface: str, *, hook: Any 
         logger.warning("post_run_memory_failed", exc_info=True)
 
 
+def _workflow_key_for(event: dict[str, Any], surface: str) -> str:
+    """Default workflow key: explicit key, else event-type default, else surface."""
+    workflow_key = str(event.get("workflow_key") or "")
+    if workflow_key:
+        return workflow_key
+    event_type = str(event.get("event_type") or "")
+    return (
+        "github_release" if event_type.startswith("release")
+        else "github_issue" if event_type.startswith("issues")
+        else "github_pr" if event_type.startswith("pull_request")
+        else surface
+    )
+
+
+class _RunStreamSeq:
+    """Per-run monotonic envelope sequence shared by stream and steering.
+
+    One allocator is created per graph build and handed to both the
+    ``_invoke_streaming`` loop and the steering event sink, so every envelope
+    for a run (graph frames and steering decisions) gets a strictly increasing,
+    collision-free ``seq``. SSE replay and reconnect deduplication rely on this
+    single monotonic counter per run.
+    """
+
+    def __init__(self) -> None:
+        self._value = 0
+
+    def next(self) -> int:
+        self._value += 1
+        return self._value
+
+
+def _steering_event_sink(
+    *,
+    runtime: Any,
+    publisher: Any,
+    run_id: str,
+    surface: str,
+    stream_seq: _RunStreamSeq,
+) -> Callable[..., Any]:
+    """Wire ONE redacted steering event per decision onto the run stream."""
+
+    async def sink(
+        decision: Any,
+        *,
+        tool_name: str | None = None,
+        node_id: str | None = None,
+        agent_id: str | None = None,
+        attempt_summary: dict[str, Any] | None = None,
+    ) -> None:
+        envelope = steering_envelope(
+            decision,
+            run_id=run_id,
+            surface=surface,
+            node_id=node_id,
+            agent_id=agent_id,
+            tool_name=tool_name,
+            attempt_summary=attempt_summary,
+            payload_max_bytes=runtime.config.payload_max_bytes,
+        )
+        envelope.seq = stream_seq.next()
+        try:
+            await publisher.publish(envelope)
+        except Exception:
+            _metrics.increment("draftly_steering_publish_failures_total")
+            logger.warning(
+                "steering_event_publish_failed",
+                run_id=run_id,
+                seq=envelope.seq,
+                exc_info=True,
+            )
+
+    return sink
+
+
 def _default_graph_factory(context: WorkflowContext) -> GraphFactory:
     """Build the real per-run graph via the Phase 4 integration layer."""
 
@@ -109,9 +199,31 @@ def _default_graph_factory(context: WorkflowContext) -> GraphFactory:
         from draftly.workflows.grounding import current_grounding
 
         grounding = current_grounding()
+        steering_scope = current_steering_scope()
+        steering_runtime = None
+        stream_seq = _RunStreamSeq()
+        if steering_scope is not None:
+            steering_runtime = context.new_steering_runtime(
+                run_id,
+                surface,
+                org_id=steering_scope.org_id,
+                project_id=steering_scope.project_id,
+                workflow_key=steering_scope.workflow_key,
+            )
+            publisher = getattr(context, "publisher", None)
+            if steering_runtime is not None and publisher is not None:
+                steering_runtime = steering_runtime.with_sinks(
+                    event_sink=_steering_event_sink(
+                        runtime=steering_runtime,
+                        publisher=publisher,
+                        run_id=run_id,
+                        surface=surface,
+                        stream_seq=stream_seq,
+                    )
+                )
 
         jobs_repo = getattr(getattr(context, "repositories", None), "jobs", None)
-        return build_graph_for_run(
+        graph = build_graph_for_run(
             run_id,
             surface=surface,
             tools_registry=context.tools,
@@ -126,8 +238,11 @@ def _default_graph_factory(context: WorkflowContext) -> GraphFactory:
             jobs_repo=jobs_repo,
             grounding=grounding.get("mode", "local"),
             repo_dir=grounding.get("repo_dir"),
+            steering_runtime=steering_runtime,
             **context.graph_limits(),
         )
+        graph._draftly_stream_seq = stream_seq
+        return graph
 
     return factory
 
@@ -241,10 +356,20 @@ class WorkflowRunner:
         }
         build_token = set_support_runtime(support_runtime_for(event))
         grounding_token = set_grounding(grounding)
+        steering_token = set_steering_scope(
+            SteeringRunScope(
+                run_id=run_id,
+                surface=surface,
+                org_id=str(event.get("project_id") or ""),
+                project_id=str(event.get("project_id") or ""),
+                workflow_key=_workflow_key_for(event, surface),
+            )
+        )
         try:
             with routing_decision_scope(collect_routing_decision):
                 graph = self._graph_factory(run_id, surface)
         finally:
+            reset_steering_scope(steering_token)
             reset_grounding(grounding_token)
             reset_support_runtime(build_token)
         await self._persist_lifecycle(event, "running", run_id=run_id)
@@ -347,10 +472,20 @@ class WorkflowRunner:
             "repo_dir": event.get("repo_dir"),
         }
         grounding_token = set_grounding(grounding)
+        steering_token = set_steering_scope(
+            SteeringRunScope(
+                run_id=run_id,
+                surface=surface,
+                org_id=str(event.get("project_id") or ""),
+                project_id=str(event.get("project_id") or ""),
+                workflow_key=_workflow_key_for(event, surface),
+            )
+        )
         try:
             with routing_decision_scope(collect_routing_decision):
                 graph = self._graph_factory(run_id, surface)
         finally:
+            reset_steering_scope(steering_token)
             reset_grounding(grounding_token)
         invocation_state = self._invocation_state(event, surface)
         resume_input = [
@@ -470,6 +605,310 @@ class WorkflowRunner:
         logger.info("workflow_resume_done", run_id=run_id, status=resumed.status.value)
         return resumed
 
+    async def resume_intervention(
+        self,
+        *,
+        event: dict[str, Any],
+        interrupt_id: str,
+        response: dict[str, Any],
+        graph_factory: GraphFactory | None = None,
+    ) -> WorkflowState:
+        """Resolve a durable steering intervention and resume its run.
+
+        The intervention row is the single source of truth: a pending row is
+        claimed atomically by (org, idempotency_key) before the graph is
+        touched. An identical replay returns the already-known terminal outcome
+        without invoking the graph again; a conflicting replay, an expired or
+        missing row, or an unserializable session all fail this call while
+        leaving the run in a consistent state.
+        """
+        event = dict(event)
+        run_id = str(event.get("event_id") or "")
+        surface = self.dispatcher.route(event)
+        if not run_id or surface is None:
+            raise InterventionResumeError(
+                "Cannot resume an intervention without a valid run and surface"
+            )
+        if not interrupt_id:
+            raise InterventionResumeError("interrupt_id is required")
+        if not isinstance(response, dict) or not response:
+            raise InterventionResumeError("a non-empty response dict is required")
+
+        org_id = str(event.get("project_id") or "")
+        interventions = getattr(
+            getattr(self.context, "repositories", None), "steering_interventions", None
+        )
+        if interventions is None:
+            raise InterventionResumeError("steering interventions are unavailable")
+
+        action = str(response.get("action") or "")
+        message = response.get("message")
+        if action not in {"approve", "approve_and_review", "deny", "denied", "guide", "cancel"}:
+            raise InterventionResumeError(f"unsupported intervention action '{action}'")
+        idempotency_key = str(response.get("idempotency_key") or "") or f"{org_id}:{interrupt_id}"
+
+        logger.info(
+            "workflow_intervention_resume_started",
+            run_id=run_id,
+            surface=surface,
+            interrupt_id=interrupt_id,
+            action=action,
+        )
+        _metrics.increment("draftly_intervention_resume_total")
+
+        pending = await self._safe_intervention_lookup(
+            interventions, run_id, interrupt_id, org_id
+        )
+        if pending is not None and self._intervention_expired(pending):
+            _metrics.increment("draftly_steering_interrupts_expired_total")
+            _metrics.increment("draftly_intervention_resume_failures_total")
+            try:
+                await interventions.resolve(
+                    intervention_id=str(pending.id),
+                    status="expired",
+                    resolver_id="system:expired",
+                )
+            except Exception:
+                pass
+            raise InterventionResumeError(f"intervention {interrupt_id} is expired")
+
+        await self._claim_intervention(
+            interventions,
+            run_id=run_id,
+            interrupt_id=interrupt_id,
+            org_id=org_id,
+            idempotency_key=idempotency_key,
+            action=action,
+            message=str(message) if message is not None else None,
+        )
+        if pending is not None:
+            # A pending row was atomically reconciled; count the side-effect
+            # resolution (approve/deny) separately from replays of already
+            # resolved rows below.
+            _metrics.increment("draftly_side_effect_reconciled_total")
+        if pending is None:
+            # An identical earlier claim already resolved the row; surface its
+            # terminal outcome without resuming the graph a second time.
+            logger.info(
+                "workflow_intervention_resume_replayed",
+                run_id=run_id,
+                interrupt_id=interrupt_id,
+                action=action,
+            )
+            _metrics.increment("draftly_intervention_resume_success_total")
+            return await self._replay_outcome(event, run_id, surface)
+
+        approved = action in {"approve", "approve_and_review"}
+        routing_decisions: dict[str, Any] = {}
+
+        def collect_routing_decision(role: str, decision: Any) -> None:
+            routing_decisions[role] = decision
+
+        from draftly.integrations.strands.models import routing_decision_scope
+
+        repo_dir = repo_checkout_for(event)
+        if repo_dir and not event.get("repo_dir"):
+            event["repo_dir"] = repo_dir
+        grounding = {
+            "mode": resolve_grounding(
+                repo_dir=repo_dir,
+                installation_id=event.get("installation_id"),
+            ),
+            "repo_dir": event.get("repo_dir"),
+        }
+        grounding_token = set_grounding(grounding)
+        steering_token = set_steering_scope(
+            SteeringRunScope(
+                run_id=run_id,
+                surface=surface,
+                org_id=org_id,
+                project_id=org_id,
+                workflow_key=_workflow_key_for(event, surface),
+            )
+        )
+        try:
+            with routing_decision_scope(collect_routing_decision):
+                graph = (graph_factory or self._graph_factory)(run_id, surface)
+        finally:
+            reset_steering_scope(steering_token)
+            reset_grounding(grounding_token)
+
+        invocation_state = self._invocation_state(event, surface)
+        resume_input = [
+            {
+                "interruptResponse": {
+                    "interruptId": interrupt_id,
+                    "response": {
+                        "approved": approved,
+                        "action": action,
+                        "message": message,
+                    },
+                }
+            }
+        ]
+        resumable = self._session_is_resumable(graph, interrupt_id)
+        if not resumable:
+            message = "interrupted session state not found; the run cannot be resumed"
+            logger.warning(
+                "workflow_intervention_resume_blocked",
+                run_id=run_id,
+                surface=surface,
+                interrupt_id=interrupt_id,
+                reason="session_lost",
+            )
+            state = WorkflowState(run_id=run_id, event=event, surface=surface)
+            _metrics.increment("draftly_intervention_resume_failures_total")
+            await self._mark(event, "failed")
+            await self._persist_lifecycle(
+                event,
+                "failed",
+                run_id=run_id,
+                error=message,
+                result={"status": "SESSION_LOST", "error": message},
+            )
+            await self._broadcast_lifecycle(
+                org_id=org_id,
+                run_id=run_id,
+                status="failed",
+                surface=surface,
+            )
+            return state.finish(WorkflowStatus.FAILED)
+
+        state = WorkflowState(run_id=run_id, event=event, surface=surface)
+        started = time.monotonic()
+        installation_token = set_installation_id(event.get("installation_id"))
+        support_token = set_support_runtime(support_runtime_for(event))
+        try:
+            if self.publisher is not None:
+                result = await self._invoke_streaming(
+                    graph, resume_input, invocation_state, surface
+                )
+            else:
+                result = await graph.invoke_async(
+                    resume_input,
+                    invocation_state=invocation_state,
+                )
+            await self._record_routing_outcome(
+                run_id=run_id,
+                success=result.status == Status.COMPLETED,
+                latency_ms=(time.monotonic() - started) * 1000.0,
+                decisions=routing_decisions,
+                organization_id=org_id or None,
+            )
+        except Exception as exc:
+            state.errors.append(str(exc))
+            _metrics.increment("draftly_intervention_resume_failures_total")
+            await self._mark(event, "failed")
+            await self._persist_lifecycle(
+                event,
+                "failed",
+                run_id=run_id,
+                error=str(exc),
+                result={"status": "RESUME_FAILED", "error": str(exc)},
+            )
+            await self._broadcast_lifecycle(
+                org_id=org_id,
+                run_id=run_id,
+                status="failed",
+                surface=surface,
+            )
+            logger.warning(
+                "workflow_intervention_resume_failed",
+                run_id=run_id,
+                interrupt_id=interrupt_id,
+                error=str(exc),
+            )
+            return state.finish(WorkflowStatus.FAILED)
+        finally:
+            reset_support_runtime(support_token)
+            reset_installation_id(installation_token)
+
+        resumed = await self._finish_result(event, surface, result, state)
+        _metrics.increment("draftly_intervention_resume_success_total")
+        logger.info(
+            "workflow_intervention_resume_done",
+            run_id=run_id,
+            status=resumed.status.value,
+        )
+        return resumed
+
+    async def _safe_intervention_lookup(
+        self,
+        interventions: Any,
+        run_id: str,
+        interrupt_id: str,
+        org_id: str,
+    ) -> Any:
+        try:
+            return await interventions.get_pending(
+                run_id=run_id, interrupt_id=interrupt_id, org_id=org_id
+            )
+        except Exception as exc:
+            raise InterventionResumeError(f"intervention lookup failed: {exc}") from exc
+
+    async def _claim_intervention(
+        self,
+        interventions: Any,
+        *,
+        run_id: str,
+        interrupt_id: str,
+        org_id: str,
+        idempotency_key: str,
+        action: str,
+        message: str | None,
+    ) -> Any:
+        try:
+            return await interventions.claim_response(
+                run_id=run_id,
+                interrupt_id=interrupt_id,
+                org_id=org_id,
+                idempotency_key=idempotency_key,
+                action=action,
+                message=message,
+            )
+        except Exception as exc:
+            raise InterventionResumeError(str(exc)) from exc
+
+    @staticmethod
+    def _intervention_expired(record: Any) -> bool:
+        expires_at = getattr(record, "expires_at", None)
+        if not expires_at:
+            return False
+        if isinstance(expires_at, str):
+            try:
+                parsed = datetime.fromisoformat(expires_at)
+            except ValueError:
+                return False
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=UTC)
+            return parsed < datetime.now(UTC)
+        try:
+            return expires_at < datetime.now(UTC)
+        except TypeError:
+            return False
+
+    async def _replay_outcome(
+        self, event: dict[str, Any], run_id: str, surface: str
+    ) -> WorkflowState:
+        state = WorkflowState(run_id=run_id, event=event, surface=surface)
+        status = await self._current_run_status(run_id)
+        if status in {"completed", "delivered"}:
+            return state.finish(WorkflowStatus.DELIVERED)
+        return state.finish(WorkflowStatus.FAILED)
+
+    async def _current_run_status(self, run_id: str) -> str | None:
+        events = self.context.events
+        if events is None:
+            return None
+        finder = getattr(events, "find_by_event_id", None)
+        if finder is None:
+            return None
+        try:
+            row = await finder(run_id)
+            return str(row.get("status")) if isinstance(row, dict) else None
+        except Exception:
+            return None
+
     def _session_is_resumable(self, graph: Any, interrupt_id: str | None) -> bool:
         """Mirror Strands' own resume discriminator to preflight the resume.
 
@@ -566,8 +1005,12 @@ class WorkflowRunner:
         run_id = state.run_id
         state.result = result
         if result.status == Status.INTERRUPTED:
-            await self._store_interrupts(run_id, surface, result, state)
+            steering_ids = await self._store_interrupts(run_id, surface, result, state)
             evaluation = self._node_payload(result, "evaluate")
+            if steering_ids:
+                return await self._finish_pending_intervention(
+                    event, surface, state, evaluation, len(steering_ids)
+                )
             pending_result: dict[str, Any] = {"status": "PENDING_REVIEW"}
             if evaluation:
                 pending_result["evaluation"] = evaluation
@@ -636,6 +1079,39 @@ class WorkflowRunner:
         )
         return state.finish(WorkflowStatus.FAILED)
 
+    async def _finish_pending_intervention(
+        self,
+        event: dict[str, Any],
+        surface: str,
+        state: WorkflowState,
+        evaluation: dict[str, Any],
+        n_interrupts: int,
+    ) -> WorkflowState:
+        """Persist the PENDING_INTERVENTION lifecycle for a paused steering run."""
+        pending_result: dict[str, Any] = {"status": "PENDING_INTERVENTION"}
+        if evaluation:
+            pending_result["evaluation"] = evaluation
+        await self._persist_lifecycle(
+            event,
+            "pending_intervention",
+            run_id=state.run_id,
+            result=pending_result,
+        )
+        await self._mark(event, "pending_intervention")
+        await self._broadcast_lifecycle(
+            org_id=str(event.get("project_id") or ""),
+            run_id=state.run_id,
+            status="pending_intervention",
+            surface=surface,
+        )
+        _metrics.increment("draftly_run_pending_interventions_total")
+        logger.info(
+            "workflow_pending_intervention",
+            run_id=state.run_id,
+            n_interrupts=n_interrupts,
+        )
+        return state.finish(WorkflowStatus.PENDING_INTERVENTION)
+
     async def _invoke_streaming(
         self,
         graph: Any,
@@ -650,6 +1126,7 @@ class WorkflowRunner:
         result is synthesized so outcome handling matches the invoke path).
         """
         seq = 0
+        seq_allocator: _RunStreamSeq | None = getattr(graph, "_draftly_stream_seq", None)
         result: Any = None
         started_at = time.monotonic()
         ttft_recorded = False
@@ -666,7 +1143,7 @@ class WorkflowRunner:
                     if not ttft_recorded and envelope.type == "text_delta":
                         ttft_recorded = True
                         _metrics.observe("draftly_run_ttft_ms", time.monotonic() - started_at)
-                    seq += 1
+                    seq = seq_allocator.next() if seq_allocator is not None else seq + 1
                     envelope.seq = seq
                     await self._safe_publish(envelope)
                 if isinstance(raw, dict):
@@ -697,7 +1174,7 @@ class WorkflowRunner:
                 execution_order=[],
                 failed_nodes=[SimpleNamespace(node_id=node_id)],
             )
-            seq += 1
+            seq = seq_allocator.next() if seq_allocator is not None else seq + 1
             await self._safe_publish(
                 StreamEnvelope(
                     type="workflow_result",
@@ -877,15 +1354,7 @@ class WorkflowRunner:
             logger.warning("canonical_run_skipped_without_org", run_id=run_id)
             return
 
-        workflow_key = str(event.get("workflow_key") or "")
-        if not workflow_key:
-            event_type = str(event.get("event_type") or "")
-            workflow_key = (
-                "github_release" if event_type.startswith("release")
-                else "github_issue" if event_type.startswith("issues")
-                else "github_pr" if event_type.startswith("pull_request")
-                else surface
-            )
+        workflow_key = _workflow_key_for(event, surface)
         definitions = getattr(repositories, "workflow_definitions", None)
         definition = None
         if definitions is not None:
@@ -1326,16 +1795,38 @@ class WorkflowRunner:
         surface: str,
         result: Any,
         state: WorkflowState,
-    ) -> None:
+    ) -> set[str]:
+        """Record interrupts on the state; return the steering interrupt ids.
+
+        Steering interrupts are already durable (``workflow_interventions``)
+        so they must not also enter the human-review inbox. Review-gate
+        interrupts keep their existing review persistence.
+        """
         reviews = self.context.reviews
+        interventions = getattr(
+            getattr(self.context, "repositories", None), "steering_interventions", None
+        )
+        org_id = str(state.event.get("project_id") or "")
+        steering_ids: set[str] = set()
         for interrupt in result.interrupts or []:
+            is_steering = False
+            if interventions is not None:
+                try:
+                    pending = await interventions.get_pending(
+                        run_id=run_id, interrupt_id=interrupt.id, org_id=org_id
+                    )
+                    is_steering = pending is not None
+                except Exception:
+                    is_steering = False
+            if is_steering:
+                steering_ids.add(interrupt.id)
             reason = await self._enrich_review_reason(interrupt.reason, state)
             record = {
                 "interrupt_id": interrupt.id,
                 "reason": reason,
             }
             state.interrupts.append(record)
-            if reviews is None:
+            if reviews is None or is_steering:
                 continue
             try:
                 await reviews.store_interrupt(
@@ -1343,10 +1834,11 @@ class WorkflowRunner:
                     interrupt_id=interrupt.id,
                     reason=reason,
                     workflow_type=surface,
-                    org_id=str(state.event.get("project_id") or ""),
+                    org_id=org_id,
                 )
             except Exception:
                 logger.exception("store_interrupt_failed", run_id=run_id)
+        return steering_ids
 
     async def _enrich_review_reason(
         self,

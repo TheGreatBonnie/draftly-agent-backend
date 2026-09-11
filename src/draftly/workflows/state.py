@@ -15,6 +15,7 @@ class WorkflowStatus(StrEnum):
     RUNNING = "running"
     DUPLICATE = "duplicate"
     PENDING_REVIEW = "pending_review"
+    PENDING_INTERVENTION = "pending_intervention"
     DELIVERED = "delivered"
     FAILED = "failed"
     SKIPPED = "skipped"

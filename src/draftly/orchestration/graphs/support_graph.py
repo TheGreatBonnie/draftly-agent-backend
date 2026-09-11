@@ -81,6 +81,7 @@ def build_support_graph(
     execution_timeout: float = DEFAULT_EXECUTION_TIMEOUT,
     node_timeout: float = DEFAULT_NODE_TIMEOUT,
     evaluator_max_iterations: int = DEFAULT_EVALUATOR_MAX_ITERATIONS,
+    steering_runtime: Any = None,
 ):
     """Build the Slack/Discord support surface graph.
 
@@ -123,7 +124,12 @@ def build_support_graph(
 
     registry = agents
     classifier_builder = getattr(registry, "classifier", None) or build_classifier
-    classifier = classifier_builder(classifier_model)
+    classifier = classifier_builder(
+        classifier_model,
+        runtime=steering_runtime,
+        agent_id="support.classifier",
+        node_id="classify",
+    )
     context_builder = getattr(registry, "context_agent", None) or build_context_agent
     context_agent = context_builder(
         context_model,
@@ -135,6 +141,9 @@ def build_support_graph(
             reg.discord_search,
             reg.discord_get_thread,
         ),
+        runtime=steering_runtime,
+        agent_id="support.context",
+        node_id="context",
     )
     research_builder = (
         getattr(registry, "support_research_swarm", None) or build_support_research_swarm
@@ -147,11 +156,17 @@ def build_support_graph(
             reg.keyword_search,
             [code_search],
         ),
+        runtime=steering_runtime,
+        agent_id="support.research",
+        node_id="research",
     )
     question_builder = getattr(registry, "question_analyzer", None) or build_question_analyzer
     question_analyzer = question_builder(
         support_model,
         _dedupe(reg.semantic_search, reg.keyword_search),
+        runtime=steering_runtime,
+        agent_id="support.triage",
+        node_id="triage",
     )
     solution_builder = getattr(registry, "solution_researcher", None) or build_solution_researcher
     solution_researcher = solution_builder(
@@ -161,20 +176,32 @@ def build_support_graph(
             reg.keyword_search,
             [code_search],
         ),
+        runtime=steering_runtime,
+        agent_id="support.impact",
+        node_id="impact",
     )
     answer_builder = getattr(registry, "answer_writer", None) or build_answer_writer
     answer_agent = answer_builder(
         support_model,
         _dedupe(reg.semantic_search, reg.keyword_search),
+        runtime=steering_runtime,
+        agent_id="support.answer_writer",
+        node_id="answer",
     )
     writer_builder = getattr(registry, "writer_agent", None) or build_writer_agent
     update_writer = writer_builder(
         writer_model,
         scope_writer_tools(reg.documentation_engineer, reg.documentation),
+        runtime=steering_runtime,
+        agent_id="support.writer",
+        node_id="update",
     )
     create_writer = writer_builder(
         writer_model,
         scope_writer_tools(reg.documentation_engineer, reg.documentation),
+        runtime=steering_runtime,
+        agent_id="support.writer",
+        node_id="create",
     )
     delivery_builder = getattr(registry, "delivery_agent", None) or build_delivery_agent
     delivery_agent = delivery_builder(
@@ -182,6 +209,9 @@ def build_support_graph(
         _delivery_tools_for_source(source, reg),
         hitl=False,  # the graph-level ReviewGate owns human approval
         skill_names=("support-delivery",),
+        runtime=steering_runtime,
+        agent_id="delivery.support",
+        node_id="deliver",
     )
 
     builder = GraphBuilder()

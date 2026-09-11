@@ -61,7 +61,7 @@ class AgentRunsRepository:
         self,
         *,
         run_id: str,
-        seq: int,
+        seq: int | None = None,
         kind: str = "node",
         name: str,
         status: str = "completed",
@@ -80,7 +80,7 @@ class AgentRunsRepository:
             VALUES ($1, $2, $3, $4, $5, $6, $7::JSONB, $8, $9, $10)
             """,
             run_id,
-            seq,
+            seq if seq is not None else 0,
             kind,
             name,
             status,

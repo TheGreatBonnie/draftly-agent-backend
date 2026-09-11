@@ -301,6 +301,23 @@ class SteeringInterventionsRepository:
         )
         return _record(row)
 
+    async def list_pending_for_run(
+        self,
+        *,
+        run_id: str,
+        org_id: str,
+    ) -> list[InterventionRecord]:
+        rows = await self.database.fetch_all(
+            f"""
+            {_SELECT}
+            WHERE run_id = $1 AND org_id = $2 AND status = 'pending'
+            ORDER BY created_at ASC
+            """,
+            run_id,
+            org_id,
+        )
+        return [InterventionRecord(**dict(row)) for row in rows]
+
 
 def _json(value: Any) -> str:
     import json

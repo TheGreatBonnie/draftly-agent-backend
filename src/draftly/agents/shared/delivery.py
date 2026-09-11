@@ -7,8 +7,11 @@ from typing import Any
 from strands import Agent
 from strands.vended_plugins.skills import AgentSkills
 
+from draftly.agents.factory import build_draftly_agent
 from draftly.agents.prompts import DELIVERY_PROMPT, build_prompt, load_skills
 from draftly.agents.schemas import DeliveryReceipt
+from draftly.steering.context import SteeringRuntime
+from draftly.steering.decisions import AgentRole
 
 
 def build_delivery_agent(
@@ -17,6 +20,9 @@ def build_delivery_agent(
     *,
     hitl: bool = True,
     skill_names: tuple[str, ...] = ("github-delivery",),
+    runtime: SteeringRuntime | None = None,
+    agent_id: str | None = None,
+    node_id: str | None = None,
 ) -> Agent:
     """Build the delivery agent with HumanInTheLoop defense-in-depth."""
 
@@ -33,8 +39,8 @@ def build_delivery_agent(
             )
         )
 
-    return Agent(
-        name="delivery",
+    return build_draftly_agent(
+        role=AgentRole.DELIVERY,
         system_prompt=build_prompt(
             DELIVERY_PROMPT,
             output_model=DeliveryReceipt,
@@ -46,5 +52,9 @@ def build_delivery_agent(
         structured_output_model=DeliveryReceipt,
         plugins=[AgentSkills(skills=load_skills(*skill_names))],
         interventions=interventions,
+        runtime=runtime or SteeringRuntime.disabled(),
+        agent_id=agent_id or "delivery",
+        node_id=node_id or "delivery",
+        name="delivery",
         description="Delivers the final output (PR, reply, or message).",
     )

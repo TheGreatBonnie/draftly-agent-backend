@@ -15,10 +15,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from strands import Agent
 from strands.multiagent import Swarm
 from strands.vended_plugins.skills import AgentSkills
 
+from draftly.agents.factory import build_draftly_agent
 from draftly.agents.prompts import (
     ISSUE_LOCAL_RESEARCHER_PROMPT,
     load_skills,
@@ -29,6 +29,8 @@ from draftly.agents.shared.research import (
     build_github_researcher,
     build_slack_researcher,
 )
+from draftly.steering.context import SteeringRuntime
+from draftly.steering.decisions import AgentRole
 
 
 def build_issue_research_swarm(
@@ -37,6 +39,9 @@ def build_issue_research_swarm(
     *,
     local_tools: list[Any],
     github_tools: list[Any] | None = None,
+    runtime: SteeringRuntime | None = None,
+    agent_id: str | None = None,
+    node_id: str | None = None,
 ) -> Swarm:
     """Build the research swarm used by the GitHub issue ``research`` node.
 
@@ -47,8 +52,8 @@ def build_issue_research_swarm(
             researcher is appended after the local researcher (production runs
             with a real token), otherwise it is omitted (online evaluation).
     """
-    local_agent = Agent(
-        name="local_repo_researcher",
+    local_agent = build_draftly_agent(
+        role=AgentRole.RESEARCH,
         system_prompt=ISSUE_LOCAL_RESEARCHER_PROMPT,
         model=model,
         tools=local_tools,
@@ -60,24 +65,39 @@ def build_issue_research_swarm(
                 )
             )
         ],
+        runtime=runtime or SteeringRuntime.disabled(),
+        agent_id=agent_id or "local_repo_researcher",
+        node_id=node_id or "issue_research",
+        name="local_repo_researcher",
         description="Researches local repository evidence for the issue.",
     )
     slack_agent = build_slack_researcher(
         model,
         [tools.slack_search, tools.slack_get_thread],
+        runtime=runtime,
+        node_id=node_id or "issue_research",
     )
     discord_agent = build_discord_researcher(
         model,
         [tools.discord_search, tools.discord_get_thread],
+        runtime=runtime,
+        node_id=node_id or "issue_research",
     )
     docs_agent = build_docs_researcher(
         model,
         [tools.semantic_search, tools.keyword_search, tools.hybrid_search],
+        runtime=runtime,
+        node_id=node_id or "issue_research",
     )
 
     agents = [local_agent, slack_agent, discord_agent, docs_agent]
     if github_tools:
-        github_agent = build_github_researcher(model, github_tools)
+        github_agent = build_github_researcher(
+            model,
+            github_tools,
+            runtime=runtime,
+            node_id=node_id or "issue_research",
+        )
         agents.append(github_agent)
 
     return Swarm(

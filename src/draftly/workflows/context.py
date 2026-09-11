@@ -7,6 +7,7 @@ never a FastAPI app object.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from types import SimpleNamespace
 from typing import Any
@@ -53,6 +54,10 @@ class WorkflowContext:
     #: Org-scoped reviewer notifier (best-effort Slack/Discord on pending
     #: review); None ⇒ notification dispatching disabled.
     notifier: Any = None
+    #: Factory that builds ONE run-scoped SteeringRuntime per graph run
+    #: (run_id, surface, org_id, project_id, workflow_key) -> SteeringRuntime.
+    #: None ⇒ no steering runtime is wired (offline/legacy runs).
+    steering_runtime_factory: Callable[..., Any] | None = None
 
     @property
     def events(self) -> Any:
@@ -67,6 +72,24 @@ class WorkflowContext:
         strands = getattr(self.config, "strands", None)
         policy = getattr(strands, "review_policy", None)
         return policy if isinstance(policy, str) and policy else "always"
+
+    def new_steering_runtime(
+        self,
+        run_id: str,
+        surface: str,
+        org_id: str = "",
+        project_id: str = "",
+        workflow_key: str | None = None,
+    ) -> Any:
+        """Build the run-scoped SteeringRuntime for one graph run, or None.
+
+        Delegates to ``steering_runtime_factory`` when configured; returns
+        ``None`` otherwise so callers can treat steering as optional.
+        """
+        factory = self.steering_runtime_factory
+        if factory is None:
+            return None
+        return factory(run_id, surface, org_id, project_id, workflow_key)
 
     def memory_bundle(self) -> Any:
         """Expose org-scoped knowledge, episode, and procedure sources to graphs."""

@@ -14,6 +14,8 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
+from draftly.steering.redaction import redact_value, scrub_secret_values
+
 EnvelopeType = str  # Literal set documented on StreamEnvelope.type
 
 
@@ -52,6 +54,50 @@ class StreamEnvelope:
 
 def _as_dict(value: Any) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
+
+
+def steering_envelope(
+    decision: Any,
+    *,
+    run_id: str = "",
+    surface: str = "",
+    node_id: str | None = None,
+    agent_id: str | None = None,
+    tool_name: str | None = None,
+    attempt_summary: Mapping[str, Any] | None = None,
+    payload_max_bytes: int = 4 * 1024,
+) -> StreamEnvelope:
+    """Shape one redacted, byte-bounded steering decision.
+
+    Only safe fields are emitted: ``schema_version``, ``phase``, ``action``,
+    ``role``, safe agent/node/tool IDs, reason/rule source, an optional attempt
+    summary, and ``interrupt_id`` when present. Actor-supplied tool arguments
+    and model messages never appear; the reason string is value-scrubbed for
+    credentials and the whole payload is bounded via ``redact_value``.
+    """
+    role = getattr(decision, "role", None)
+    payload: dict[str, Any] = {
+        "schema_version": "1",
+        "phase": str(getattr(getattr(decision, "phase", None), "value", "") or ""),
+        "action": str(getattr(getattr(decision, "kind", None), "value", "") or ""),
+        "role": str(getattr(role, "value", "") or "") if role else None,
+        "rule": str(getattr(decision, "rule", "") or ""),
+        "reason": scrub_secret_values(str(getattr(decision, "reason", "") or "")),
+        "agent_id": agent_id,
+        "node_id": node_id,
+        "tool_name": tool_name,
+        "interrupt_id": getattr(decision, "interrupt_id", None),
+    }
+    if attempt_summary is not None:
+        payload["attempt_summary"] = dict(attempt_summary)
+    bounded = redact_value(payload, max_bytes=payload_max_bytes)
+    return StreamEnvelope(
+        type="steering",
+        run_id=run_id,
+        surface=surface,
+        node_id=node_id,
+        payload=bounded,
+    )
 
 
 def _status_name(result: Any) -> str:

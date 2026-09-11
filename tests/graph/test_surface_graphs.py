@@ -10,6 +10,7 @@ from draftly.orchestration.graphs.evaluation_graph import (
     build_evaluation_graph,
 )
 from draftly.orchestration.graphs.feedback_graph import build_feedback_graph
+from draftly.orchestration.hooks.review_gate import ReviewGate
 from tests.graph.conftest import ISSUE_TASK, SUPPORT_TASK
 
 
@@ -210,6 +211,15 @@ async def test_evaluation_surface_routes_to_expected_graph(
         assert node in graph.nodes, f"{surface} graph missing {node!r}"
     for node in absent:
         assert node not in graph.nodes, f"{surface} graph should not contain {node!r}"
+
+
+def test_all_surface_graphs_keep_review_gate_and_steering(graph_builder_fixtures) -> None:
+    """Every surface graph keeps the human-in-the-loop ReviewGate and wires
+    one run-scoped SteeringRuntime with a stable identity into every agent."""
+    for surface, fixture in graph_builder_fixtures.items():
+        graph = fixture.build(surface=surface, steering_enabled=True)
+        assert fixture.has_provider(graph, ReviewGate), f"{surface} lost ReviewGate"
+        assert fixture.application_agents_have_steering(graph), f"{surface} steering broken"
 
 
 async def test_merged_pr_with_review_policy_always_interrupts_before_delivery(
