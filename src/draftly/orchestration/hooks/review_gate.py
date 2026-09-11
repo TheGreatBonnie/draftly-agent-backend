@@ -171,6 +171,8 @@ class ReviewGate(HookProvider):
                 "evidence": _collect_evidence(event.source),
                 "classification": classification,
                 "document": document or None,
+                "changelog": safe_node_data(getattr(event.source, "state", None), "changelog")
+                or None,
             },
         )
 

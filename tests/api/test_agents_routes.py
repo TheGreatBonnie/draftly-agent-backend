@@ -30,6 +30,30 @@ class FakeRunsRepo:
         return self.steps
 
 
+class ModernRunsRepo(FakeRunsRepo):
+    async def list_agent_summaries(self, **kwargs: Any) -> list[dict[str, Any]]:
+        self.last_list_runs_kwargs = kwargs
+        return [{
+            "id": "writer_agent", "role": "writer_agent", "name": "Documentation Writer",
+            "description": "writes", "surface": "documentation", "tools": ["write_file"],
+            "availability": "enabled", "last_run_status": "completed", "runs_7d": 2,
+            "success_rate_7d": 1.0, "last_run_at": None, "latest_run_id": "run-1",
+            "legacy_steps": 0,
+        }]
+
+    async def get_agent_detail(self, **kwargs: Any) -> dict[str, Any] | None:
+        if kwargs["agent_id"] != "writer_agent":
+            return None
+        return {
+            "agent": (await self.list_agent_summaries())[0],
+            "metrics": {"window_days": 30, "runs": 2, "success_rate": 1.0},
+            "tools": ["write_file"], "recent_runs": [],
+        }
+
+    async def list_agent_runs(self, **kwargs: Any) -> tuple[list[dict[str, Any]], str | None]:
+        return [], "opaque-next"
+
+
 def make_app(runs_repo: FakeRunsRepo | None = None) -> FastAPI:
     app = FastAPI()
     app.include_router(router)
@@ -113,3 +137,23 @@ def test_build_agent_summaries_reuses_the_catalog_response_shape() -> None:
         "activity",
         "history",
     }
+
+
+def test_modern_agent_endpoints_are_typed_and_org_scoped() -> None:
+    repo = ModernRunsRepo()
+    client = TestClient(make_app(repo))
+
+    listing = client.get("/agents", params={"surface": "documentation", "limit": 500})
+    assert listing.status_code == 200
+    assert listing.json()["agents"][0]["id"] == "writer_agent"
+    assert repo.last_list_runs_kwargs["org_id"] == "org-1"
+    assert repo.last_list_runs_kwargs["limit"] == 200
+
+    detail = client.get("/agents/writer_agent")
+    assert detail.status_code == 200
+    assert detail.json()["agent"]["id"] == "writer_agent"
+    assert client.get("/agents/not-real").status_code == 404
+
+    runs = client.get("/agents/writer_agent/runs")
+    assert runs.status_code == 200
+    assert runs.json()["next_cursor"] == "opaque-next"

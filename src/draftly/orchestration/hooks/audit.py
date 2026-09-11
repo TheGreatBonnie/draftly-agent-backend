@@ -25,6 +25,7 @@ from strands.hooks import (
     HookRegistry,
 )
 
+from draftly.agents.catalog import agent_id_for_node
 from draftly.observability.metrics import Metrics
 from draftly.observability.metrics import metrics as _default_metrics
 
@@ -70,6 +71,8 @@ class RunAuditLogger(HookProvider):
             "event_type": str(state.get("event_type", "unknown")),
             "org_id": str(state.get("project_id", "")),
             "surface": str(state.get("surface", "")),
+            "workflow_key": state.get("workflow_key"),
+            "definition_id": state.get("definition_id"),
         }
         if self.jobs_repo is not None:
             try:
@@ -92,12 +95,14 @@ class RunAuditLogger(HookProvider):
         self._node_started_at[event.node_id] = time.monotonic()
         state = event.invocation_state or {}
         run_id = state.get("run_id")
+        agent_id = agent_id_for_node(str(state.get("surface", "")), str(event.node_id))
         if run_id:
             self._stream_seq += 1
             self._stream_pending.append({
                 "type": "node_start",
                 "node_id": str(event.node_id),
-                "payload": {"node_type": "agent"},
+                "payload": {"node_type": "agent", "agent_id": agent_id,
+                            "surface": str(state.get("surface", ""))},
                 "seq": self._stream_seq,
             })
             logger.info(
@@ -112,7 +117,16 @@ class RunAuditLogger(HookProvider):
         started = self._node_started_at.pop(event.node_id, None)
         duration_ms = round((time.monotonic() - started) * 1000) if started else None
         status = _status_of(event)
-        detail = {"agent_name": str(event.node_id), "capabilities": [str(event.node_id)]}
+        surface = str(state.get("surface", ""))
+        node_id = str(event.node_id)
+        agent_id = agent_id_for_node(surface, node_id)
+        detail = {
+            "agent_name": node_id,
+            "agent_id": agent_id,
+            "node_id": node_id,
+            "surface": surface,
+            "capabilities": [node_id],
+        }
         self._buffer_step(
             run_id=run_id,
             kind="node",
@@ -120,6 +134,9 @@ class RunAuditLogger(HookProvider):
             status=status,
             duration_ms=duration_ms,
             detail=detail,
+            agent_id=agent_id,
+            node_id=node_id,
+            surface=surface,
         )
         if run_id:
             self._stream_seq += 1
@@ -141,12 +158,16 @@ class RunAuditLogger(HookProvider):
         run_id = state.get("run_id")
         tool_name = getattr(event.tool_use, "get", lambda *_: None)("name")
         status = _tool_status_of(event)
+        surface = str(state.get("surface", ""))
         self._buffer_step(
             run_id=run_id,
             kind="tool",
             name=str(tool_name or "unknown"),
             status=status,
             detail={"tool_name": str(tool_name or "unknown"), "status": status},
+            agent_id=agent_id_for_node(surface, None),
+            node_id=None,
+            surface=surface,
         )
         if run_id:
             self._stream_seq += 1
@@ -216,6 +237,9 @@ class RunAuditLogger(HookProvider):
         status: str,
         duration_ms: int | None = None,
         detail: dict[str, Any] | None = None,
+        agent_id: str | None = None,
+        node_id: str | None = None,
+        surface: str = "",
     ) -> None:
         if not run_id:
             return
@@ -228,6 +252,9 @@ class RunAuditLogger(HookProvider):
                 "status": status,
                 "duration_ms": duration_ms,
                 "detail": detail or {},
+                "agent_id": agent_id,
+                "node_id": node_id,
+                "surface": surface,
             }
         )
 
@@ -244,13 +271,25 @@ async def _flush_run(
             source=meta.get("source", "github"),
             event_type=meta.get("event_type", "unknown"),
             org_id=meta.get("org_id", ""),
+            surface=meta.get("surface", ""),
+            workflow_key=meta.get("workflow_key"),
+            definition_id=meta.get("definition_id"),
         )
         kind_counters = {
             "node": "draftly_node_steps_total",
             "tool": "draftly_tool_steps_total",
         }
         for step in steps:
-            await repo.record_step(run_id=run_id, **step)
+            try:
+                await repo.record_step(run_id=run_id, **step)
+            except TypeError as exc:
+                # Third-party/offline repositories may still expose the old
+                # write contract; identity fields are additive.
+                if "unexpected keyword" not in str(exc):
+                    raise
+                legacy_step = {key: value for key, value in step.items()
+                                if key not in {"agent_id", "node_id", "surface"}}
+                await repo.record_step(run_id=run_id, **legacy_step)
             counter = kind_counters.get(str(step.get("kind", "")))
             if counter:
                 _metrics.increment(counter)

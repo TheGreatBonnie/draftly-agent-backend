@@ -6,6 +6,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
+from draftly.app.api.agent_schemas import RunListResponse, RunStepsResponse
 from draftly.app.api.auth import get_verified_token
 
 router = APIRouter(
@@ -24,7 +25,7 @@ def _repo(request: Request) -> Any:
     return repo
 
 
-@router.get("")
+@router.get("", response_model=RunListResponse)
 async def list_runs(
     request: Request,
     token: dict = Depends(get_verified_token),
@@ -57,7 +58,7 @@ async def get_run(
     return {"run": await _authorized_run(request, run_id, token)}
 
 
-@router.get("/{run_id}/steps")
+@router.get("/{run_id}/steps", response_model=RunStepsResponse)
 async def list_run_steps(
     run_id: str,
     request: Request,

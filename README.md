@@ -55,6 +55,17 @@ Inspect the [case and its evidence references](src/draftly/evaluation/datasets/d
 
 Memory curation can create, merge, supersede, or archive knowledge when its workflow runs. Model routing can use stored task-performance statistics. Changes to prompts and packaged skills remain developer work; this README does not claim they rewrite themselves or that every run improves future quality.
 
+## Agent observability API
+
+The authenticated `/api/agents` endpoints expose the immutable backend agent catalog and organization-scoped run telemetry used by the production UI:
+
+- `GET /api/agents` returns catalog entries and aggregate status/metrics, including agents with no runs.
+- `GET /api/agents/{agent_id}` returns safe metadata, tools, metrics, and recent runs.
+- `GET /api/agents/{agent_id}/runs` returns bounded, cursor-paginated runs.
+- `GET /api/runs/{run_id}/steps` returns persisted steps with `agent_id`, `node_id`, and `surface` where available.
+
+Agent definitions remain code-defined next to the factory registry. This surface intentionally does not provide configurable agent CRUD or expose model credentials, private prompts, or raw tool arguments. Migrations `052_agent_run_surface.sql` and `053_agent_step_identity.sql` are additive; legacy rows without stable identity remain visible as legacy telemetry. Selected-run live activity continues through the existing single-use stream ticket and Redis/SSE endpoints.
+
 ## Built with Strands Agents
 
 Strands supplies agents, graph orchestration, and interrupt hooks. Draftly supplies the domain tools, routing conditions, review policy, persistence, and delivery integration.
