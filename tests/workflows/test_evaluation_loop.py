@@ -42,6 +42,7 @@ class FakeEvaluations:
     def __init__(self, datasets: list[dict] | None = None) -> None:
         self.datasets = datasets if datasets is not None else [{"name": "geometry", "cases": []}]
         self.saved: list[dict] = []
+        self.case_results: list[dict] = []
 
     def list_datasets(self) -> list[dict]:
         return self.datasets
@@ -49,6 +50,10 @@ class FakeEvaluations:
     async def save_run_summary(self, **kwargs: Any) -> dict | None:
         self.saved.append(kwargs)
         return {"id": "ev-1", "status": "completed"}
+
+    async def save_case_results(self, **kwargs: Any) -> list[dict]:
+        self.case_results.append(kwargs)
+        return kwargs["results"]
 
 
 def build_context(**overrides: Any) -> Any:
@@ -146,3 +151,29 @@ async def test_loop_publishes_terminal_job_status():
     statuses = ctx.repositories.jobs.statuses
     assert statuses and statuses[-1][0] == "run-1"
     assert statuses[-1][1] in ("completed", "failed")
+
+
+async def test_loop_persists_detail_rows_with_summary_identity():
+    ctx = build_context(
+        datasets=[
+            {
+                "name": "documentation",
+                "surface": "documentation",
+                "cases": [
+                    {
+                        "name": "oauth-auth",
+                        "input": "OAuth",
+                        "expected_output": "OAuth",
+                    }
+                ],
+            }
+        ]
+    )
+
+    await run_evaluation_loop(ctx, org_id="org-9", run_id="run-1")
+
+    details = ctx.repositories.evaluations.case_results
+    assert len(details) == 1
+    assert details[0]["evaluation_id"] == "ev-1"
+    assert details[0]["run_id"] == "run-1"
+    assert details[0]["results"][0]["case_id"] == "oauth-auth"

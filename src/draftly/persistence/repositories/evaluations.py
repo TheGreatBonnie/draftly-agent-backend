@@ -1,11 +1,14 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import structlog
 
 from draftly.evaluation.runner import StrandsEvalsRunner
+from draftly.integrations.database.evaluation_idempotency_store import (
+    EvaluationIdempotencyStore,
+)
 from draftly.integrations.database.evaluations_store import (
     DatabaseEvaluationsStore,
 )
@@ -19,6 +22,8 @@ class EvaluationRepository:
         store: DatabaseEvaluationsStore | None = None,
     ) -> None:
         self.store = store or DatabaseEvaluationsStore()
+        client = getattr(self.store, "client", None)
+        self.idempotency_store = EvaluationIdempotencyStore(client) if client else None
 
     async def create(
         self,
@@ -143,6 +148,8 @@ class EvaluationRepository:
             "failed": failed,
             "granular": granular,
         }
+        if summary.get("evaluation_types"):
+            metrics["evaluation_types"] = list(summary["evaluation_types"])
 
         # Run-level summary row. Populate the columns the schema defines for a
         # run: ``passed`` reflects whether every case passed (the old code never
@@ -181,6 +188,132 @@ class EvaluationRepository:
         evaluation_id: str,
     ) -> dict[str, Any] | None:
         return await self.store.get(evaluation_id=evaluation_id)
+
+    async def save_case_results(
+        self,
+        *,
+        org_id: str,
+        evaluation_id: str,
+        run_id: str,
+        results: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        return await self.store.insert_case_results(
+            org_id=org_id,
+            evaluation_id=evaluation_id,
+            run_id=run_id,
+            results=results,
+        )
+
+    async def get_run_summary(
+        self,
+        *,
+        org_id: str,
+        run_id: str,
+    ) -> dict[str, Any] | None:
+        return await self.store.get_by_run_id(org_id=org_id, run_id=run_id)
+
+    async def list_case_results(
+        self,
+        *,
+        org_id: str,
+        run_id: str,
+        cursor: str | None,
+        limit: int,
+    ) -> tuple[list[dict[str, Any]], str | None]:
+        bounded_limit = max(1, min(limit, 200))
+        return await self.store.list_case_results(
+            org_id=org_id,
+            run_id=run_id,
+            cursor=cursor,
+            limit=bounded_limit,
+        )
+
+    async def list_runs(
+        self,
+        *,
+        org_id: str,
+        evaluation_type: str | None,
+        limit: int,
+        cursor: str | None,
+    ) -> tuple[list[dict[str, Any]], int, str | None]:
+        return await self.store.list_runs(
+            org_id=org_id,
+            evaluation_type=evaluation_type,
+            limit=max(1, min(limit, 200)),
+            cursor=cursor,
+        )
+
+    async def get_run_detail(
+        self,
+        *,
+        org_id: str,
+        run_id: str,
+        cases_limit: int,
+        cases_cursor: str | None,
+    ) -> dict[str, Any] | None:
+        summary = await self.get_run_summary(org_id=org_id, run_id=run_id)
+        if summary is None:
+            return None
+        cases, next_cursor = await self.list_case_results(
+            org_id=org_id,
+            run_id=run_id,
+            cursor=cases_cursor,
+            limit=cases_limit,
+        )
+        if not cases:
+            legacy_rows = (summary.get("metrics") or {}).get("granular") or []
+            cases = [
+                {
+                    "id": f"{summary.get('id', run_id)}:{index}",
+                    "evaluation_id": str(summary.get("id") or ""),
+                    "run_id": run_id,
+                    "dataset": row.get("dataset", ""),
+                    "case_id": row.get("case") or row.get("case_id", ""),
+                    "metric": row.get("metric", ""),
+                    "threshold": row.get("threshold"),
+                    "score": row.get("score"),
+                    "passed": bool(row.get("test_pass", row.get("passed", False))),
+                    "reason": row.get("reason", ""),
+                    "input": None,
+                    "expected_output": None,
+                    "actual_output": None,
+                    "evidence": [],
+                    "trace_id": None,
+                    "duration_ms": None,
+                }
+                for index, row in enumerate(legacy_rows)
+                if isinstance(row, dict)
+            ]
+        detail_available = bool(cases)
+        return {
+            "summary": summary,
+            "cases": cases,
+            "next_cases_cursor": next_cursor,
+            "detail_available": detail_available,
+        }
+
+    async def aggregate_summary(self, *, org_id: str, days: int) -> dict[str, Any]:
+        return await self.store.aggregate_summary(
+            org_id=org_id,
+            since=datetime.now(UTC) - timedelta(days=days),
+            days=days,
+        )
+
+    def catalog(self) -> dict[str, list[dict[str, Any]]]:
+        datasets = []
+        for definition in self.list_datasets():
+            datasets.append(
+                {
+                    "name": definition.get("name", ""),
+                    "description": definition.get("description", ""),
+                    "surface": definition.get("surface", ""),
+                    "case_count": len(definition.get("cases", [])),
+                    "version": definition.get("version"),
+                }
+            )
+        from draftly.evaluation.runner import evaluator_catalog
+
+        return {"datasets": datasets, "evaluators": evaluator_catalog()}
 
     async def search(
         self,

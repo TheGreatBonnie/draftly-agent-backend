@@ -20,6 +20,9 @@ from strands_evals.types.evaluation import EvaluationData, EvaluationOutput, Inp
 logger = structlog.get_logger(__name__)
 
 DATASET_DIR = Path(__file__).parent / "datasets"
+MAX_DETAIL_TEXT = 16_000
+MAX_EVIDENCE_ITEMS = 20
+MAX_EVIDENCE_TEXT = 4_000
 
 
 class StrandsEvalsRunner:
@@ -269,7 +272,25 @@ def run_dataset_sync(dataset: dict[str, Any]) -> list[dict[str, Any]]:
     report = experiment.run_evaluations(
         lambda case: str(getattr(case, "expected_output", "") or "")
     )
-    rows = report_rows(dataset.get("name", "dataset"), report)
+    detail_cases = [
+        {
+            **case,
+            "metadata": {
+                **(case.get("metadata") or {}),
+                "_evaluation_detail": {
+                    "actual_output": case.get("expected_output"),
+                    "trace_id": None,
+                },
+            },
+        }
+        for case in dataset.get("cases", [])
+    ]
+    rows = report_detail_rows(
+        dataset.get("name", "dataset"),
+        report,
+        cases=detail_cases,
+        run_id="",
+    )
     logger.info(
         "runner_sync_complete",
         dataset=dataset.get("name", "dataset"),
@@ -277,6 +298,162 @@ def run_dataset_sync(dataset: dict[str, Any]) -> list[dict[str, Any]]:
         passed=sum(1 for r in rows if r["test_pass"]),
     )
     return rows
+
+
+def _sanitize_detail_text(value: Any, *, limit: int = MAX_DETAIL_TEXT) -> str | None:
+    """Return bounded, credential-free text for persisted evaluation detail."""
+    if value is None:
+        return None
+    text = str(value)
+    import re
+
+    text = re.sub(
+        r"(?i)(authorization\s*[:=]\s*bearer\s+)[^\s,;]+",
+        r"\1[REDACTED]",
+        text,
+    )
+    text = re.sub(
+        r"(?i)((?:api|provider)[_-]?key|secret|password|token)\s*[:=]\s*([^\s,;}]+)",
+        r"\1=[REDACTED]",
+        text,
+    )
+    return text[:limit]
+
+
+def _sanitize_detail_evidence(value: Any) -> list[dict[str, str]]:
+    if not isinstance(value, list):
+        return []
+    evidence: list[dict[str, str]] = []
+    for item in value[:MAX_EVIDENCE_ITEMS]:
+        if isinstance(item, dict):
+            entry: dict[str, str] = {}
+            for key in ("path", "url", "content", "description"):
+                if item.get(key) is not None:
+                    entry[key] = _sanitize_detail_text(
+                        item[key], limit=MAX_EVIDENCE_TEXT
+                    ) or ""
+            if entry:
+                evidence.append(entry)
+        elif item:
+            evidence.append(
+                {"path": _sanitize_detail_text(item, limit=MAX_EVIDENCE_TEXT) or ""}
+            )
+    return evidence
+
+
+def report_detail_rows(
+    dataset_name: str,
+    report: Any,
+    *,
+    cases: list[dict[str, Any]],
+    run_id: str,
+) -> list[dict[str, Any]]:
+    """Serialize report rows with safe, optional task output for detail pages.
+
+    ``strands_evals`` reports aggregate evaluator arrays but intentionally do
+    not expose the task's raw output. The online task attaches an internal,
+    allowlisted detail payload to the case metadata; absent that payload this
+    function emits null/empty values instead of fabricating UI content.
+    """
+    by_name = {str(case.get("name", "")): case for case in cases}
+    rows: list[dict[str, Any]] = []
+    report_cases = list(getattr(report, "cases", None) or [])
+    scores = list(getattr(report, "scores", None) or [])
+    passes = list(getattr(report, "test_passes", None) or [])
+    reasons = list(getattr(report, "reasons", None) or [])
+    for index, case_data in enumerate(report_cases):
+        case_data = case_data if isinstance(case_data, dict) else {}
+        case_name = str(case_data.get("name") or "")
+        source = by_name.get(case_name, {})
+        metadata = source.get("metadata") if isinstance(source, dict) else {}
+        metadata = metadata if isinstance(metadata, dict) else {}
+        detail = metadata.get("_evaluation_detail")
+        detail = detail if isinstance(detail, dict) else {}
+        threshold = None
+        if case_data.get("evaluator") == "expected_contains":
+            threshold = 0.6
+            raw_threshold = metadata.get("expected_contains_threshold")
+            if raw_threshold is not None:
+                try:
+                    threshold = float(raw_threshold)
+                except (TypeError, ValueError):
+                    pass
+        rows.append(
+            {
+                "dataset": dataset_name,
+                "case_id": str(source.get("case_id") or case_name),
+                "case": case_name,
+                "metric": str(case_data.get("evaluator") or ""),
+                "threshold": threshold,
+                "score": float(scores[index] or 0.0) if index < len(scores) else 0.0,
+                "test_pass": bool(passes[index]) if index < len(passes) else False,
+                "reason": _sanitize_detail_text(
+                    reasons[index] if index < len(reasons) else ""
+                )
+                or "",
+                "input": _sanitize_detail_text(source.get("input")),
+                "expected_output": _sanitize_detail_text(source.get("expected_output")),
+                "actual_output": _sanitize_detail_text(detail.get("actual_output")),
+                "evidence": _sanitize_detail_evidence(detail.get("evidence")),
+                "trace_id": _sanitize_detail_text(detail.get("trace_id"), limit=256),
+                "duration_ms": detail.get("duration_ms"),
+            }
+        )
+    return rows
+
+
+def evaluator_catalog() -> list[dict[str, Any]]:
+    """Stable evaluator metadata used by the dashboard catalog."""
+    return [
+        {
+            "key": "expected_contains",
+            "display_name": "Expected content coverage",
+            "description": "Checks significant expected concepts in the actual output.",
+            "threshold": ExpectedContains.COVERAGE_THRESHOLD,
+            "version": "1",
+            "enabled": True,
+        },
+        {
+            "key": "expected_tools",
+            "display_name": "Expected tools",
+            "description": "Checks that declared grounding tools were called.",
+            "threshold": None,
+            "version": "1",
+            "enabled": True,
+        },
+        {
+            "key": "expected_authoring_action",
+            "display_name": "Authoring action",
+            "description": "Checks create, update, or no-change behavior.",
+            "threshold": None,
+            "version": "1",
+            "enabled": True,
+        },
+        {
+            "key": "expected_delivered",
+            "display_name": "Delivery receipt",
+            "description": "Checks that required authoring reached delivery.",
+            "threshold": None,
+            "version": "1",
+            "enabled": True,
+        },
+        {
+            "key": "expected_interrupt",
+            "display_name": "Review interruption",
+            "description": "Checks that the review gate interrupted when required.",
+            "threshold": None,
+            "version": "1",
+            "enabled": True,
+        },
+        {
+            "key": "expected_passthrough",
+            "display_name": "Review passthrough",
+            "description": "Checks that low-risk or disabled review reached delivery.",
+            "threshold": None,
+            "version": "1",
+            "enabled": True,
+        },
+    ]
 
 
 def report_rows(dataset_name: str, report: Any) -> list[dict[str, Any]]:
@@ -1032,7 +1209,21 @@ async def run_dataset_live(
         evaluation_data_store=evaluation_data_store,
     )
 
-    return _report_rows(dataset.get("name", "dataset"), report)
+    detail_cases = [
+        {
+            "name": case.name,
+            "input": case.input,
+            "expected_output": case.expected_output,
+            "metadata": case.metadata,
+        }
+        for case in cases
+    ]
+    return report_detail_rows(
+        dataset.get("name", "dataset"),
+        report,
+        cases=detail_cases,
+        run_id=run_id_prefix,
+    )
 
 
 async def run_dataset_online(
@@ -1071,7 +1262,21 @@ async def run_dataset_online(
         evaluation_data_store=evaluation_data_store,
     )
 
-    return _report_rows(dataset.get("name", "dataset"), report)
+    detail_cases = [
+        {
+            "name": case.name,
+            "input": case.input,
+            "expected_output": case.expected_output,
+            "metadata": case.metadata,
+        }
+        for case in cases
+    ]
+    return report_detail_rows(
+        dataset.get("name", "dataset"),
+        report,
+        cases=detail_cases,
+        run_id=run_id_prefix,
+    )
 
 
 def _report_rows(dataset_name: str, report: Any) -> list[dict[str, Any]]:
@@ -1090,9 +1295,11 @@ __all__ = [
     "ExpectedToolCalled",
     "NoFalsePositiveGap",
     "NodeToolCalled",
+    "evaluator_catalog",
     "run_dataset_sync",
     "run_dataset_live",
     "run_dataset_online",
     "build_live_evaluators",
     "report_rows",
+    "report_detail_rows",
 ]

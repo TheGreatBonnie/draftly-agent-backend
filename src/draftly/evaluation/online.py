@@ -6,6 +6,7 @@ import json
 import re
 import uuid
 from pathlib import Path
+from time import perf_counter
 from typing import Any
 
 import structlog
@@ -133,6 +134,35 @@ def _dedupe_evidence_paths(entries: list[dict[str, str]]) -> list[dict[str, str]
         seen.add(path)
         out.append(entry)
     return out
+
+
+def _attach_evaluation_detail(
+    case: Any,
+    *,
+    output: str,
+    run_id: str,
+    started_at: float,
+    environment_state: list[Any],
+) -> None:
+    """Attach an internal, allowlisted detail payload for report serialization."""
+    metadata = getattr(case, "metadata", None)
+    if not isinstance(metadata, dict):
+        return
+    evidence: list[Any] = []
+    for entry in environment_state:
+        name = entry.get("name") if isinstance(entry, dict) else getattr(entry, "name", None)
+        if name != "evidence":
+            continue
+        state = entry.get("state") if isinstance(entry, dict) else getattr(entry, "state", None)
+        if isinstance(state, list):
+            evidence = state
+        break
+    metadata["_evaluation_detail"] = {
+        "actual_output": output,
+        "evidence": evidence,
+        "trace_id": run_id,
+        "duration_ms": max(0, round((perf_counter() - started_at) * 1000)),
+    }
 
 
 def build_event(case: Any, surface: str) -> dict[str, Any]:
@@ -663,6 +693,7 @@ def build_online_task(client: StrandsClient, *, run_id_prefix: str = "eval"):
     """Build an async task function that invokes the real Strands graph per case."""
 
     async def task(case: Any) -> dict[str, Any]:
+        started_at = perf_counter()
         surface = getattr(case, "metadata", {}).get("surface", "pull_request")
         # A unique run_id per invocation prevents Strands' per-run session
         # manager from restoring a stale conversation from a prior live run
@@ -748,6 +779,13 @@ def build_online_task(client: StrandsClient, *, run_id_prefix: str = "eval"):
                     },
                 ),
             ]
+            _attach_evaluation_detail(
+                case,
+                output=output_text,
+                run_id=run_id,
+                started_at=started_at,
+                environment_state=env_state,
+            )
 
             logger.info(
                 "online_task_complete",
@@ -941,6 +979,13 @@ def build_online_task(client: StrandsClient, *, run_id_prefix: str = "eval"):
         if file_actions:
             env_state.append(EnvironmentState(name="file_actions", state=file_actions))
 
+        _attach_evaluation_detail(
+            case,
+            output=output_text,
+            run_id=run_id,
+            started_at=started_at,
+            environment_state=env_state,
+        )
         return {
             "output": output_text,
             "trajectory": flat_trajectory,
