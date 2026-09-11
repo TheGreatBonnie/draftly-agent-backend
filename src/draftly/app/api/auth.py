@@ -100,3 +100,13 @@ async def require_reviewer_role(token: dict = Depends(get_verified_token)) -> di
             detail="Reviewer role required for this action",
         )
     return token
+
+
+async def require_workflow_editor(token: dict = Depends(get_verified_token)) -> dict:
+    """Require a member who can change workflow configuration."""
+    if token.get("org_role") not in ("admin", "editor"):
+        raise HTTPException(
+            status_code=403,
+            detail="Editor role required for this action",
+        )
+    return token

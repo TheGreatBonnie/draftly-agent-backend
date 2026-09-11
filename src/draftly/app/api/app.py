@@ -24,6 +24,8 @@ from draftly.app.api.routes import (
     runs,
     slack,
     support,
+    workflow_runs,
+    workflow_templates,
     workflows,
 )
 from draftly.app.lifecycle import lifespan
@@ -110,6 +112,16 @@ def create_api_app() -> FastAPI:
 
     app.include_router(
         workflows.router,
+        prefix="/api",
+    )
+
+    app.include_router(
+        workflow_templates.router,
+        prefix="/api",
+    )
+
+    app.include_router(
+        workflow_runs.router,
         prefix="/api",
     )
 
