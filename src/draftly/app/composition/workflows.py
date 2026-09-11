@@ -150,6 +150,7 @@ def build_workflows(
     from draftly.memory.procedural.service import ProceduralService
     from draftly.workflows.content.content_generation import run_content_workflow
     from draftly.workflows.context import WorkflowContext
+    from draftly.review.resume import run_review_resume
     from draftly.workflows.documentation.documentation_audit import (
         run_documentation_audit,
     )
@@ -223,6 +224,7 @@ def build_workflows(
     registry.register("github_release", run_release_workflow)
     registry.register("github_issue", run_github_issue_workflow)
     registry.register("github_feedback", ingest_github_feedback)
+    registry.register("review_resume", run_review_resume)
     registry.register("slack_support", run_slack_support)
     registry.register("discord_support", run_discord_support)
     registry.register("documentation_sync", run_documentation_sync)

@@ -44,6 +44,7 @@ QUEUE_MAP: dict[str, str] = {
     "discord_support": "webhooks",
     "slack_support.enqueue": "webhooks",
     "discord_support.enqueue": "webhooks",
+    "review.resume": "webhooks",
 }
 
 # RQ job timeout (seconds). "-1" is the RQ 2.x sentinel for "jobs never

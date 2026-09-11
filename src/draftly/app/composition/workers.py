@@ -28,6 +28,7 @@ TASK_REGISTRY: dict[str, str] = {
     "github_pr.enqueue": "github_pr",
     "github_release.enqueue": "github_release",
     "github_feedback.enqueue": "github_feedback",
+    "review.resume": "review_resume",
     "content_generation.enqueue": "content_generation",
     "slack_support.enqueue": "slack_support",
     "discord_support.enqueue": "discord_support",
