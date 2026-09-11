@@ -5,10 +5,10 @@ from draftly.app.config import Settings, StrandsConfig
 
 def test_steering_config_defaults():
     config = StrandsConfig()
-    assert config.steering_enabled is False
-    assert config.steering_enforcement_enabled is False
+    assert config.steering_enabled is True
+    assert config.steering_enforcement_enabled is True
     assert config.steering_policy_version == "v1"
-    assert config.steering_llm_enabled is False
+    assert config.steering_llm_enabled is True
     assert config.steering_tool_guides_per_call == 2
     assert config.steering_model_guides_per_turn == 2
     assert config.steering_total_guides_per_agent == 5

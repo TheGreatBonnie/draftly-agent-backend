@@ -489,10 +489,12 @@ async def _upsert_job_row(
 ) -> None:
     try:
         await jobs_repo.upsert_on_conflict(
-            job_id=job_id,
+            run_id=job_id,
             org_id=org_id,
             name=surface or event_type or "agent",
             job_type="agent",
+            schedule="adhoc",
+            configuration={},
             status="running",
         )
     except Exception:

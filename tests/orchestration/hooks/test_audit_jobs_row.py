@@ -8,12 +8,34 @@ from draftly.orchestration.hooks.audit import RunAuditLogger
 
 
 class RecordingJobs:
+    """Strict fake mirroring DatabaseJobsStore.upsert_on_conflict's contract."""
+
     def __init__(self) -> None:
         self.calls: list[dict] = []
 
-    async def upsert_on_conflict(self, **kwargs) -> dict | None:
-        self.calls.append(kwargs)
-        return kwargs
+    async def upsert_on_conflict(
+        self,
+        *,
+        run_id: str,
+        org_id: str,
+        name: str,
+        job_type: str,
+        schedule: str,
+        configuration: dict,
+        status: str = "pending",
+    ) -> dict | None:
+        self.calls.append(
+            {
+                "run_id": run_id,
+                "org_id": org_id,
+                "name": name,
+                "job_type": job_type,
+                "schedule": schedule,
+                "configuration": configuration,
+                "status": status,
+            }
+        )
+        return self.calls[-1]
 
 
 def _start_event():
@@ -37,8 +59,12 @@ def test_run_start_upserts_jobs_row() -> None:
         await asyncio.sleep(0.05)
         assert len(jobs.calls) == 1
         row = jobs.calls[0]
-        assert row["job_id"] == "evt-1"
+        assert row["run_id"] == "evt-1"
         assert row["org_id"] == "org-1"
+        assert row["name"] == "github"
+        assert row["job_type"] == "agent"
+        assert row["schedule"] == "adhoc"
+        assert row["configuration"] == {}
         assert row["status"] == "running"
 
     asyncio.run(_run())
