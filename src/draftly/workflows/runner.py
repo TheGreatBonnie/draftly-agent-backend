@@ -435,7 +435,9 @@ class WorkflowRunner:
             )
         state.result = result
 
-        # 4. Handle the outcome.
+        # 4. Await the audit flush so agent_runs rows survive loop teardown,
+        #    then handle the outcome.
+        await self._drain_audit_flush(graph, run_id)
         return await self._finish_result(event, surface, result, state)
 
     async def resume_review(
@@ -601,6 +603,7 @@ class WorkflowRunner:
             reset_support_runtime(support_token)
             reset_installation_id(installation_token)
 
+        await self._drain_audit_flush(graph, run_id)
         resumed = await self._finish_result(event, surface, result, state)
         logger.info("workflow_resume_done", run_id=run_id, status=resumed.status.value)
         return resumed
@@ -823,6 +826,7 @@ class WorkflowRunner:
             reset_support_runtime(support_token)
             reset_installation_id(installation_token)
 
+        await self._drain_audit_flush(graph, run_id)
         resumed = await self._finish_result(event, surface, result, state)
         _metrics.increment("draftly_intervention_resume_success_total")
         logger.info(
@@ -994,6 +998,22 @@ class WorkflowRunner:
             discord_count=totals.get("discord", 0),
             email_count=totals.get("email", 0),
         )
+
+    async def _drain_audit_flush(self, graph: Any, run_id: str) -> None:
+        """Await the pending audit DB flush before the runner returns.
+
+        The per-surface graph builders attach the ``RunAuditLogger`` instance
+        as ``graph._draftly_audit_hook``; without it (test/downstream graphs)
+        this is a no-op. Ensures agent_runs/agent_steps rows survive event-loop
+        teardown instead of being cancelled with the run-end task.
+        """
+        hook = getattr(graph, "_draftly_audit_hook", None)
+        if hook is None:
+            return
+        try:
+            await hook.drain_run(run_id)
+        except Exception:
+            logger.warning("audit_drain_failed", run_id=run_id, exc_info=True)
 
     async def _finish_result(
         self,

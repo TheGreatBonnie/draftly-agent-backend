@@ -282,6 +282,17 @@ async def _scheduler_status(repositories: Any, org_id: str) -> str:
     return "Healthy" if active_jobs else "Idle"
 
 
+async def _pending_intervention_count(repositories: Any, org_id: str) -> int:
+    steering = getattr(repositories, "steering_interventions", None)
+    count_pending = getattr(steering, "count_pending_for_org", None)
+    if count_pending is None:
+        return 0
+    try:
+        return max(0, int(await count_pending(org_id=org_id)))
+    except Exception:
+        return 0
+
+
 async def build_overview_snapshot(
     application: Any, org_id: str, days: int
 ) -> dict[str, Any]:
@@ -309,6 +320,7 @@ async def build_overview_snapshot(
         repositories, database, org_id
     )
     scheduler_status = await _scheduler_status(repositories, org_id)
+    pending_interventions = await _pending_intervention_count(repositories, org_id)
 
     evaluation, failed_evaluations, evaluations_status = _evaluation_summary(evaluations)
     workflow_summary, active_workflows = _workflow_snapshot(workflows)
@@ -342,6 +354,7 @@ async def build_overview_snapshot(
         },
         "attention": {
             "pending_reviews": len(pending_reviews),
+            "pending_interventions": pending_interventions,
             "high_risk_reviews": sum(_is_high_risk(review) for review in pending_reviews),
             "failed_evaluations": failed_evaluations,
             "integration_issues": integration_issues,

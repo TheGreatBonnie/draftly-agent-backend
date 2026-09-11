@@ -113,6 +113,13 @@ async def respond_to_intervention(
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         return _respond(resolved, run_status=_run_status(None, run))
 
+    phase = pending.reason.get("phase") if isinstance(pending.reason, dict) else None
+    if phase != "before_tool":
+        raise HTTPException(
+            status_code=422,
+            detail="This intervention phase does not support human responses",
+        )
+
     try:
         run_state = await runner.resume_intervention(
             event=_event_for(run, run_id=run_id, org_id=org_id),

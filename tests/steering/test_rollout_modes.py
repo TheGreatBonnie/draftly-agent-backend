@@ -19,7 +19,7 @@ from draftly.observability.metrics import Metrics
 from draftly.persistence.repositories.steering import InterventionRecord
 from draftly.steering import handler as handler_module
 from draftly.steering.context import RuntimeScope, SteeringRuntime, SteeringRuntimeConfig
-from draftly.steering.decisions import AgentRole, DecisionKind
+from draftly.steering.decisions import AgentRole, DecisionKind, SteeringFailure
 from draftly.steering.handler import (
     DraftlySteeringHandler,
     _JudgedSteering,
@@ -210,6 +210,7 @@ async def test_enforcement_mode_interrupts_side_effect_and_persists():
     runtime.interventions.create_pending.assert_awaited_once()
     record = runtime.interventions.create_pending.await_args.kwargs["record"]
     assert record.interrupt_id == handler.last_interrupt_id
+    assert record.reason["reason"] == "side-effecting tool requires idempotency metadata"
 
 
 async def test_enforcement_mode_is_default_when_flags_unset():
@@ -349,8 +350,8 @@ async def test_audit_failure_fails_closed_and_counts(monkeypatch):
     handler = DraftlySteeringHandler(
         runtime=runtime, policy=policy_for(AgentRole.DELIVERY)
     )
-    action = await handler.steer_before_tool(
-        agent=FakeAgent(), tool_use={"name": "read_file", "path": "bad"},
-    )
-    assert type(action).__name__ == "Interrupt"
+    with pytest.raises(SteeringFailure, match="audit write failed"):
+        await handler.steer_before_tool(
+            agent=FakeAgent(), tool_use={"name": "read_file", "path": "bad"},
+        )
     assert registry.snapshot()["counters"].get("draftly_steering_audit_failures_total") == 1

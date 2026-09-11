@@ -22,8 +22,9 @@ from collections.abc import Awaitable, Callable
 from dataclasses import replace
 from typing import Any, Literal
 
+import structlog
 from pydantic import BaseModel, Field
-from strands.vended_plugins.steering import Guide, Interrupt, Proceed, SteeringHandler
+from strands.vended_plugins.steering import Guide, Proceed, SteeringHandler
 
 from draftly.observability.metrics import Metrics
 from draftly.observability.metrics import metrics as _default_metrics
@@ -39,6 +40,7 @@ from draftly.steering.policy import RolePolicy
 from draftly.steering.redaction import redact_value, scrub_secret_values
 
 _metrics: Metrics = _default_metrics
+logger = structlog.get_logger(__name__)
 
 
 def _record_decision_metrics(decision: SteeringDecision, surface: str) -> None:
@@ -231,6 +233,8 @@ class DraftlySteeringHandler(SteeringHandler):
         try:
             return await self._handle_tool(agent=agent, tool_use=tool_use, **kwargs)
         except SteeringFailure:
+            if self.policy.side_effecting:
+                raise
             return self._on_persistence_failure()
 
     async def steer_after_model(self, *, agent, message, stop_reason, **kwargs):
@@ -241,6 +245,8 @@ class DraftlySteeringHandler(SteeringHandler):
                 agent=agent, message=message, stop_reason=stop_reason, **kwargs
             )
         except SteeringFailure:
+            if self.policy.side_effecting:
+                raise
             return self._on_persistence_failure(model=True)
 
     # ------------------------------------------------------------------
@@ -313,6 +319,25 @@ class DraftlySteeringHandler(SteeringHandler):
         audit = self.runtime.audit
         identity = self.runtime.identity
         _record_decision_metrics(decision, self.runtime.scope.surface)
+        decision_source = "judge" if (decision.rule or "").startswith("judge:") else "deterministic"
+        logger.info(
+            "steering_decision",
+            run_id=(identity.run_id if identity else self.runtime.scope.run_id),
+            surface=self.runtime.scope.surface,
+            policy_version=self.runtime.config.policy_version,
+            action=decision.kind.value,
+            phase=decision.phase.value,
+            role=(decision.role.value if decision.role else None),
+            agent_id=(identity.agent_id if identity else None),
+            node_id=(identity.node_id if identity else None),
+            tool_name=tool_name,
+            rule=decision.rule,
+            decision_source=decision_source,
+            interrupt_id=decision.interrupt_id,
+            reason=scrub_secret_values(str(decision.reason or ""))[
+                : self.runtime.config.reason_max_chars
+            ],
+        )
         if audit is not None:
             try:
                 await audit.record_step(
@@ -321,6 +346,15 @@ class DraftlySteeringHandler(SteeringHandler):
                     node_id=(identity.node_id if identity else None),
                     decision=decision,
                     tool_name=tool_name,
+                    surface=self.runtime.scope.surface,
+                    policy_version=self.runtime.config.policy_version,
+                    attempt_summary={
+                        "tool_guides_per_call": self.runtime.config.tool_guides_per_call,
+                        "model_guides_per_turn": self.runtime.config.model_guides_per_turn,
+                        "total_guides_per_agent": self.runtime.config.total_guides_per_agent,
+                    },
+                    decision_source=decision_source,
+                    outcome=decision.kind.value,
                 )
             except Exception as exc:
                 _metrics.increment("draftly_steering_audit_failures_total")
@@ -337,6 +371,8 @@ class DraftlySteeringHandler(SteeringHandler):
         """Create the durable intervention row before returning ``Interrupt``."""
         interventions = self.runtime.interventions
         if interventions is None:
+            if self.policy.side_effecting:
+                raise SteeringFailure("intervention persistence is unavailable")
             return decision
         interrupt_id = decision.interrupt_id or _strands_tool_interrupt_id(
             tool_use_id, tool_name
@@ -357,6 +393,10 @@ class DraftlySteeringHandler(SteeringHandler):
                 "action": decision.kind.value,
                 "phase": decision.phase.value,
                 "role": decision.role.value if decision.role else None,
+                "reason": scrub_secret_values(str(decision.reason or ""))[
+                    : self.runtime.config.reason_max_chars
+                ],
+                "policy_version": self.runtime.config.policy_version,
             },
             metadata={"surface": self.runtime.scope.surface},
             idempotency_key=f"{self.runtime.scope.org_id}:{interrupt_id}",
@@ -375,12 +415,14 @@ class DraftlySteeringHandler(SteeringHandler):
 
     def _on_policy_failure(self, exc: Exception):
         if self.policy.side_effecting:
-            return Interrupt(reason=f"{type(exc).__name__}: steering unavailable")
+            raise SteeringFailure(
+                f"steering policy unavailable: {type(exc).__name__}: {exc}"
+            ) from exc
         return Proceed(reason=f"steering unavailable: {type(exc).__name__}")
 
     def _on_persistence_failure(self, *, model: bool = False):
         if self.policy.side_effecting:
-            if model:
-                return Guide(reason="steering audit unavailable; side-effecting role fails closed")
-            return Interrupt(reason="steering audit unavailable; side-effecting role fails closed")
+            raise SteeringFailure(
+                "steering persistence unavailable for side-effecting role"
+            )
         return Proceed(reason="steering audit unavailable; read-only role proceeds")

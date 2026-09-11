@@ -395,6 +395,57 @@ class TestRunnerOutcomes:
         assert invocation_state["review_feedback"]["comment"] == "Add the migration example."
 
 
+class TestRunnerAuditDrain:
+    async def test_run_drains_audit_flush_before_returning(self) -> None:
+        """The runner must await the audit flush so agent_runs survives loop teardown."""
+        context = make_context()
+        graph = FakeGraph(completed_result())
+        drained: list[str] = []
+
+        class FakeAuditHook:
+            async def drain_run(self, run_id: str) -> None:
+                drained.append(run_id)
+
+        graph._draftly_audit_hook = FakeAuditHook()
+        runner = WorkflowRunner(context, graph_factory=lambda run_id, surface: graph)
+
+        state = await runner.run(dict(PR_EVENT))
+        assert state.status.value == "delivered"
+        assert drained == ["evt-1"]
+
+    async def test_run_without_hook_is_noop(self) -> None:
+        context = make_context()
+        graph = FakeGraph(completed_result())
+        runner = WorkflowRunner(context, graph_factory=lambda run_id, surface: graph)
+
+        state = await runner.run(dict(PR_EVENT))
+        assert state.status.value == "delivered"
+
+    async def test_resume_review_drains_audit_flush(self) -> None:
+        context = make_context()
+        await context.events.try_claim(PR_EVENT["event_id"], source="github")
+        await context.reviews.store_interrupt(
+            run_id=PR_EVENT["event_id"], interrupt_id="int-1", status="pending"
+        )
+        graph = FakeGraph(completed_result())
+        drained: list[str] = []
+
+        class FakeAuditHook:
+            async def drain_run(self, run_id: str) -> None:
+                drained.append(run_id)
+
+        graph._draftly_audit_hook = FakeAuditHook()
+        runner = WorkflowRunner(context, graph_factory=lambda run_id, surface: graph)
+
+        state = await runner.resume_review(
+            event=dict(PR_EVENT),
+            interrupt_id="int-1",
+            response={"action": "approve"},
+        )
+        assert state.status.value == "delivered"
+        assert drained == ["evt-1"]
+
+
 class TestRunnerOpenedOnlyGate:
     async def _run_event(self, event_type: str) -> tuple[WorkflowState, object]:
         from draftly.workflows.runner import WorkflowRunner

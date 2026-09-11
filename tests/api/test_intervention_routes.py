@@ -40,6 +40,7 @@ def record(
     status: str = "pending",
     idempotency_key: str | None = None,
     resolver_id: str | None = None,
+    phase: str = "before_tool",
 ) -> InterventionRecord:
     return InterventionRecord(
         id="iv-1",
@@ -52,7 +53,7 @@ def record(
         node_id="doc-writer",
         tool_name="create_comment",
         status=status,
-        reason={"phase": "before_tool"},
+        reason={"phase": phase},
         idempotency_key=idempotency_key,
         resolver_id=resolver_id,
     )
@@ -197,6 +198,18 @@ def test_invalid_action_rejected() -> None:
     client, _ = make_app(role="admin", pending=record())
     response = client.post(URL, json={"action": "bogus", "idempotency_key": "req-1"})
     assert response.status_code == 422
+
+
+def test_intervention_action_rejects_unsupported_phase() -> None:
+    client, repos = make_app(pending=record(phase="after_model"))
+
+    response = client.post(
+        URL,
+        json={"action": "guide", "message": "retry", "idempotency_key": "req-1"},
+    )
+
+    assert response.status_code == 422
+    repos.runner.resume_intervention.assert_not_awaited()
 
 
 def test_response_message_bounds_enforced() -> None:

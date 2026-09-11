@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from typing import Any
 
 import pytest
@@ -15,6 +16,7 @@ from draftly.persistence.repositories.steering import (
     SteeringInterventionsRepository,
 )
 from draftly.steering.persistence import SteeringPersistence
+from draftly.steering.policy import SteeringLimits
 
 
 class FakeClient:
@@ -40,11 +42,18 @@ class FakeClient:
             return self._fetch_results.pop(0)
         return None
 
+    async def fetchrow(self, query: str, *args: Any) -> dict[str, Any] | None:
+        return await self.fetch_one(query, *args)
+
     def push_fetch(self, row: dict[str, Any] | None) -> None:
         self._fetch_results.append(row)
 
     def repeat_for(self, trigger: str, row: dict[str, Any] | None) -> None:
         self.repeat[trigger] = row
+
+    @asynccontextmanager
+    async def transaction(self, **_: Any):
+        yield self
 
 
 def make_record(**overrides: Any) -> InterventionRecord:
@@ -130,6 +139,57 @@ async def test_reserve_scopes_model_turn() -> None:
     assert reserved is True
     sql, params = client.fetched[0]
     assert params[:6] == ("run-1", "judge", "judge", "model", "", 3)
+
+
+async def test_reserve_with_total_is_atomic_and_uses_both_limits() -> None:
+    client = FakeClient()
+    client.push_fetch({"guide_count": 1})
+    client.push_fetch({"guide_count": 1})
+    repo = SteeringAttemptsRepository(database=client)
+    key = AttemptKey(
+        run_id="run-1", agent_id="writer", node_id="write",
+        phase="tool", tool_name="write_file",
+    )
+    total_key = AttemptKey(
+        run_id="run-1", agent_id="writer", node_id="",
+        phase="agent_total",
+    )
+
+    reserved = await repo.reserve_with_total(
+        key=key,
+        limit=2,
+        total_key=total_key,
+        total_limit=3,
+    )
+
+    assert reserved is True
+    assert len(client.fetched) == 2
+    assert client.fetched[0][1][6] == 2
+    assert client.fetched[1][1][6] == 3
+
+
+async def test_reserve_with_total_rolls_back_when_total_budget_is_exhausted() -> None:
+    client = FakeClient()
+    client.push_fetch({"guide_count": 1})
+    client.push_fetch(None)
+    repo = SteeringAttemptsRepository(database=client)
+    key = AttemptKey(
+        run_id="run-1", agent_id="writer", node_id="write",
+        phase="tool", tool_name="write_file",
+    )
+    total_key = AttemptKey(
+        run_id="run-1", agent_id="writer", node_id="",
+        phase="agent_total",
+    )
+
+    reserved = await repo.reserve_with_total(
+        key=key,
+        limit=2,
+        total_key=total_key,
+        total_limit=1,
+    )
+
+    assert reserved is False
 
 
 # ---------------------------------------------------------------------------
@@ -275,6 +335,7 @@ async def test_resolve_marks_pending_resolved() -> None:
     assert resolved.status == "cancelled"
     sql, params = client.fetched[0]
     assert "update workflow_interventions" in sql.lower()
+    assert "returning" in sql.lower()
     assert params == ("cancelled", "int-uuid-1", None)
 
 
@@ -300,6 +361,7 @@ async def test_get_pending_is_org_scoped() -> None:
 async def test_persistence_adapter_reserves_tool_guide_with_role_limits() -> None:
     client = FakeClient()
     client.push_fetch({"guide_count": 1})
+    client.push_fetch({"guide_count": 1})
     persistence = SteeringPersistence(
         attempts=SteeringAttemptsRepository(database=client),
         interventions=SteeringInterventionsRepository(database=client),
@@ -318,6 +380,7 @@ async def test_persistence_adapter_reserves_tool_guide_with_role_limits() -> Non
 async def test_persistence_adapter_reserves_model_guide() -> None:
     client = FakeClient()
     client.push_fetch({"guide_count": 1})
+    client.push_fetch({"guide_count": 1})
     persistence = SteeringPersistence(
         attempts=SteeringAttemptsRepository(database=client),
         interventions=SteeringInterventionsRepository(database=client),
@@ -330,6 +393,29 @@ async def test_persistence_adapter_reserves_model_guide() -> None:
     assert reserved is True
     sql, params = client.fetched[0]
     assert params[:6] == ("run-1", "judge", "judge", "model", "", 0)
+
+
+async def test_persistence_adapter_uses_configured_limits() -> None:
+    client = FakeClient()
+    client.push_fetch({"guide_count": 1})
+    client.push_fetch({"guide_count": 1})
+    persistence = SteeringPersistence(
+        attempts=SteeringAttemptsRepository(database=client),
+        interventions=SteeringInterventionsRepository(database=client),
+        limits=SteeringLimits(
+            tool_guides_per_call=1,
+            model_guides_per_turn=3,
+            total_guides_per_agent=4,
+        ),
+    )
+
+    reserved = await persistence.reserve_tool_guide(
+        run_id="run-1", agent_id="writer", node_id="write", tool_name="write_file",
+    )
+
+    assert reserved is True
+    assert client.fetched[0][1][6] == 1
+    assert client.fetched[1][1][6] == 4
 
 
 async def test_persistence_adapter_claims_and_resolves_via_repositories() -> None:

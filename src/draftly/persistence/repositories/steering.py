@@ -28,6 +28,10 @@ class InvalidInterventionActionError(ValueError):
     """The claim action does not map to an intervention status."""
 
 
+class _ReservationDeniedError(Exception):
+    """Internal control flow used to roll back a partial budget reservation."""
+
+
 @dataclass(frozen=True)
 class AttemptKey:
     """Primary key of one steering-attempt counter row."""
@@ -130,6 +134,71 @@ class SteeringAttemptsRepository:
             limit,
         )
         return row is not None
+
+    async def reserve_with_total(
+        self,
+        *,
+        key: AttemptKey,
+        limit: int,
+        total_key: AttemptKey,
+        total_limit: int,
+    ) -> bool:
+        """Reserve a scoped guide and agent-total guide atomically.
+
+        Both counters are updated in one transaction. If either limit is
+        exhausted, the transaction is rolled back so a successful scoped
+        reservation can never consume budget without a matching total count.
+        """
+        try:
+            async with self.database.transaction(isolation="serializable") as conn:
+                scoped = await conn.fetchrow(
+                    """
+                    INSERT INTO steering_attempts
+                        (run_id, agent_id, node_id, phase, tool_name, model_turn,
+                         guide_count, updated_at)
+                    VALUES ($1, $2, $3, $4, $5, $6, 1, now())
+                    ON CONFLICT (run_id, agent_id, node_id, phase, tool_name, model_turn)
+                    DO UPDATE SET guide_count = steering_attempts.guide_count + 1,
+                                  updated_at = now()
+                    WHERE steering_attempts.guide_count < $7
+                    RETURNING guide_count
+                    """,
+                    key.run_id,
+                    key.agent_id,
+                    key.node_id,
+                    key.phase,
+                    key.tool_name,
+                    key.model_turn,
+                    limit,
+                )
+                if scoped is None:
+                    raise _ReservationDeniedError
+
+                total = await conn.fetchrow(
+                    """
+                    INSERT INTO steering_attempts
+                        (run_id, agent_id, node_id, phase, tool_name, model_turn,
+                         guide_count, updated_at)
+                    VALUES ($1, $2, $3, $4, $5, $6, 1, now())
+                    ON CONFLICT (run_id, agent_id, node_id, phase, tool_name, model_turn)
+                    DO UPDATE SET guide_count = steering_attempts.guide_count + 1,
+                                  updated_at = now()
+                    WHERE steering_attempts.guide_count < $7
+                    RETURNING guide_count
+                    """,
+                    total_key.run_id,
+                    total_key.agent_id,
+                    total_key.node_id,
+                    total_key.phase,
+                    total_key.tool_name,
+                    total_key.model_turn,
+                    total_limit,
+                )
+                if total is None:
+                    raise _ReservationDeniedError
+        except _ReservationDeniedError:
+            return False
+        return True
 
 
 class SteeringInterventionsRepository:
@@ -271,6 +340,10 @@ class SteeringInterventionsRepository:
             SET status = $1, resolver_id = COALESCE($3, resolver_id),
                 resolved_at = now(), updated_at = now()
             WHERE id = $2::UUID AND status = 'pending'
+            RETURNING id::text, run_id, interrupt_id, org_id, surface, workflow_key,
+                      agent_id, node_id, tool_name, status, reason, response_message,
+                      metadata, idempotency_key, resolver_id, created_at, updated_at,
+                      resolved_at, expires_at
             """,
             status,
             intervention_id,
@@ -317,6 +390,17 @@ class SteeringInterventionsRepository:
             org_id,
         )
         return [InterventionRecord(**dict(row)) for row in rows]
+
+    async def count_pending_for_org(self, *, org_id: str) -> int:
+        row = await self.database.fetch_one(
+            """
+            SELECT count(*) AS total
+            FROM workflow_interventions
+            WHERE org_id = $1 AND status = 'pending'
+            """,
+            org_id,
+        )
+        return int((row or {}).get("total", 0))
 
 
 def _json(value: Any) -> str:

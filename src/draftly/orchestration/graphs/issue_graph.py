@@ -222,12 +222,16 @@ def build_issue_graph(
     if session_manager is not None:
         builder.set_session_manager(session_manager)
     providers: list[Any] = [ReviewGate()]
+    audit_hook: Any = None
     if audit_repo is not None or publisher is not None or jobs_repo is not None:
         from draftly.orchestration.hooks.audit import RunAuditLogger
 
-        providers.append(RunAuditLogger(audit_repo, publisher=publisher, jobs_repo=jobs_repo))
+        audit_hook = RunAuditLogger(audit_repo, publisher=publisher, jobs_repo=jobs_repo)
+        providers.append(audit_hook)
     if hooks:
         providers.extend(hooks)
     builder.set_hook_providers(providers)
-
-    return builder.build()
+    graph = builder.build()
+    if audit_hook is not None:
+        graph._draftly_audit_hook = audit_hook
+    return graph

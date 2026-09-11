@@ -1,9 +1,16 @@
 """Per-run steering runtime and agent identity scopes."""
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
+import structlog
+
+from draftly.observability.metrics import Metrics
+from draftly.observability.metrics import metrics as _default_metrics
 from draftly.steering.decisions import AgentRole
+
+logger = structlog.get_logger(__name__)
+_metrics: Metrics = _default_metrics
 
 
 @dataclass(frozen=True)
@@ -166,7 +173,15 @@ class SteeringRuntime:
                 },
             )
         except Exception:
-            pass
+            _metrics.increment("draftly_steering_event_sink_failures_total")
+            logger.warning(
+                "steering_event_sink_failed",
+                run_id=self.scope.run_id,
+                surface=self.scope.surface,
+                agent_id=(identity.agent_id if identity else None),
+                node_id=(identity.node_id if identity else None),
+                exc_info=True,
+            )
 
     @classmethod
     def from_context(

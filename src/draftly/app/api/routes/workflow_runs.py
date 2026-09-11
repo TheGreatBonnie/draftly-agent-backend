@@ -10,7 +10,9 @@ from sse_starlette import EventSourceResponse, JSONServerSentEvent
 
 from draftly.app.api.auth import get_verified_token, require_workflow_editor
 from draftly.app.api.routes.workflows import _event_source, _tickets
+from draftly.app.api.steering_schemas import PendingInterventionSummary
 from draftly.app.api.workflow_schemas import WorkflowManualRunCreate
+from draftly.steering.redaction import scrub_secret_values
 
 router = APIRouter(prefix="/workflow-runs", tags=["workflow-runs"])
 
@@ -137,7 +139,7 @@ async def get_run(
 
 async def _pending_interventions(
     request: Request, run_id: str, org_id: str
-) -> list[dict[str, Any]]:
+) -> list[PendingInterventionSummary]:
     """Best-effort pending-intervention summary for a run; never raises."""
     interventions = getattr(_repositories(request), "steering_interventions", None)
     list_pending = getattr(interventions, "list_pending_for_run", None)
@@ -147,16 +149,31 @@ async def _pending_interventions(
         records = await list_pending(run_id=run_id, org_id=org_id)
     except Exception:
         return []
-    return [
-        {
-            "interrupt_id": record.interrupt_id,
-            "status": record.status,
-            "tool_name": record.tool_name,
-            "node_id": record.node_id,
-            "created_at": record.created_at,
-        }
-        for record in records or []
-    ]
+    summaries: list[PendingInterventionSummary] = []
+    for record in records or []:
+        reason = record.reason if isinstance(record.reason, dict) else {}
+        summaries.append(
+            PendingInterventionSummary(
+                interrupt_id=record.interrupt_id,
+                status=record.status,
+                phase=_safe_intervention_value(reason.get("phase")),
+                role=_safe_intervention_value(reason.get("role")),
+                rule=_safe_intervention_value(reason.get("rule")),
+                reason=_safe_intervention_value(reason.get("reason"), limit=1_000),
+                agent_id=record.agent_id or None,
+                node_id=record.node_id or None,
+                tool_name=record.tool_name or None,
+                created_at=record.created_at,
+                expires_at=record.expires_at,
+            )
+        )
+    return summaries
+
+
+def _safe_intervention_value(value: Any, *, limit: int = 256) -> str | None:
+    if value is None:
+        return None
+    return scrub_secret_values(str(value))[:limit]
 
 
 @router.get("/{run_id}/steps")

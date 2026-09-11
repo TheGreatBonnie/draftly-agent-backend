@@ -52,6 +52,7 @@ class RunAuditLogger(HookProvider):
         self._steps: list[dict[str, Any]] = []
         self._stream_pending: list[dict[str, Any]] = []
         self._run_meta: dict[str, Any] = {}
+        self._flush_tasks: dict[str, asyncio.Task] = {}
         self._seq = 0
         self._stream_seq = 0
 
@@ -91,6 +92,15 @@ class RunAuditLogger(HookProvider):
                         event_type=str(state.get("event_type", "unknown")),
                     )
                 )
+        if self.audit_repo is not None:
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                loop = None
+            if loop is not None:
+                # Durable "running" row before any step: an interrupted run
+                # still leaves a trace behind in agent_runs.
+                loop.create_task(_open_run(self.audit_repo, dict(self._run_meta)))
         logger.info("audit_run_start", run_id=run_id)
 
     def node_start(self, event: BeforeNodeCallEvent) -> None:
@@ -202,7 +212,14 @@ class RunAuditLogger(HookProvider):
             logger.warning("audit_flush_skipped_no_loop", run_id=run_id)
             return
         if self.audit_repo is not None and steps:
-            loop.create_task(_flush_run(self.audit_repo, str(run_id), meta, steps))
+            task = loop.create_task(_flush_run(self.audit_repo, str(run_id), meta, steps))
+            self._flush_tasks[str(run_id)] = task
+            task.add_done_callback(lambda _t: self._flush_tasks.pop(str(run_id), None))
+            logger.info(
+                "audit_flush_scheduled",
+                run_id=str(run_id),
+                steps=len(steps),
+            )
         if self.publisher is not None and stream_pending:
             loop.create_task(
                 _flush_stream(
@@ -210,6 +227,22 @@ class RunAuditLogger(HookProvider):
                     meta.get("surface", ""), stream_pending,
                 )
             )
+
+    async def drain_run(self, run_id: Any) -> None:
+        """Await the pending DB flush so agent_runs persists before the runner returns.
+
+        The runner awaits this at the end of run/resume so audit rows survive
+        event-loop teardown (fire-and-forget tasks are otherwise cancelled).
+        """
+        task = self._flush_tasks.pop(str(run_id), None)
+        if task is None:
+            return
+        try:
+            await task
+        except Exception:
+            logger.warning("audit_drain_failed", run_id=str(run_id), exc_info=True)
+        else:
+            logger.info("audit_flush_drained", run_id=str(run_id))
 
     async def run_end_async(self, event: AfterInvocationEvent) -> None:
         state = event.invocation_state or {}
@@ -318,12 +351,26 @@ class SteeringAudit:
         node_id: str | None,
         decision: Any,
         tool_name: str | None = None,
+        surface: str | None = None,
+        policy_version: str = "",
+        attempt_summary: dict[str, Any] | None = None,
+        decision_source: str = "deterministic",
+        outcome: str | None = None,
     ) -> None:
         if self.repo is None:
             return
         detail = _decision_detail(decision, reason_max_chars=self.reason_max_chars)
         if tool_name:
             detail["tool_name"] = tool_name
+        detail.update(
+            {
+                "schema_version": "1",
+                "policy_version": policy_version,
+                "attempt_summary": attempt_summary or {},
+                "decision_source": decision_source,
+                "outcome": outcome or str(getattr(decision.kind, "value", "") or ""),
+            }
+        )
         bounded = redact_value(detail, max_bytes=self.payload_max_bytes)
         if not isinstance(bounded, dict):
             bounded = {"detail": bounded}
@@ -336,7 +383,7 @@ class SteeringAudit:
             detail=bounded,
             agent_id=agent_id,
             node_id=node_id,
-            surface=self.surface,
+            surface=self.surface if surface is None else surface,
         )
 
 
@@ -347,7 +394,9 @@ async def _flush_run(
     steps: list[dict[str, Any]],
 ) -> None:
     try:
-        await repo.start_run(
+        # ensure_run (not start_run) so the started_at/status opened at
+        # run_start is not clobbered when the run completes.
+        await repo.ensure_run(
             run_id=run_id,
             source=meta.get("source", "github"),
             event_type=meta.get("event_type", "unknown"),
@@ -380,8 +429,31 @@ async def _flush_run(
             status="failed" if failed else "completed",
             error=f"nodes failed: {failed}" if failed else None,
         )
+        logger.info(
+            "audit_flush_completed",
+            run_id=run_id,
+            steps=len(steps),
+            status="failed" if failed else "completed",
+        )
     except Exception:
         logger.exception("audit_flush_failed", run_id=run_id)
+        _metrics.increment("draftly_audit_flush_failures_total")
+
+
+async def _open_run(repo: Any, meta: dict[str, Any]) -> None:
+    """Open/reset the run row as ``running`` at invocation start."""
+    try:
+        await repo.start_run(
+            run_id=meta["run_id"],
+            source=meta.get("source", "github"),
+            event_type=meta.get("event_type", "unknown"),
+            org_id=meta.get("org_id", ""),
+            surface=meta.get("surface", ""),
+            workflow_key=meta.get("workflow_key"),
+            definition_id=meta.get("definition_id"),
+        )
+    except Exception:
+        logger.warning("audit_open_run_failed", run_id=meta.get("run_id"), exc_info=True)
 
 
 async def _flush_stream(

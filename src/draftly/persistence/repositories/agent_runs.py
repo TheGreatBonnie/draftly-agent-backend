@@ -57,6 +57,36 @@ class AgentRunsRepository:
             definition_id,
         )
 
+    async def ensure_run(
+        self,
+        *,
+        run_id: str,
+        source: str = "github",
+        event_type: str = "unknown",
+        org_id: str = "",
+        surface: str = "",
+        workflow_key: str | None = None,
+        definition_id: str | None = None,
+    ) -> None:
+        """Insert the run row only when absent, preserving existing timestamps."""
+        if self.database is None:
+            return
+        await self.database.execute(
+            """
+            INSERT INTO agent_runs
+                (run_id, source, event_type, org_id, status, surface, workflow_key, definition_id)
+            VALUES ($1, $2, $3, $4, 'running', $5, $6, $7)
+            ON CONFLICT (run_id) DO NOTHING
+            """,
+            run_id,
+            source,
+            event_type,
+            org_id,
+            surface,
+            workflow_key,
+            definition_id,
+        )
+
     async def record_step(
         self,
         *,

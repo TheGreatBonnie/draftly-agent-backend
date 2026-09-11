@@ -175,6 +175,9 @@ class TestAuditFlushCounters:
             async def start_run(self, **kw: Any) -> None:
                 pass
 
+            async def ensure_run(self, **kw: Any) -> None:
+                pass
+
             async def record_step(self, **kw: Any) -> None:
                 pass
 
@@ -196,3 +199,19 @@ class TestAuditFlushCounters:
         counters = registry.snapshot()["counters"]
         assert counters["draftly_node_steps_total"] == 1
         assert counters["draftly_tool_steps_total"] == 1
+
+    async def test_flush_failure_increments_failure_counter(
+        self, registry: Metrics, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import draftly.orchestration.hooks.audit as audit_mod
+
+        monkeypatch.setattr(audit_mod, "_metrics", registry)
+
+        class BrokenRepo:
+            async def ensure_run(self, **kw: Any) -> None:
+                raise RuntimeError("db down")
+
+        steps = [{"seq": 1, "kind": "node", "name": "bootstrap", "status": "failed"}]
+        await audit_mod._flush_run(BrokenRepo(), "evt-x", {"source": "github"}, steps)
+
+        assert registry.snapshot()["counters"]["draftly_audit_flush_failures_total"] == 1

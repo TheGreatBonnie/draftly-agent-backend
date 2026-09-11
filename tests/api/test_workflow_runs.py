@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 
 from draftly.app.api.auth import get_verified_token
 from draftly.app.api.routes.workflow_runs import router
+from draftly.persistence.repositories.steering import InterventionRecord
 
 
 def run_row() -> dict:
@@ -57,12 +58,22 @@ def make_app(role: str = "member") -> tuple[FastAPI, SimpleNamespace]:
     }
     app.state.draftly = SimpleNamespace(
         dependencies=SimpleNamespace(
-            repositories=SimpleNamespace(workflow_runs=runs, workflow_definitions=definitions)
+            repositories=SimpleNamespace(
+                workflow_runs=runs,
+                workflow_definitions=definitions,
+                steering_interventions=SimpleNamespace(
+                    list_pending_for_run=AsyncMock(return_value=[])
+                ),
+            )
         ),
         settings=SimpleNamespace(rq_enabled=False),
         worker=None,
     )
-    return app, SimpleNamespace(runs=runs, definitions=definitions)
+    return app, SimpleNamespace(
+        runs=runs,
+        definitions=definitions,
+        interventions=app.state.draftly.dependencies.repositories.steering_interventions,
+    )
 
 
 def test_run_detail_and_steps_are_org_scoped() -> None:
@@ -112,3 +123,46 @@ def test_pending_intervention_is_a_valid_run_status() -> None:
     assert response.status_code == 200
     assert response.json()["items"][0]["status"] == "pending_intervention"
     assert repos.runs.list.await_args.kwargs["status"] == "pending_intervention"
+
+
+def test_run_detail_includes_safe_pending_intervention_context() -> None:
+    app, repos = make_app()
+    repos.runs.get.return_value = run_row()
+    repos.interventions.list_pending_for_run.return_value = [
+        InterventionRecord(
+            id="iv-1",
+            run_id="run-1",
+            interrupt_id="int-1",
+            status="pending",
+            agent_id="delivery-agent",
+            node_id="deliver",
+            tool_name="create_comment",
+            reason={
+                "phase": "before_tool",
+                "role": "delivery",
+                "rule": "delivery.side_effect_requires_review",
+                "reason": "A human must confirm this external write.",
+            },
+            created_at="2026-09-11T10:00:00Z",
+            expires_at="2026-09-11T10:15:00Z",
+        )
+    ]
+
+    response = TestClient(app).get("/workflow-runs/run-1")
+
+    assert response.status_code == 200
+    assert response.json()["run"]["pending_interventions"] == [
+        {
+            "interrupt_id": "int-1",
+            "status": "pending",
+            "phase": "before_tool",
+            "role": "delivery",
+            "rule": "delivery.side_effect_requires_review",
+            "reason": "A human must confirm this external write.",
+            "agent_id": "delivery-agent",
+            "node_id": "deliver",
+            "tool_name": "create_comment",
+            "created_at": "2026-09-11T10:00:00Z",
+            "expires_at": "2026-09-11T10:15:00Z",
+        }
+    ]

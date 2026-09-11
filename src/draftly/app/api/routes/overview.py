@@ -22,6 +22,7 @@ class OverviewSummary(BaseModel):
 
 class OverviewAttention(BaseModel):
     pending_reviews: int
+    pending_interventions: int
     high_risk_reviews: int
     failed_evaluations: int
     integration_issues: int

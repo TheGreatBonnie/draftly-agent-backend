@@ -28,23 +28,19 @@ def _steering_runtime_factory(
     Config knobs snapshot into a frozen ``SteeringRuntimeConfig``; steering
     attempts/interventions flow through ``SteeringPersistence`` and steering
     audit decisions through ``SteeringAuditSink`` over the run audit repo.
-    Missing repositories degrade to ``None`` sinks (policy records without
-    persistence) rather than failing the run.
+    Missing repositories degrade to ``None`` sinks only when steering is
+    disabled or running in shadow mode. Enforcement requires durable attempt
+    and intervention repositories so a side-effecting interrupt cannot become
+    untracked.
     """
     from draftly.steering.context import SteeringRuntime, SteeringRuntimeConfig
     from draftly.steering.persistence import SteeringAuditSink, SteeringPersistence
+    from draftly.steering.policy import SteeringLimits
 
     strands = getattr(config, "strands", None)
     attempts_repo = getattr(repositories, "steering_attempts", None)
     interventions_repo = getattr(repositories, "steering_interventions", None)
     audit_repo = getattr(repositories, "agent_runs", None)
-
-    persistence = (
-        SteeringPersistence(attempts=attempts_repo, interventions=interventions_repo)
-        if attempts_repo is not None and interventions_repo is not None
-        else None
-    )
-    audit = SteeringAuditSink(audit_repo)
 
     runtime_config = SteeringRuntimeConfig(
         enabled=bool(getattr(strands, "steering_enabled", False)),
@@ -60,6 +56,28 @@ def _steering_runtime_factory(
         reason_max_chars=int(getattr(strands, "steering_reason_max_chars", 1_000) or 1_000),
         payload_max_bytes=int(getattr(strands, "steering_payload_max_bytes", 4 * 1024) or 4 * 1024),
     )
+    limits = SteeringLimits(
+        tool_guides_per_call=runtime_config.tool_guides_per_call,
+        model_guides_per_turn=runtime_config.model_guides_per_turn,
+        total_guides_per_agent=runtime_config.total_guides_per_agent,
+    )
+    if runtime_config.enabled and runtime_config.enforcement_enabled and (
+        attempts_repo is None or interventions_repo is None
+    ):
+        raise RuntimeError(
+            "enforcement-enabled steering requires durable steering repositories "
+            "for attempts and interventions"
+        )
+    persistence = (
+        SteeringPersistence(
+            attempts=attempts_repo,
+            interventions=interventions_repo,
+            limits=limits,
+        )
+        if attempts_repo is not None and interventions_repo is not None
+        else None
+    )
+    audit = SteeringAuditSink(audit_repo)
 
     def factory(
         run_id: str,

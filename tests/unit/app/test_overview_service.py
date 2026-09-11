@@ -55,6 +55,16 @@ class FakeJobs:
         return [item for item in self.items if item["org_id"] == org_id]
 
 
+class FakeSteeringInterventions:
+    def __init__(self, count: int) -> None:
+        self.count = count
+        self.org_ids: list[str] = []
+
+    async def count_pending_for_org(self, *, org_id: str) -> int:
+        self.org_ids.append(org_id)
+        return self.count
+
+
 class FakeGitHubInstallations:
     async def list_by_org(self, org_id: str) -> list[dict[str, str]]:
         return [{"id": "github-installation"}] if org_id == "org-a" else []
@@ -219,6 +229,7 @@ async def test_overview_aggregates_org_scoped_document_review_and_evaluation_sig
     }
     assert snapshot["attention"] == {
         "pending_reviews": 1,
+        "pending_interventions": 0,
         "high_risk_reviews": 1,
         "failed_evaluations": 0,
         "integration_issues": 3,
@@ -315,6 +326,24 @@ async def test_overview_returns_only_newest_active_workflows_with_normalized_sta
             "href": "/workflows/workflow-queued",
         },
     ]
+
+
+@pytest.mark.asyncio
+async def test_overview_includes_org_scoped_pending_intervention_count(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    application = _empty_application()
+    steering = FakeSteeringInterventions(2)
+    application.dependencies.repositories.steering_interventions = steering
+    async def no_workflows(**_: object) -> list[dict[str, str]]:
+        return []
+
+    monkeypatch.setattr(overview, "list_github_workflows_record", no_workflows)
+
+    snapshot = await build_overview_snapshot(application, "org-a", 14)
+
+    assert snapshot["attention"]["pending_interventions"] == 2
+    assert steering.org_ids == ["org-a"]
 
 
 @pytest.mark.asyncio

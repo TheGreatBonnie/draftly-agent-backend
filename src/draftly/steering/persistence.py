@@ -19,6 +19,7 @@ from draftly.persistence.repositories.steering import (
     SteeringInterventionsRepository,
 )
 from draftly.steering.policy import SteeringLimits
+from draftly.steering.redaction import redact_value, scrub_secret_values
 
 
 class SteeringPersistence:
@@ -50,7 +51,17 @@ class SteeringPersistence:
             phase="tool",
             tool_name=tool_name,
         )
-        return await self.attempts.reserve(key=key, limit=self.limits.tool_guides_per_call)
+        return await self.attempts.reserve_with_total(
+            key=key,
+            limit=self.limits.tool_guides_per_call,
+            total_key=AttemptKey(
+                run_id=run_id,
+                agent_id=agent_id,
+                node_id="",
+                phase="agent_total",
+            ),
+            total_limit=self.limits.total_guides_per_agent,
+        )
 
     async def reserve_model_guide(
         self,
@@ -65,7 +76,17 @@ class SteeringPersistence:
             node_id=node_id,
             phase="model",
         )
-        return await self.attempts.reserve(key=key, limit=self.limits.model_guides_per_turn)
+        return await self.attempts.reserve_with_total(
+            key=key,
+            limit=self.limits.model_guides_per_turn,
+            total_key=AttemptKey(
+                run_id=run_id,
+                agent_id=agent_id,
+                node_id="",
+                phase="agent_total",
+            ),
+            total_limit=self.limits.total_guides_per_agent,
+        )
 
     async def create_pending(self, *, record: InterventionRecord) -> InterventionRecord:
         return await self.interventions.create_pending(record=record)
@@ -137,26 +158,46 @@ class SteeringAuditSink:
         node_id: str | None = None,
         decision: Any,
         tool_name: str | None = None,
+        surface: str = "",
+        policy_version: str = "",
+        attempt_summary: dict[str, Any] | None = None,
+        decision_source: str = "deterministic",
+        outcome: str | None = None,
     ) -> None:
         if self._repo is None:
             return
-        kind = str(getattr(decision, "kind", "") or "").lower()
+        kind_value = getattr(getattr(decision, "kind", None), "value", None)
+        kind = str(kind_value or getattr(decision, "kind", "") or "").lower()
+        reason = scrub_secret_values(str(getattr(decision, "reason", "") or ""))[:1_000]
+        detail = redact_value(
+            {
+                "schema_version": "1",
+                "decision_type": kind or "unknown",
+                "phase": str(getattr(getattr(decision, "phase", None), "value", "") or ""),
+                "role": str(getattr(getattr(decision, "role", None), "value", "") or ""),
+                "rule": str(getattr(decision, "rule", "") or ""),
+                "tool_name": tool_name,
+                "reason": reason,
+                "surface": surface,
+                "policy_version": policy_version,
+                "decision_source": decision_source,
+                "outcome": outcome or kind or "unknown",
+                "interrupt_id": getattr(decision, "interrupt_id", None),
+                "attempt_summary": attempt_summary or {},
+            },
+            max_bytes=4 * 1024,
+        )
+        if not isinstance(detail, dict):
+            detail = {"detail": detail}
         await self._repo.record_step(
             run_id=run_id,
             kind="steering",
             name=kind or "steering",
             status="completed",
-            detail={
-                "decision_type": kind or "unknown",
-                "phase": str(getattr(decision, "phase", "") or ""),
-                "role": str(getattr(decision, "role", "") or ""),
-                "rule": str(getattr(decision, "rule", "") or ""),
-                "tool_name": tool_name,
-                "reason": str(getattr(decision, "reason", "") or "")[:1_000],
-            },
+            detail=detail,
             agent_id=agent_id,
             node_id=node_id,
-            surface="",
+            surface=surface,
         )
 
 

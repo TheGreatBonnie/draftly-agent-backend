@@ -21,6 +21,22 @@ class InterventionResponseRequest(BaseModel):
     idempotency_key: str = Field(min_length=1, max_length=128)
 
 
+class PendingInterventionSummary(BaseModel):
+    """Safe context needed to render a pending steering decision."""
+
+    interrupt_id: str
+    status: str
+    phase: str | None = None
+    role: str | None = None
+    rule: str | None = None
+    reason: str | None = None
+    agent_id: str | None = None
+    node_id: str | None = None
+    tool_name: str | None = None
+    created_at: object | None = None
+    expires_at: object | None = None
+
+
 class InterventionResponse(BaseModel):
     """Safe, bounded echo of the resolved intervention.
 

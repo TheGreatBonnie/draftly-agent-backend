@@ -6,9 +6,11 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 
 from draftly.persistence.repositories.steering import InterventionRecord
+from draftly.steering import handler as handler_module
 from draftly.steering.context import RuntimeScope, SteeringRuntime, SteeringRuntimeConfig
 from draftly.steering.decisions import AgentRole, SteeringFailure
 from draftly.steering.handler import DraftlySteeringHandler
+from draftly.steering.persistence import SteeringAuditSink
 from draftly.steering.policy import FailureMode, RolePolicy, policy_for
 
 CHECKOUT = "/tmp/checkout"
@@ -129,6 +131,26 @@ async def test_before_tool_proceed_still_audits(runtime, policy):
     runtime.audit.record_step.assert_awaited_once()
 
 
+async def test_decision_logs_safe_context(monkeypatch, runtime, policy):
+    logger = Mock()
+    monkeypatch.setattr(handler_module, "logger", logger)
+    handler = DraftlySteeringHandler(runtime=runtime, policy=policy)
+
+    await handler.steer_before_tool(
+        agent=FakeAgent(),
+        tool_use={"name": "read_file", "path": f"{CHECKOUT}/docs/index.md"},
+    )
+
+    logger.info.assert_called_once()
+    name, kwargs = logger.info.call_args.args[0], logger.info.call_args.kwargs
+    assert name == "steering_decision"
+    assert kwargs["run_id"] == "run-1"
+    assert kwargs["agent_id"] == "agent-1"
+    assert kwargs["node_id"] == "node-1"
+    assert kwargs["tool_name"] == "read_file"
+    assert kwargs["action"] == "proceed"
+
+
 async def test_interrupt_creates_durable_intervention_before_returning():
     runtime = build_runtime(role=AgentRole.DELIVERY, interventions=FakeInterventions())
     handler = DraftlySteeringHandler(
@@ -157,11 +179,41 @@ async def test_interrupt_creates_durable_intervention_before_returning():
     assert handler.last_interrupt_id == record.interrupt_id
 
 
+async def test_active_audit_sink_includes_policy_and_attempt_context():
+    repo = Mock()
+    repo.record_step = AsyncMock()
+    runtime = build_runtime(role=AgentRole.WRITER, audit=SteeringAuditSink(repo))
+    runtime.config = SteeringRuntimeConfig(
+        enabled=True,
+        enforcement_enabled=True,
+        policy_version="v9",
+        tool_guides_per_call=1,
+        model_guides_per_turn=2,
+        total_guides_per_agent=3,
+    )
+    handler = DraftlySteeringHandler(runtime=runtime, policy=policy_for(AgentRole.WRITER))
+
+    await handler.steer_before_tool(
+        agent=FakeAgent(),
+        tool_use={"name": "read_file", "path": f"{CHECKOUT}/docs/index.md"},
+    )
+
+    detail = repo.record_step.await_args.kwargs["detail"]
+    assert detail["schema_version"] == "1"
+    assert detail["policy_version"] == "v9"
+    assert detail["attempt_summary"] == {
+        "tool_guides_per_call": 1,
+        "model_guides_per_turn": 2,
+        "total_guides_per_agent": 3,
+    }
+    assert detail["decision_source"] == "deterministic"
+
+
 async def test_policy_exception_fails_closed_for_side_effecting_role():
     runtime = build_runtime(role=AgentRole.DELIVERY)
     handler = DraftlySteeringHandler(runtime=runtime, policy=RaisingPolicy(role=AgentRole.DELIVERY))
-    action = await handler.steer_before_tool(agent=FakeAgent(), tool_use={"name": "x"})
-    assert type(action).__name__ == "Interrupt"
+    with pytest.raises(SteeringFailure, match="policy exploded"):
+        await handler.steer_before_tool(agent=FakeAgent(), tool_use={"name": "x"})
 
 
 async def test_policy_exception_fails_open_for_read_only_role():
@@ -174,10 +226,10 @@ async def test_policy_exception_fails_open_for_read_only_role():
 async def test_audit_failure_fails_closed_for_side_effecting_role():
     runtime = build_runtime(role=AgentRole.DELIVERY, audit=FaultyAudit())
     handler = DraftlySteeringHandler(runtime=runtime, policy=policy_for(AgentRole.DELIVERY))
-    action = await handler.steer_before_tool(
-        agent=FakeAgent(), tool_use={"name": "read_file", "path": "bad"},
-    )
-    assert type(action).__name__ == "Interrupt"
+    with pytest.raises(SteeringFailure, match="audit write failed"):
+        await handler.steer_before_tool(
+            agent=FakeAgent(), tool_use={"name": "read_file", "path": "bad"},
+        )
 
 
 async def test_audit_failure_fails_open_for_read_only_role():
@@ -187,6 +239,23 @@ async def test_audit_failure_fails_open_for_read_only_role():
         agent=FakeAgent(), tool_use={"name": "read_file", "path": "bad"},
     )
     assert type(action).__name__ == "Proceed"
+
+
+async def test_missing_intervention_sink_does_not_return_untracked_interrupt():
+    runtime = build_runtime(role=AgentRole.DELIVERY, interventions=None)
+    handler = DraftlySteeringHandler(runtime=runtime, policy=policy_for(AgentRole.DELIVERY))
+
+    with pytest.raises(SteeringFailure, match="intervention persistence is unavailable"):
+        await handler.steer_before_tool(
+            agent=FakeAgent(),
+            tool_use={
+                "name": "create_comment",
+                "idempotency_key": "req-1",
+                "destination_project": "other-project",
+                "repo_dir": f"{CHECKOUT}/docs",
+                "body": "excerpt",
+            },
+        )
 
 
 async def test_guide_limit_exhaustion_terminal_interrupt_for_side_effecting():
