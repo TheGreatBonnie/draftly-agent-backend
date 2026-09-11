@@ -54,12 +54,13 @@ async def test_non_merged_pr_not_enqueued() -> None:
     bt.add_task.assert_not_called()
 
 
-async def test_merged_pr_enqueued() -> None:
+async def test_merged_pr_not_enqueued() -> None:
     from draftly.app.api.routes.github import github_webhook
 
     request = MagicMock()
     events = MagicMock()
     events.normalize_github = AsyncMock(return_value=_pr_event("pull_request.merged"))
+    # full mock setup for dispatch path (even though skip leaves no job)
     jobs = MagicMock()
     jobs.upsert_on_conflict = AsyncMock()
     context = MagicMock()
@@ -83,29 +84,15 @@ async def test_merged_pr_enqueued() -> None:
     }
 
     bt = MagicMock()
-    identity = AsyncMock(return_value=("org-1", 42))
-    with (
-        patch("draftly.app.api.routes.github._resolve_webhook_identity", new=identity),
-        patch(
-            "draftly.persistence.repositories.github.save_github_workflow",
-            new=AsyncMock(return_value="wf-1"),
-        ),
-        pytest.MonkeyPatch.context() as mp,
-    ):
+    with pytest.MonkeyPatch.context() as mp:
         import draftly.app.api.routes.github as routes_mod
 
         mp.setattr(routes_mod, "verify_webhook_signature", lambda body, sig: True)
         result = await github_webhook(request=request, background_tasks=bt)
 
-    assert result.status.startswith("pull_request.merged")
-    drafts = request.app.state.draftly
-    assert events.normalize_github.return_value["project_id"] == "org-1"
-    bt.add_task.assert_called_once_with(
-        drafts.worker.run_task,
-        "github_pr.enqueue",
-        event=events.normalize_github.return_value,
-        run_id="ev-5",
-    )
+    assert "skipped" in str(result)
+    jobs.upsert_on_conflict.assert_not_awaited()
+    bt.add_task.assert_not_called()
 
 
 async def test_opened_pr_enqueued() -> None:

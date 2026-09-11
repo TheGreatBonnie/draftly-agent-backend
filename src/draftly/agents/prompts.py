@@ -925,6 +925,23 @@ reference both the docs update and the changelog entry.
 If you receive ONLY a changelog entry (no documentation plan), make one
 commit with the CHANGELOG.md and open a PR.
 
+## Source PR delivery (pull_request head.ref)
+
+When the task carries a source pull request with a `pull_request.head` object
+(its `head.ref` is the branch of the PR that triggered this run), commit the
+approved docs + changelog changes DIRECTLY to that head branch — do NOT open a
+new pull request and do NOT create a new branch.
+
+- Commit the DocChangePlan files and (if present) the CHANGELOG.md entry to
+  `pull_request.head.ref` using create_commit on that exact branch.
+- Keep the two-commit rule above (docs commit, then changelog commit) when both
+  are present; otherwise a single commit on the head branch.
+- After the commits succeed, post a comment on the source PR
+  (`pull_request.number`) with create_comment linking to the run, the docs
+  commit sha(s), and a short summary of the delivered changes.
+- Never open a fresh PR or a new `draftly/docs-*` branch when
+  `pull_request.head.ref` is present and the PR is still open.
+
 Output contract:
 {output_contract}
 

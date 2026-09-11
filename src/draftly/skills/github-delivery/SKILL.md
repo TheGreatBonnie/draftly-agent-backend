@@ -11,9 +11,23 @@ metadata:
 
 ## Purpose
 
-Turn an approved `DocChangePlan` into a real GitHub pull request.
+Turn an approved `DocChangePlan` into a real GitHub change. For a run attached
+to a source PR, push to that PR's **head branch** instead of opening a fresh
+docs PR.
 
 ## Steps
+
+### Attached to a source PR (`pull_request.head.ref` present)
+
+1. Commit the approved doc files (and the CHANGELOG.md entry, if present) to
+   `pull_request.head.ref` with `create_commit` — do NOT open a new pull
+   request and do NOT create a fresh branch.
+2. Keep the two-commit rule: docs commit first, then the changelog commit, on
+   the same head branch; a single commit if only one artifact is present.
+3. Post a comment on the source PR (`pull_request.number`) with `create_comment`
+   linking the run, the commit sha(s), and a short summary.
+
+### Standalone delivery (no source PR in the task)
 
 1. Create a branch from the current base SHA with `create_branch`.
 2. Write the changed files, then commit them with `create_commit`.

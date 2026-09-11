@@ -31,6 +31,7 @@ from draftly.persistence.repositories.agent_runs import AgentRunsRepository
 from draftly.persistence.repositories.content import ContentRepository
 from draftly.persistence.repositories.delivery import DeliveryRepository
 from draftly.persistence.repositories.discord import DiscordWorkflowRepository
+from draftly.persistence.repositories.document_revisions import DocumentRevisionRepository
 from draftly.persistence.repositories.documentation_gaps import DocumentationGapRepository
 from draftly.persistence.repositories.documents import DocumentRepository
 from draftly.persistence.repositories.evaluations import EvaluationRepository
@@ -245,6 +246,7 @@ class RepositoryDependencies:
     events: EventRepository
     memory: MemoryRepository
     documents: DocumentRepository
+    revisions: DocumentRevisionRepository
     github_installations: GitHubInstallationsRepository
     evaluations: EvaluationRepository
     support: SupportRepository
@@ -299,6 +301,8 @@ def build_repositories(
             client=database,
         ),
     )
+
+    revisions = DocumentRevisionRepository(database=database)
 
     github_installations = GitHubInstallationsRepository(db=database)
 
@@ -369,6 +373,7 @@ def build_repositories(
         events=events,
         memory=memory,
         documents=documents,
+        revisions=revisions,
         github_installations=github_installations,
         evaluations=evaluations,
         support=support,

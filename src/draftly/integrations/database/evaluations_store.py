@@ -198,11 +198,20 @@ class DatabaseEvaluationsStore:
         org_id: str,
         evaluation_type: str | None,
         limit: int,
+        target_id: str | None = None,
     ) -> list[dict[str, Any]]:
-
+        conditions = ["org_id = $1", "case_id IS NULL"]
+        args: list[Any] = [org_id]
         if evaluation_type:
-            rows = await self.client.fetch_all(
-                """
+            args.append(evaluation_type)
+            conditions.append(f"evaluation_type = ${len(args)}")
+        if target_id:
+            args.append(_normalize_uuid(target_id))
+            conditions.append(f"target_id = ${len(args)}")
+        args.append(limit)
+        limit_placeholder = len(args)
+        rows = await self.client.fetch_all(
+            f"""
                 SELECT
                     id,
                     org_id,
@@ -220,44 +229,12 @@ class DatabaseEvaluationsStore:
                     started_at,
                     completed_at
                 FROM evaluations
-                WHERE org_id = $1
-                  AND evaluation_type = $2
-                  AND case_id IS NULL
+                WHERE {' AND '.join(conditions)}
                 ORDER BY started_at DESC
-                LIMIT $3
+                LIMIT ${limit_placeholder}
                 """,
-                org_id,
-                evaluation_type,
-                limit,
-            )
-        else:
-            rows = await self.client.fetch_all(
-                """
-                SELECT
-                    id,
-                    org_id,
-                    evaluation_type,
-                    run_id,
-                    case_id,
-                    target_type,
-                    target_id,
-                    score,
-                    passed,
-                    status,
-                    metrics,
-                    failures,
-                    trace_id,
-                    started_at,
-                    completed_at
-                FROM evaluations
-                WHERE org_id = $1
-                  AND case_id IS NULL
-                ORDER BY started_at DESC
-                LIMIT $2
-                """,
-                org_id,
-                limit,
-            )
+            *args,
+        )
 
         return [self._to_dict(row) for row in rows]
 

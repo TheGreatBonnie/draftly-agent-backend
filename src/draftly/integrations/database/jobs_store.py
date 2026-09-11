@@ -171,6 +171,26 @@ class DatabaseJobsStore:
 
         return self._to_dict(row) if row else None
 
+    async def get_for_org(
+        self,
+        *,
+        job_id: str,
+        org_id: str,
+    ) -> dict[str, Any] | None:
+        row = await self.client.fetch_one(
+            """
+            SELECT
+                id, run_id, org_id, name, job_type, schedule, status,
+                configuration, last_run_at, next_run_at, error, result,
+                started_at, completed_at, updated_at
+            FROM jobs
+            WHERE run_id = $1 AND org_id = $2
+            """,
+            job_id,
+            org_id,
+        )
+        return self._to_dict(row) if row else None
+
     async def update_status(
         self,
         *,

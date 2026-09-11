@@ -28,6 +28,14 @@ Format: `draftly/<type>-<source>-<id>-<slug>`
 - Configurable per repository in `context/repository_config.yaml`
 - For release branches: target the release branch (e.g., `release/v1.5`)
 
+## Source PR Attach (no branch created)
+
+When the run is attached to a source PR (task carries `pull_request.head.ref`),
+do NOT create a `draftly/*` branch. Commit the approved docs + changelog
+directly to the source PR's `head.ref` with `create_commit` on that exact
+branch, then comment on the source PR (create_comment) — no new branch, no
+fresh PR.
+
 ## Branch Lifecycle
 
 | Stage | Action | Cleanup |

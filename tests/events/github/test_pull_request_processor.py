@@ -103,6 +103,15 @@ async def test_forwards_real_changed_files_into_normalized_event() -> None:
     assert event.pull_request["diff"] == "diff --git a/src/api/oauth.py b/src/api/oauth.py"
 
 
+async def test_forwards_head_ref_for_source_pr_delivery() -> None:
+    """The source PR's head branch must reach the delivery agent so approved
+    docs + changelog commits land on the PR that triggered the workflow."""
+    processor = PullRequestProcessor()
+    event = await processor.process(pr_payload_with_evidence())
+    head = event.pull_request["head"]
+    assert head == {"ref": "feat/oauth", "sha": "b0d7fb8"}
+
+
 async def test_absent_evidence_fields_stay_absent() -> None:
     processor = PullRequestProcessor()
     event = await processor.process(

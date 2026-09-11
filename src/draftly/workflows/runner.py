@@ -173,15 +173,13 @@ class WorkflowRunner:
             surface=surface,
         )
 
-        # Only merged and opened PRs run the documentation graph; other PR
+        # Only opened PRs run the documentation graph; other PR
         # actions skip before the idempotency claim so they leave no
         # audit/duplicate record. Gate on the event prefix (not the surface)
         # so push/release events that share the "pull_request" surface still
         # run.
         event_type = str(event.get("event_type") or "")
-        if event_type.split(".")[0] == "pull_request" and not event_type.endswith(
-            (".merged", ".opened")
-        ):
+        if event_type.split(".")[0] == "pull_request" and event_type != "pull_request.opened":
             logger.info(
                 "workflow_skipped_pr_not_merged",
                 run_id=run_id,
