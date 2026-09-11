@@ -82,4 +82,3 @@ class AgentModelPolicy:
     capabilities: tuple[str, ...] = ()
     temperature: float = 0.0
     capability: str = ""
-    max_output_tokens: int = 2048

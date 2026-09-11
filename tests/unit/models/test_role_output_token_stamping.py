@@ -1,4 +1,9 @@
-"""RoleAwareModelResolver must stamp ROLE_OUTPUT_TOKENS onto the model."""
+"""RoleAwareModelResolver must NOT stamp per-role output-token caps.
+
+Model output-token limits were removed wholesale (they truncated structured
+output mid-tool-use and raised MaxTokensReachedException), so role
+resolution must preserve the model's configured ``max_tokens`` unchanged.
+"""
 
 from __future__ import annotations
 
@@ -59,29 +64,29 @@ def resolver(captured_provider: CapturingProvider) -> RoleAwareModelResolver:
     return RoleAwareModelResolver(FakeRouter(FakeRegistry(captured_provider)))
 
 
-class TestRoleOutputTokenStamping:
+class TestRoleOutputTokenCapsRemoved:
     @pytest.mark.parametrize(
-        ("role", "expected_tokens"),
+        "role",
         [
-            ("documentation_engineer", 8192),
-            ("memory_curator", 1024),
-            ("classifier", 1024),
-            ("context", 2048),
-            ("support_engineer", 2048),
-            ("github_intelligence", 2048),
+            "documentation_engineer",
+            "memory_curator",
+            "classifier",
+            "context",
+            "support_engineer",
+            "github_intelligence",
         ],
     )
-    def test_for_role_stamps_output_tokens(
+    def test_for_role_preserves_uncapped_model(
         self,
         resolver: RoleAwareModelResolver,
         captured_provider: CapturingProvider,
         role: str,
-        expected_tokens: int,
     ) -> None:
         resolver.for_role(role)
+        model = captured_provider.captured
 
-        assert captured_provider.captured is not None
-        assert captured_provider.captured.max_tokens == expected_tokens
+        assert model is not None
+        assert model.max_tokens is None
 
     def test_unknown_role_raises_value_error(
         self,

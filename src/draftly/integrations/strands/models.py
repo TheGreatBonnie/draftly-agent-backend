@@ -102,8 +102,6 @@ class RoleAwareModelResolver:
         (offline/unconfigured) instead of raising, so consumers degrade to
         deterministic modes — parity with the legacy "no runtime model" case.
         """
-        from dataclasses import replace
-
         from draftly.models.router import NoCandidateError
         from draftly.models.schemas import ROLE_TO_TASK_TYPE, RoutingRequest
 
@@ -123,14 +121,6 @@ class RoleAwareModelResolver:
             return None, None
 
         config = self._router.registry.get_model(decision.selected_model)
-
-        # Route the per-role output budget (factory ROLE_OUTPUT_TOKENS)
-        # onto the constructed model so every role-resolved agent is
-        # capped without changing any agent-factory signature.
-        from draftly.models.factory import ROLE_OUTPUT_TOKENS
-
-        if role in ROLE_OUTPUT_TOKENS:
-            config = replace(config, max_tokens=ROLE_OUTPUT_TOKENS[role])
 
         provider = self._router.registry.get_provider(decision.provider)
         model = provider.create_model(config)

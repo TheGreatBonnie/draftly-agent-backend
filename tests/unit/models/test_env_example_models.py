@@ -114,6 +114,16 @@ class TestSurvivorModelsRegistered:
             assert "tool_calling" in registry.get_model(name).capabilities
 
 
+class TestNoOutputTokenCaps:
+    def test_all_registered_models_are_uncapped(self) -> None:
+        registry = build_model_router().registry
+
+        for config in registry.list_models():
+            assert config.max_tokens is None, (
+                f"{config.name} imposes max_tokens={config.max_tokens!r}"
+            )
+
+
 class TestPrunedModelsAbsent:
     @pytest.mark.parametrize("name", PRUNED)
     def test_dead_model_not_registered(self, name: str) -> None:

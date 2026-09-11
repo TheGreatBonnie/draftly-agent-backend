@@ -152,7 +152,7 @@ def build_model_router(
                 "tool_calling",
             ),
             priority=20,
-            max_tokens=4096,
+            
         )
     )
 
@@ -167,7 +167,7 @@ def build_model_router(
             ),
             capabilities=("tool_calling",),
             priority=20,
-            max_tokens=2048,
+            
         )
     )
 
@@ -177,25 +177,22 @@ def build_model_router(
             "RESEARCH_MODEL",
             "tensorx/deepseek-v4-flash",
             ("research", "tool_calling"),
-            2048,
         ),
         (
             "stage-review",
             "REVIEW_MODEL",
             "tensorx/deepseek-v4-flash",
             ("verification", "tool_calling"),
-            2048,
         ),
         (
             "stage-rubric-grader",
             "RUBRIC_GRADER_MODEL",
             "tensorx/deepseek-v4-flash",
             ("evaluation", "tool_calling"),
-            2048,
         ),
     )
 
-    for stage_name, env_var, default_model, capabilities, stage_max_tokens in stage_models:
+    for stage_name, env_var, default_model, capabilities in stage_models:
         registry.register_model(
             ModelConfig(
                 name=stage_name,
@@ -206,7 +203,6 @@ def build_model_router(
                 ),
                 capabilities=capabilities,
                 priority=50,
-                max_tokens=stage_max_tokens,
             )
         )
 
@@ -224,7 +220,7 @@ def build_model_router(
                 "tool_calling",
             ),
             priority=30,
-            max_tokens=2048,
+            
         )
     )
 
@@ -242,7 +238,7 @@ def build_model_router(
                 "tool_calling",
             ),
             priority=30,
-            max_tokens=2048,
+            
         )
     )
 
@@ -260,7 +256,7 @@ def build_model_router(
                 "tool_calling",
             ),
             priority=30,
-            max_tokens=2048,
+            
         )
     )
 
@@ -278,7 +274,7 @@ def build_model_router(
                 "tool_calling",
             ),
             priority=30,
-            max_tokens=4096,
+            
         )
     )
 
@@ -297,7 +293,7 @@ def build_model_router(
                 "structured_output",
             ),
             priority=40,
-            max_tokens=4096,
+            
         )
     )
 
@@ -320,7 +316,7 @@ def build_model_router(
                 "tool_calling",
             ),
             priority=20,
-            max_tokens=4096,
+            
         )
     )
 
@@ -337,7 +333,7 @@ def build_model_router(
                 "structured_output",
             ),
             priority=20,
-            max_tokens=2048,
+            
         )
     )
 
@@ -355,7 +351,7 @@ def build_model_router(
                 "structured_output",
             ),
             priority=30,
-            max_tokens=4096,
+            
         )
     )
 
@@ -372,7 +368,7 @@ def build_model_router(
                 "tool_calling",
             ),
             priority=34,
-            max_tokens=2048,
+            
         )
     )
 
@@ -389,7 +385,7 @@ def build_model_router(
                 "structured_output",
             ),
             priority=32,
-            max_tokens=2048,
+            
         )
     )
 
@@ -405,7 +401,7 @@ def build_model_router(
                 "tool_calling",
             ),
             priority=33,
-            max_tokens=2048,
+            
         )
     )
 
@@ -422,7 +418,7 @@ def build_model_router(
                 "structured_output",
             ),
             priority=31,
-            max_tokens=2048,
+            
         )
     )
 
@@ -439,7 +435,7 @@ def build_model_router(
                 "structured_output",
             ),
             priority=30,
-            max_tokens=2048,
+            
         )
     )
 
@@ -470,7 +466,7 @@ def build_model_router(
                 "structured_output",
             ),
             priority=3,
-            max_tokens=8192,
+            
         )
     )
 
@@ -488,7 +484,7 @@ def build_model_router(
                 "structured_output",
             ),
             priority=3,
-            max_tokens=8192,
+            
             context_window=256000,
             input_cost_per_1m_tokens=0.60,
             output_cost_per_1m_tokens=2.50,
@@ -509,7 +505,7 @@ def build_model_router(
                 "structured_output",
             ),
             priority=3,
-            max_tokens=8192,
+            
         )
     )
 
@@ -527,7 +523,7 @@ def build_model_router(
                 "structured_output",
             ),
             priority=3,
-            max_tokens=8192,
+            
         )
     )
 
@@ -544,7 +540,7 @@ def build_model_router(
                 "structured_output",
             ),
             priority=3,
-            max_tokens=4096,
+            
         )
     )
 
@@ -561,7 +557,7 @@ def build_model_router(
                 "tool_calling",
             ),
             priority=3,
-            max_tokens=4096,
+            
         )
     )
 
@@ -579,7 +575,7 @@ def build_model_router(
                 "structured_output",
             ),
             priority=3,
-            max_tokens=8192,
+            
         )
     )
 
@@ -643,24 +639,6 @@ PROVIDER_CLASSES = {
     "mantle": MantleProvider,
 }
 
-ROLE_OUTPUT_TOKENS: dict[str, int] = {
-    "documentation_engineer": 8192,
-    "documentation_reviewer": 4096,
-    "support_engineer": 2048,
-    "support_reviewer": 2048,
-    "github_intelligence": 2048,
-    "research": 2048,
-    "deepeval": 4096,
-    "github_delivery": 2048,
-    "memory_curator": 1024,
-    "classifier": 1024,
-    "context": 2048,
-    "content_strategist": 2048,
-    "content_blog_writer": 8192,
-    "content_social_adapter": 4096,
-}
-
-
 def build_agent_policies() -> dict[str, AgentModelPolicy]:
     """
     Build the per-role model policies used by Draftly agents.
@@ -686,7 +664,6 @@ def build_agent_policies() -> dict[str, AgentModelPolicy]:
             capabilities=capabilities,
             capability=capability,
             temperature=0.0,
-            max_output_tokens=ROLE_OUTPUT_TOKENS.get(role, 2048),
         )
 
     return policies

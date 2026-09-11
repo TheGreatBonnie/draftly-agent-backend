@@ -87,7 +87,6 @@ class ModelDependencies:
     review: Any
     rubric_grader: Any
     router: Any
-    max_output_tokens: dict[str, int] | None = None
     stats_store: Any | None = None
 
 
@@ -130,11 +129,6 @@ def build_models(
     review = router.resolve_model("stage-review")
     rubric_grader = router.resolve_model("stage-rubric-grader")
 
-    from draftly.models.factory import build_agent_policies
-
-    policies = build_agent_policies()
-    max_output_tokens = {role: policy.max_output_tokens for role, policy in policies.items()}
-
     logger.info(
         "resolved model handles fast=%s reasoning=%s research=%s review=%s rubric_grader=%s",
         getattr(fast, "model", "?") or "?",
@@ -151,7 +145,6 @@ def build_models(
         review=review,
         rubric_grader=rubric_grader,
         router=router,
-        max_output_tokens=max_output_tokens,
         stats_store=stats_store,
     )
 
