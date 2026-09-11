@@ -156,9 +156,12 @@ def test_dependency_injection_get_provider_health_none_when_no_redis():
 def test_build_workflows_accepts_redis_client():
     from draftly.app.composition.workflows import build_workflows
 
+    mock_config = MagicMock(events_streaming_enabled=False)
+    mock_config.strands = None
+
     with patch.dict("os.environ", {"DATABASE_URL": "sqlite:///test.db"}):
         result = build_workflows(
-            config=MagicMock(events_streaming_enabled=False),
+            config=mock_config,
             redis_client=MagicMock(),
         )
         assert result.event_bus is None
@@ -170,6 +173,7 @@ def test_build_workflows_event_bus_uses_shared_redis_client():
     mock_config = MagicMock()
     mock_config.events_streaming_enabled = True
     mock_config.redis_url = "redis://localhost:6379/0"
+    mock_config.strands = None
 
     mock_redis = MagicMock()
     mock_redis.native = MagicMock()
