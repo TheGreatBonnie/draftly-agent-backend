@@ -34,6 +34,7 @@ ROLE_TO_TASK_TYPE: dict[str, TaskType] = {
     "github_delivery": TaskType.DELIVERY,
     "memory_curator": TaskType.FAST,
     "classifier": TaskType.FAST,
+    "notify": TaskType.FAST,
     "context": TaskType.RESEARCH,
     "knowledge_extractor": TaskType.DOCUMENTATION_GENERATION,
     "initial_evaluator": TaskType.EVALUATION,

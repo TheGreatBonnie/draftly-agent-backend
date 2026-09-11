@@ -8,7 +8,7 @@ import pytest
 from draftly.persistence.repositories.steering import InterventionRecord
 from draftly.steering import handler as handler_module
 from draftly.steering.context import RuntimeScope, SteeringRuntime, SteeringRuntimeConfig
-from draftly.steering.decisions import AgentRole, SteeringFailure
+from draftly.steering.decisions import AgentRole, SteeringDecision, SteeringFailure, SteeringPhase
 from draftly.steering.handler import DraftlySteeringHandler
 from draftly.steering.persistence import SteeringAuditSink
 from draftly.steering.policy import FailureMode, RolePolicy, policy_for
@@ -239,6 +239,55 @@ async def test_audit_failure_fails_open_for_read_only_role():
         agent=FakeAgent(), tool_use={"name": "read_file", "path": "bad"},
     )
     assert type(action).__name__ == "Proceed"
+
+
+async def test_policy_failure_logs_warning_for_read_only(monkeypatch):
+    logger = Mock()
+    monkeypatch.setattr(handler_module, "logger", logger)
+    runtime = build_runtime(role=AgentRole.RESEARCH)
+    handler = DraftlySteeringHandler(runtime=runtime, policy=RaisingPolicy(role=AgentRole.RESEARCH))
+
+    action = await handler.steer_before_tool(agent=FakeAgent(), tool_use={"name": "x"})
+
+    assert type(action).__name__ == "Proceed"
+    logger.warning.assert_called_once()
+    assert logger.warning.call_args.args[0] == "steering_policy_unavailable"
+    assert logger.warning.call_args.kwargs["role"] == "research"
+
+
+async def test_audit_failure_logs_warning_for_read_only(monkeypatch):
+    logger = Mock()
+    monkeypatch.setattr(handler_module, "logger", logger)
+    runtime = build_runtime(role=AgentRole.RESEARCH, audit=FaultyAudit())
+    handler = DraftlySteeringHandler(runtime=runtime, policy=policy_for(AgentRole.RESEARCH))
+
+    action = await handler.steer_before_tool(
+        agent=FakeAgent(), tool_use={"name": "read_file", "path": "bad"},
+    )
+
+    assert type(action).__name__ == "Proceed"
+    logger.warning.assert_called_once()
+    assert logger.warning.call_args.args[0] == "steering_audit_unavailable"
+    assert logger.warning.call_args.kwargs["role"] == "research"
+
+
+async def test_non_durable_interrupt_logs_warning_for_read_only(monkeypatch):
+    logger = Mock()
+    monkeypatch.setattr(handler_module, "logger", logger)
+    runtime = build_runtime(role=AgentRole.WRITER, interventions=None)
+    handler = DraftlySteeringHandler(runtime=runtime, policy=policy_for(AgentRole.WRITER))
+    decision = SteeringDecision.interrupt(
+        phase=SteeringPhase.BEFORE_TOOL,
+        reason="should be durable",
+        role=AgentRole.WRITER,
+        rule="delivery:scope",
+    )
+
+    returned = await handler._persist_intervention(decision, tool_name="create_comment")
+
+    assert returned is decision
+    logger.warning.assert_called_once()
+    assert logger.warning.call_args.args[0] == "steering_intervention_not_persisted"
 
 
 async def test_missing_intervention_sink_does_not_return_untracked_interrupt():

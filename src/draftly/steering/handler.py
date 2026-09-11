@@ -373,6 +373,13 @@ class DraftlySteeringHandler(SteeringHandler):
         if interventions is None:
             if self.policy.side_effecting:
                 raise SteeringFailure("intervention persistence is unavailable")
+            logger.warning(
+                "steering_intervention_not_persisted",
+                reason="unavailable",
+                phase=decision.phase.value,
+                role=decision.role.value if decision.role else None,
+                rule=decision.rule,
+            )
             return decision
         interrupt_id = decision.interrupt_id or _strands_tool_interrupt_id(
             tool_use_id, tool_name
@@ -408,6 +415,14 @@ class DraftlySteeringHandler(SteeringHandler):
                 raise SteeringFailure(
                     f"intervention persistence failed: {exc}"
                 ) from exc
+            logger.warning(
+                "steering_intervention_not_persisted",
+                reason="failed",
+                error=type(exc).__name__,
+                phase=decision.phase.value,
+                role=decision.role.value if decision.role else None,
+                rule=decision.rule,
+            )
             return decision
         _metrics.increment("draftly_steering_interrupts_created_total")
         self.last_interrupt_id = interrupt_id
@@ -418,6 +433,12 @@ class DraftlySteeringHandler(SteeringHandler):
             raise SteeringFailure(
                 f"steering policy unavailable: {type(exc).__name__}: {exc}"
             ) from exc
+        logger.warning(
+            "steering_policy_unavailable",
+            role=self.policy.role.value,
+            error=type(exc).__name__,
+            mode="open",
+        )
         return Proceed(reason=f"steering unavailable: {type(exc).__name__}")
 
     def _on_persistence_failure(self, *, model: bool = False):
@@ -425,4 +446,9 @@ class DraftlySteeringHandler(SteeringHandler):
             raise SteeringFailure(
                 "steering persistence unavailable for side-effecting role"
             )
+        logger.warning(
+            "steering_audit_unavailable",
+            role=self.policy.role.value,
+            model=model,
+        )
         return Proceed(reason="steering audit unavailable; read-only role proceeds")

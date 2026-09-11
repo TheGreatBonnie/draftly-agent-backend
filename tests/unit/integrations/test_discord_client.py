@@ -41,6 +41,38 @@ async def test_send_dm_forwards_embeds_and_components(monkeypatch) -> None:
     }
 
 
+async def test_send_dm_omits_empty_content(monkeypatch) -> None:
+    client = DiscordClient()
+    posts: list[dict | None] = []
+
+    async def fake_request(
+        method: str,
+        path: str,
+        *,
+        params: dict | None = None,
+        json: dict | None = None,
+    ) -> dict:
+        if path == "/guilds/g1/members/U1":
+            return {}
+        if path == "/users/@me/channels":
+            return {"id": "dm-1"}
+        if path == "/channels/dm-1/messages":
+            posts.append(json)
+            return {}
+        return {}
+
+    monkeypatch.setattr(client, "_request", fake_request)
+
+    await client.send_dm(
+        "U1",
+        "",
+        guild_id="g1",
+        embeds=[{"title": "Documentation Review Required"}],
+    )
+
+    assert posts == [{"embeds": [{"title": "Documentation Review Required"}]}]
+
+
 async def test_send_dm_plain_when_no_embeds(monkeypatch) -> None:
     client = DiscordClient()
     posts: list[dict | None] = []

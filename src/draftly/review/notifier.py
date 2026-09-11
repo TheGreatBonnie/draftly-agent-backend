@@ -38,31 +38,22 @@ def _review_document(review: Any) -> dict[str, Any]:
     return document if isinstance(document, dict) else {}
 
 
-def _card_context(review: Any) -> dict[str, str]:
-    """Title/source/draft context for interactive review cards."""
+def _card_context(review: Any) -> dict[str, Any]:
+    """Title/source/confidence context for interactive notification cards."""
     document = _review_document(review)
     title = document.get("title") or "Documentation Change"
     source = document.get("repository") or document.get("channel") or "draftly"
-    draft = ""
-    if document.get("content") or document.get("body"):
-        draft = str(document.get("content") or document.get("body") or "")
-    else:
-        files = document.get("files") or []
-        if files and isinstance(files[0], dict) and files[0].get("content"):
-            draft = str(files[0]["content"])
+    confidence = None
+    raw = document.get("confidence") or review.get("confidence")
+    try:
+        confidence = float(raw)
+    except (TypeError, ValueError):
+        pass
     return {
         "title": str(title),
         "source": str(source),
-        "draft": draft,
+        "confidence": confidence,
     }
-
-
-def _review_body(review: Any) -> str:
-    """Plain-text notification body: run summary plus a pointer to the review.
-
-    Never embeds credentials or installation secrets.
-    """
-    return f"{_review_summary(review)}\nReview: {_get(review, 'id')}"
 
 
 class ReviewNotifier:
@@ -96,7 +87,6 @@ class ReviewNotifier:
             return sent
         review_id = str(_get(review, "id") or run_id)
         org_id = str(_get(review, "org_id") or "")
-        body = _review_body(review)
         summary = _review_summary(review)
 
         active = await self.reviewers.get_active_reviewers(org_id)
@@ -109,7 +99,6 @@ class ReviewNotifier:
                     org_id,
                     platform,
                     recipient,
-                    body,
                     summary,
                 ):
                     sent[platform].append(recipient)
@@ -136,7 +125,6 @@ class ReviewNotifier:
         org_id: str,
         platform: str,
         recipient: str,
-        body: str,
         summary: str,
     ) -> bool:
         if not await self.notifications.claim(review_id, org_id, platform, recipient):
@@ -153,8 +141,9 @@ class ReviewNotifier:
                     title=context["title"],
                     source=context["source"],
                     summary=summary,
-                    dashboard_url=f"{self._dashboard_url()}/review/{review_id}",
+                    dashboard_url=f"{self._dashboard_url()}/reviews/{review_id}",
                     review_id=review_id,
+                    confidence=context["confidence"],
                 )
                 await self.slack.send_dm(
                     recipient,
@@ -171,14 +160,14 @@ class ReviewNotifier:
                 card = build_discord_review_card(
                     context["title"],
                     context["source"],
-                    None,
-                    f"{self._dashboard_url()}/review/{review_id}",
+                    context["confidence"],
+                    f"{self._dashboard_url()}/reviews/{review_id}",
                     review_id,
-                    draft_content=context["draft"],
+                    summary=summary,
                 )
                 await self.discord.send_dm(
                     recipient,
-                    body,
+                    "",
                     org_id=org_id,
                     embeds=card["embeds"],
                     components=card["components"],
@@ -186,12 +175,15 @@ class ReviewNotifier:
             elif platform == "email":
                 if self.email is None:
                     raise RuntimeError("email leg not configured")
+                context = _card_context(review)
                 await self.email.send_review_notification(
                     to=recipient,
                     reviewer_name=str(_get(reviewer, "name") or recipient),
                     review_id=review_id,
                     summary=summary,
-                    dashboard_url=f"{self._dashboard_url()}/review/{review_id}",
+                    dashboard_url=f"{self._dashboard_url()}/reviews/{review_id}",
+                    title=context["title"],
+                    source=context["source"],
                 )
         except Exception:
             logger.warning(

@@ -7,6 +7,7 @@ import pytest
 from draftly.steering.context import RuntimeScope, SteeringRuntime, SteeringRuntimeConfig
 from draftly.steering.decisions import AgentRole, DecisionKind, SteeringPhase
 from draftly.steering.policy import FailureMode, RolePolicy, policy_for
+from draftly.steering import policy as policy_module
 
 CHECKOUT = "/tmp/checkout"
 
@@ -186,6 +187,28 @@ async def test_judge_unavailable_falls_back_to_deterministic(runtime, tool_use):
         judge=broken_judge,
     )
     assert decision.kind is DecisionKind.PROCEED
+
+
+async def test_judge_failure_logs_warning_and_falls_back(monkeypatch):
+    from unittest.mock import Mock
+
+    logger = Mock()
+    monkeypatch.setattr(policy_module, "logger", logger, raising=False)
+
+    async def broken_judge(**kwargs):
+        raise RuntimeError("judge unavailable")
+
+    decision = await policy_for(AgentRole.WRITER).evaluate_tool_async(
+        runtime=_readonly_runtime(AgentRole.WRITER),
+        tool_name="read_file",
+        tool_use={"name": "read_file", "path": f"{CHECKOUT}/docs/index.md"},
+        judge=broken_judge,
+    )
+
+    assert decision.kind is DecisionKind.PROCEED
+    logger.warning.assert_called_once()
+    assert logger.warning.call_args.args[0] == "steering_judge_fallback"
+    assert logger.warning.call_args.kwargs["phase"] == "before_tool"
 
 
 def test_policy_for_requires_registered_role():

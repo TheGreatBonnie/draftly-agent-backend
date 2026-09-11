@@ -17,6 +17,8 @@ from enum import StrEnum
 from pathlib import PurePosixPath, PureWindowsPath
 from typing import Any
 
+import structlog
+
 from draftly.steering.context import SteeringRuntime
 from draftly.steering.decisions import (
     AgentRole,
@@ -27,6 +29,8 @@ from draftly.steering.decisions import (
 )
 
 _CHECKOUT_LITERAL = "__checkout__"
+
+logger = structlog.get_logger(__name__)
 
 #: Keys whose string values are interpreted as repository-local paths when
 #: deciding whether a tool stays inside the runtime checkout root.
@@ -378,7 +382,14 @@ class RolePolicy:
             return decision
         try:
             refined = await judge(decision=decision)
-        except Exception:
+        except Exception as exc:
+            logger.warning(
+                "steering_judge_fallback",
+                phase=decision.phase.value,
+                role=decision.role.value if decision.role else None,
+                rule=decision.rule,
+                error=type(exc).__name__,
+            )
             return decision  # fail-open only to deterministic base outcome
         if refined is None or refined.phase is not decision.phase:
             return decision

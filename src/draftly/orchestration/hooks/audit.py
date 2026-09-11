@@ -17,10 +17,10 @@ from typing import Any
 
 import structlog
 from strands.hooks import (
-    AfterInvocationEvent,
+    AfterMultiAgentInvocationEvent,
     AfterNodeCallEvent,
     AfterToolCallEvent,
-    BeforeInvocationEvent,
+    BeforeMultiAgentInvocationEvent,
     BeforeNodeCallEvent,
     HookProvider,
     HookRegistry,
@@ -57,13 +57,16 @@ class RunAuditLogger(HookProvider):
         self._stream_seq = 0
 
     def register_hooks(self, registry: HookRegistry, **kwargs: Any) -> None:
-        registry.add_callback(BeforeInvocationEvent, self.run_start)
+        # The workflow drives Strands multi-agent Graphs (not raw Agents), so
+        # runs open/close on the multi-agent Invocation events; single-agent
+        # Invocation events are never emitted by a Graph (§10.3 regression).
+        registry.add_callback(BeforeMultiAgentInvocationEvent, self.run_start)
         registry.add_callback(BeforeNodeCallEvent, self.node_start)
         registry.add_callback(AfterNodeCallEvent, self.node_end)
         registry.add_callback(AfterToolCallEvent, self.tool_end)
-        registry.add_callback(AfterInvocationEvent, self.run_end)
+        registry.add_callback(AfterMultiAgentInvocationEvent, self.run_end)
 
-    def run_start(self, event: BeforeInvocationEvent) -> None:
+    def run_start(self, event: BeforeMultiAgentInvocationEvent) -> None:
         state = event.invocation_state or {}
         run_id = state.get("run_id")
         if not run_id:
@@ -195,9 +198,13 @@ class RunAuditLogger(HookProvider):
             })
             logger.info("audit_tool", run_id=run_id, tool=tool_name)
 
-    def run_end(self, event: AfterInvocationEvent) -> None:
+    def run_end(self, event: AfterMultiAgentInvocationEvent) -> None:
         state = event.invocation_state or {}
-        run_id = state.get("run_id")
+        # The graph fires AfterMultiAgentInvocationEvent WITHOUT
+        # invocation_state (strands 1.52.0 Graph._execute_graph finally
+        # block); fall back to the run id recorded at run_start so the
+        # flush still persists.
+        run_id = state.get("run_id") or self._run_meta.get("run_id")
         if not run_id:
             return
         meta = dict(self._run_meta)
@@ -211,7 +218,7 @@ class RunAuditLogger(HookProvider):
         except RuntimeError:
             logger.warning("audit_flush_skipped_no_loop", run_id=run_id)
             return
-        if self.audit_repo is not None and steps:
+        if self.audit_repo is not None:
             task = loop.create_task(_flush_run(self.audit_repo, str(run_id), meta, steps))
             self._flush_tasks[str(run_id)] = task
             task.add_done_callback(lambda _t: self._flush_tasks.pop(str(run_id), None))
@@ -244,9 +251,9 @@ class RunAuditLogger(HookProvider):
         else:
             logger.info("audit_flush_drained", run_id=str(run_id))
 
-    async def run_end_async(self, event: AfterInvocationEvent) -> None:
+    async def run_end_async(self, event: AfterMultiAgentInvocationEvent) -> None:
         state = event.invocation_state or {}
-        run_id = state.get("run_id")
+        run_id = state.get("run_id") or self._run_meta.get("run_id")
         if not run_id:
             return
         if self.publisher is not None:

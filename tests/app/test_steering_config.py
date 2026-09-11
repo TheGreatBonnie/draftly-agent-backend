@@ -47,6 +47,6 @@ def test_settings_load_steering_env_overrides(monkeypatch):
 
 
 def test_existing_review_policy_unaffected_by_steering_defaults():
-    settings = Settings(strands_review_policy="risky")
+    settings = Settings(strands_review_policy="risky", strands_steering_enabled=False)
     assert settings.strands.review_policy == "risky"
     assert settings.strands.steering_enabled is False

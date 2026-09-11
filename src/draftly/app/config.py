@@ -1,3 +1,5 @@
+from draftly.app.api.evaluation_schemas import T
+from sympy.physics.quantum.trace import Tr
 from pydantic import AliasChoices, BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -28,14 +30,14 @@ class StrandsConfig(BaseModel):
     # ------------------------------------------------------------------
 
     #: Master switch for installing steering handlers on application agents.
-    steering_enabled: bool = False
+    steering_enabled: bool = True
     #: Enforce policy actions; when false, steering records decisions and
     #: proceeds (shadow mode).
-    steering_enforcement_enabled: bool = False
+    steering_enforcement_enabled: bool = True
     #: Version of the role policy matrix applied at runtime.
     steering_policy_version: str = "v1"
     #: Enable the isolated LLM judge to refine deterministic outcomes.
-    steering_llm_enabled: bool = False
+    steering_llm_enabled: bool = True
     #: Automatic tool guides permitted per single tool call.
     steering_tool_guides_per_call: int = 2
     #: Automatic model guides permitted per model turn.
@@ -173,10 +175,10 @@ class Settings(BaseSettings):
     # Agent steering (spec: 2026-09-10-agent-steering-design)
     # ------------------------------------------------------------------
 
-    strands_steering_enabled: bool = False
-    strands_steering_enforcement_enabled: bool = False
+    strands_steering_enabled: bool = True
+    strands_steering_enforcement_enabled: bool = True
     strands_steering_policy_version: str = "v1"
-    strands_steering_llm_enabled: bool = False
+    strands_steering_llm_enabled: bool = True
     strands_steering_tool_guides_per_call: int = 2
     strands_steering_model_guides_per_turn: int = 2
     strands_steering_total_guides_per_agent: int = 5

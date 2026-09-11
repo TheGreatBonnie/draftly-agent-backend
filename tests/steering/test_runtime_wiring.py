@@ -13,6 +13,7 @@ from types import SimpleNamespace
 import pytest
 
 from draftly.app.composition.workflows import _steering_runtime_factory
+from draftly.app.composition import workflows as workflows_module
 from draftly.integrations.strands import graph as graph_module
 from draftly.steering import context as context_module
 from draftly.steering.context import SteeringRuntime, SteeringRuntimeConfig
@@ -102,6 +103,43 @@ def test_enforcement_requires_durable_steering_repositories() -> None:
 
     with pytest.raises(RuntimeError, match="durable steering repositories"):
         _steering_runtime_factory(repositories=repositories, config=config)
+
+
+def test_runtime_factory_logs_resolved_config(monkeypatch) -> None:
+    logs: list[tuple] = []
+    logger = SimpleNamespace(info=lambda *args, **kwargs: logs.append((args, kwargs)))
+    monkeypatch.setattr(workflows_module, "logger", logger, raising=False)
+
+    repositories = SimpleNamespace(
+        steering_attempts=object(),
+        steering_interventions=object(),
+        agent_runs=object(),
+    )
+    config = SimpleNamespace(
+        strands=SimpleNamespace(
+            steering_enabled=True,
+            steering_enforcement_enabled=True,
+            steering_policy_version="v2",
+            steering_llm_enabled=True,
+            steering_tool_guides_per_call=3,
+            steering_model_guides_per_turn=4,
+            steering_total_guides_per_agent=7,
+            steering_judge_timeout_seconds=5.0,
+            steering_reason_max_chars=2_000,
+            steering_payload_max_bytes=8 * 1024,
+        )
+    )
+
+    _steering_runtime_factory(repositories=repositories, config=config)
+
+    assert any(
+        args[0] == "steering_runtime_config"
+        and kwargs.get("enforcement_enabled") is True
+        and kwargs.get("policy_version") == "v2"
+        and kwargs.get("llm_enabled") is True
+        and kwargs.get("judge_timeout_seconds") == 5.0
+        for args, kwargs in logs
+    )
 
 
 async def test_event_sink_failure_is_metriced_and_logged(monkeypatch) -> None:

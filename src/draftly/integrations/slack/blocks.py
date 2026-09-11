@@ -16,36 +16,45 @@ def build_review_notification_card(
     summary: str,
     dashboard_url: str,
     review_id: str,
+    confidence: float | None = None,
 ) -> dict[str, Any]:
     """Build the Block Kit payload for a review-required DM.
 
     Returns ``{"text", "blocks"}`` where ``text`` is the plain-text
     fallback (used for push notifications and clients without Block Kit).
     Buttons carry the review id in ``value`` — never in URLs — and use the
-    action ids registered by ``draftly.integrations.slack.app``.
+    action ids registered by ``draftly.integrations.slack.app``. The
+    dashboard CTA is a plain link button (``url``, no ``action_id``).
     """
+    fields: list[dict[str, Any]] = [
+        _mrkdwn(f"*Title:* {title}"),
+        _mrkdwn(f"*Source:* {source}"),
+    ]
+    if confidence is not None:
+        fields.append(_mrkdwn(f"*Confidence:* {confidence:.0%}"))
+
     blocks: list[dict[str, Any]] = [
         {
             "type": "header",
             "text": {"type": "plain_text", "text": "Documentation Review Required"},
+            "accent_color": "#1260ed",
         },
         {
             "type": "section",
-            "fields": [
-                _mrkdwn(f"*Title:* {title}"),
-                _mrkdwn(f"*Source:* {source}"),
-            ],
+            "fields": fields,
         },
         {
             "type": "section",
             "text": _mrkdwn(f"*Summary:*\n{summary}"),
         },
+        {"type": "divider"},
         {
-            "type": "context",
+            "type": "actions",
             "elements": [
                 {
-                    "type": "mrkdwn",
-                    "text": f"<{dashboard_url}|Open in Dashboard> · Expires in 24 hours",
+                    "type": "button",
+                    "text": {"type": "plain_text", "text": "Open in Dashboard"},
+                    "url": dashboard_url,
                 }
             ],
         },
@@ -74,9 +83,13 @@ def build_review_notification_card(
                 },
             ],
         },
+        {
+            "type": "context",
+            "elements": [_mrkdwn("Expires in 24 hours")],
+        },
     ]
 
     return {
-        "text": f"{summary}\nReview: {review_id}",
+        "text": f"{title}\n{summary}\nReview: {review_id}",
         "blocks": blocks,
     }

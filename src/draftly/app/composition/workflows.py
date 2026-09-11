@@ -61,6 +61,17 @@ def _steering_runtime_factory(
         model_guides_per_turn=runtime_config.model_guides_per_turn,
         total_guides_per_agent=runtime_config.total_guides_per_agent,
     )
+    logger.info(
+        "steering_runtime_config",
+        enabled=runtime_config.enabled,
+        enforcement_enabled=runtime_config.enforcement_enabled,
+        policy_version=runtime_config.policy_version,
+        llm_enabled=runtime_config.llm_enabled,
+        tool_guides_per_call=runtime_config.tool_guides_per_call,
+        model_guides_per_turn=runtime_config.model_guides_per_turn,
+        total_guides_per_agent=runtime_config.total_guides_per_agent,
+        judge_timeout_seconds=runtime_config.judge_timeout_seconds,
+    )
     if runtime_config.enabled and runtime_config.enforcement_enabled and (
         attempts_repo is None or interventions_repo is None
     ):

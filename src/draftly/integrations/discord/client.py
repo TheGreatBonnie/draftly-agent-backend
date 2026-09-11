@@ -149,7 +149,7 @@ class DiscordClient:
     async def send_dm(
         self,
         user_id: str,
-        content: str,
+        content: str = "",
         *,
         embeds: list[dict[str, Any]] | None = None,
         components: list[dict[str, Any]] | None = None,
@@ -163,6 +163,8 @@ class DiscordClient:
         member, then opens and sends the DM. All delivery stays within the
         resolved organization. Optional ``embeds`` and ``components`` are
         forwarded into the channel message payload (interactive review cards).
+        An empty ``content`` is omitted from the payload so messages can be
+        embed/component-only.
         """
         if guild_id is None and org_id:
             from draftly.persistence.repositories.organizations import (
@@ -187,7 +189,9 @@ class DiscordClient:
         if not channel_id:
             raise RuntimeError(f"Failed to open DM with user {user_id}")
 
-        payload: dict[str, Any] = {"content": content}
+        payload: dict[str, Any] = {}
+        if content:
+            payload["content"] = content
         if embeds:
             payload["embeds"] = embeds
         if components:

@@ -90,6 +90,9 @@ def configure_logging(settings: Settings) -> None:
     logging.getLogger("slack_bolt").setLevel(logging.ERROR)
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("strands").setLevel(logging.WARNING)
+    # Suppress non-actionable reasoningContent warnings from multi-turn
+    # conversations (OpenAI Chat Completions API limitation, not a bug).
+    logging.getLogger("strands.models.openai").setLevel(logging.ERROR)
 
     structlog.configure(
         processors=_shared_processors()

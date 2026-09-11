@@ -153,8 +153,10 @@ async def test_notifies_only_reviewers_with_matching_pref():
     sent = await notifier.notify_reviewers("run-1")
 
     assert sent == {"slack": ["U1"], "discord": ["D1"], "email": []}
-    assert slack.dms == [("U1", "a documentation review is pending\nReview: review-1")]
-    assert discord.dms == [("D1", "a documentation review is pending\nReview: review-1")]
+    assert slack.dms == [
+        ("U1", "Documentation Change\na documentation review is pending\nReview: review-1")
+    ]
+    assert discord.dms == [("D1", "")]
     assert notifications.sent == [
         ("review-1", "slack", "U1"),
         ("review-1", "discord", "D1"),
@@ -241,7 +243,9 @@ async def test_body_includes_summary_and_review_pointer():
     )
 
     await notifier.notify_reviewers("run-1")
-    assert slack.dms == [("U1", "Updated widgets guide\nReview: review-1")]
+    assert slack.dms == [
+        ("U1", "Documentation Change\nUpdated widgets guide\nReview: review-1")
+    ]
 
 
 async def test_slack_dm_carries_block_kit_with_review_action_buttons():
@@ -278,13 +282,15 @@ async def test_slack_dm_carries_block_kit_with_review_action_buttons():
     blocks = slack.calls[0]["blocks"]
     assert blocks is not None and blocks
     elements = [e for b in blocks if b["type"] == "actions" for e in b["elements"]]
-    action_ids = {e["action_id"]: e["value"] for e in elements}
+    action_ids = {e["action_id"]: e["value"] for e in elements if e.get("action_id")}
     assert action_ids == {
         "approve_review": "review-1",
         "reject_review": "review-1",
         "revise_review": "review-1",
     }
-    assert slack.calls[0]["text"] == "Updated widgets guide\nReview: review-1"
+    assert slack.calls[0]["text"] == (
+        "Documentation Change\nUpdated widgets guide\nReview: review-1"
+    )
 
 
 async def test_discord_dm_carries_embed_and_components_with_review_id():
@@ -319,8 +325,16 @@ async def test_discord_dm_carries_embed_and_components_with_review_id():
     await notifier.notify_reviewers("run-1")
 
     call = discord.calls[0]
-    assert call["embeds"][0]["title"] == "Documentation Review Required"
-    assert call["embeds"][0]["fields"][0]["value"].startswith("# Widgets")
+    assert call["content"] == ""
+    embed = call["embeds"][0]
+    assert embed["title"] == "Documentation Review Required"
+    fields = {f["name"]: f["value"] for f in embed["fields"]}
+    assert fields == {
+        "Title": "Documentation Change",
+        "Source": "acme/api",
+        "Summary": "Updated widgets guide",
+    }
+    assert embed["footer"]["text"] == "Review ID: review-1 · Expires in 24 hours"
     custom_ids = [
         c["custom_id"]
         for row in call["components"]
@@ -328,4 +342,3 @@ async def test_discord_dm_carries_embed_and_components_with_review_id():
         if c.get("custom_id")
     ]
     assert all(custom_id.endswith(":review-1") for custom_id in custom_ids)
-    assert call["content"] == "Updated widgets guide\nReview: review-1"

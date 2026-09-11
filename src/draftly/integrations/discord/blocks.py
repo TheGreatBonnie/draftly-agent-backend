@@ -8,18 +8,10 @@ card can round-trip across separate worker/API processes.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
 
-
-def _truncate_draft(content: str, max_chars: int = 500) -> str:
-    """Truncate draft content to max_chars at a word boundary."""
-    if len(content) <= max_chars:
-        return content
-    truncated = content[: max_chars - 3]
-    last_space = truncated.rfind(" ")
-    if last_space > (max_chars - 3) // 2:
-        truncated = truncated[:last_space]
-    return truncated + "..."
+BRAND_COLOR = 1204461  # #1260ed
 
 
 def build_discord_review_card(
@@ -28,31 +20,48 @@ def build_discord_review_card(
     confidence: float | None,
     dashboard_url: str,
     review_id: str,
-    draft_content: str = "",
+    summary: str = "",
 ) -> dict[str, Any]:
     """Build a Discord embed payload with interactive action components."""
-    truncated_draft = _truncate_draft(draft_content)
+    summary_value: str = summary or "No summary provided"
+    if len(summary_value) > 1024:
+        summary_value = summary_value[:1021] + "..."
 
-    header = [f"**Title:** {title}", f"**Source:** {source}"]
+    fields: list[dict[str, Any]] = [
+        {
+            "name": "Title",
+            "value": title,
+            "inline": True,
+        },
+        {
+            "name": "Source",
+            "value": source,
+            "inline": True,
+        },
+    ]
     if confidence is not None:
-        header.append(f"**Confidence:** {confidence:.0%}")
+        fields.append(
+            {
+                "name": "Confidence",
+                "value": f"{confidence:.0%}",
+                "inline": True,
+            }
+        )
+    fields.append(
+        {
+            "name": "Summary",
+            "value": summary_value,
+            "inline": False,
+        }
+    )
 
     embed: dict[str, Any] = {
         "title": "Documentation Review Required",
-        "description": "\n".join(header),
-        "color": 49407,
-        "fields": [
-            {
-                "name": "Draft Preview",
-                "value": (truncated_draft[:1024] or "No content"),
-                "inline": False,
-            },
-        ],
-        "footer": {"text": "Review expires in 24 hours"},
+        "color": BRAND_COLOR,
+        "fields": fields,
+        "footer": {"text": f"Review ID: {review_id} · Expires in 24 hours"},
+        "timestamp": datetime.now(UTC).isoformat(),
     }
-
-    if len(embed["fields"][0]["value"]) > 1024:
-        embed["fields"][0]["value"] = embed["fields"][0]["value"][:1021] + "..."
 
     components = [
         {
@@ -61,30 +70,25 @@ def build_discord_review_card(
                 {
                     "type": 2,
                     "style": 5,
-                    "label": "Read Full Draft",
+                    "label": "Open in Dashboard",
                     "url": dashboard_url,
-                }
-            ],
-        },
-        {
-            "type": 1,
-            "components": [
+                },
                 {
                     "type": 2,
                     "style": 3,
-                    "label": "Approve",
+                    "label": "✅ Approve",
                     "custom_id": f"discord_approve:{review_id}",
                 },
                 {
                     "type": 2,
                     "style": 4,
-                    "label": "Reject",
+                    "label": "❌ Reject",
                     "custom_id": f"discord_reject:{review_id}",
                 },
                 {
                     "type": 2,
                     "style": 2,
-                    "label": "Revise",
+                    "label": "🔁 Revise",
                     "custom_id": f"discord_revise:{review_id}",
                 },
             ],
