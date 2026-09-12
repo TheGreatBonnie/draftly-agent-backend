@@ -247,6 +247,7 @@ _LOCAL_ONLY_TOOL_NAMES = frozenset(
         "git_status",
         "git_diff",
         "git_log",
+        "code_search",
     }
 )
 

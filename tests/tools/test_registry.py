@@ -85,6 +85,7 @@ def test_github_grounding_excludes_local_git_fs_tools():
         "git_status",
         "git_diff",
         "git_log",
+        "code_search",
     ):
         if local_name in names:
             assert local_name not in github_names
