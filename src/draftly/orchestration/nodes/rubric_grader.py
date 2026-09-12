@@ -43,6 +43,19 @@ class RubricGrader(Protocol):
         ...
 
 
+class DeterministicRubricGrader:
+    """No-op grader that returns an empty grade instantly.
+
+    Used when no LLM model is available (e.g. provider disabled by a
+    402 payment failure).  The deterministic gate remains the pass/fail
+    signal; this grader only exists so the evaluate nodes can always be
+    wired to a real ``RubricGrader`` instance.
+    """
+
+    async def grade(self, *, draft: str, evidence: list[dict]) -> RubricGrade:
+        return RubricGrade()
+
+
 class StrandsRubricGrader:
     """Thin adapter over a rubric ``OutputEvaluator``.
 
@@ -80,7 +93,14 @@ def build_rubric_grader(evaluator: OutputEvaluator, *, rubric: str) -> RubricGra
 
 
 def build_docs_rubric_grader(model: Any, rubric: str) -> RubricGrader:
-    """Build the docs-quality grader (groundedness + completeness judge)."""
+    """Build the docs-quality grader (groundedness + completeness judge).
+
+    Degrades to a deterministic no-op grader when ``model`` is ``None``
+    (e.g. the review provider is offline) so the evaluate node never
+    crashes on a missing model.
+    """
+    if model is None:
+        return DeterministicRubricGrader()
     return StrandsRubricGrader(
         OutputEvaluator(rubric=rubric, model=model),
         rubric=rubric,
@@ -88,7 +108,12 @@ def build_docs_rubric_grader(model: Any, rubric: str) -> RubricGrader:
 
 
 def build_changelog_rubric_grader(model: Any) -> RubricGrader:
-    """Build the changelog-quality grader (Keep a Changelog judge)."""
+    """Build the changelog-quality grader (Keep a Changelog judge).
+
+    Degrades to a deterministic no-op grader when ``model`` is ``None``.
+    """
+    if model is None:
+        return DeterministicRubricGrader()
     return StrandsRubricGrader(
         OutputEvaluator(rubric=CHANGELOG_RUBRIC, model=model),
         rubric=CHANGELOG_RUBRIC,

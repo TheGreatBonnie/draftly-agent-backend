@@ -608,3 +608,49 @@ class TestRubricGrader:
 
         rubric_reasons = [r for r in payload["reasons"] if r.startswith("[rubric]")]
         assert rubric_reasons == []
+
+
+from draftly.orchestration.nodes.changelog_evaluate import ChangelogEvaluatorNode
+from draftly.orchestration.nodes.rubric_grader import (
+    DeterministicRubricGrader,
+    RubricGrade,
+    build_changelog_rubric_grader,
+    build_docs_rubric_grader,
+)
+
+
+def _task_block() -> list[dict]:
+    return [{"text": "Original Task: task"}]
+
+
+@pytest.mark.asyncio
+async def test_deterministic_grader_returns_empty_grade():
+    grade = await DeterministicRubricGrader().grade(draft="draft", evidence=[])
+    assert grade == RubricGrade()
+
+
+@pytest.mark.asyncio
+async def test_build_docs_rubric_grader_returns_noop_when_model_none():
+    grader = build_docs_rubric_grader(None, rubric="the rubric")
+    assert isinstance(grader, DeterministicRubricGrader)
+    assert await grader.grade(draft="x", evidence=[]) == RubricGrade()
+
+
+@pytest.mark.asyncio
+async def test_build_changelog_grader_returns_noop_when_model_none():
+    grader = build_changelog_rubric_grader(None)
+    assert isinstance(grader, DeterministicRubricGrader)
+
+
+@pytest.mark.asyncio
+async def test_evaluator_node_completes_with_noop_grader():
+    node = EvaluatorNode(rubric_grader=DeterministicRubricGrader())
+    result = await node.invoke_async(task=_task_block())
+    assert result.status.name == "COMPLETED"
+
+
+@pytest.mark.asyncio
+async def test_changelog_node_completes_with_noop_grader():
+    node = ChangelogEvaluatorNode(rubric_grader=DeterministicRubricGrader())
+    result = await node.invoke_async(task=_task_block())
+    assert result.status.name == "COMPLETED"
