@@ -19,11 +19,12 @@ def test_slack_card_has_actions_with_review_id_value() -> None:
     )
 
     assert card["text"] == "Rotate keys\nRotate the keys guide\nReview: review-1"
-    assert card["blocks"][0] == {
+    header = card["blocks"][0]
+    assert header == {
         "type": "header",
         "text": {"type": "plain_text", "text": "Documentation Review Required"},
-        "accent_color": "#1260ed",
     }
+    assert "accent_color" not in header
 
     action_rows = [b for b in card["blocks"] if b["type"] == "actions"]
     assert len(action_rows) == 2

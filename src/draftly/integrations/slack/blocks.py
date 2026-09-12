@@ -37,7 +37,6 @@ def build_review_notification_card(
         {
             "type": "header",
             "text": {"type": "plain_text", "text": "Documentation Review Required"},
-            "accent_color": "#1260ed",
         },
         {
             "type": "section",
