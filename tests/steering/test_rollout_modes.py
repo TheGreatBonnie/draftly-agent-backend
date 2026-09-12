@@ -106,7 +106,11 @@ def build_writer_runtime(*, enforcement: bool) -> SteeringRuntime:
 
 
 def unsafe_side_effect_tool() -> dict:
-    """A delivery tool missing idempotency metadata -> deterministic INTERRUPT."""
+    """A delivery tool missing explicit idempotency metadata.
+
+    The handler stamps a deterministic idempotency key onto side-effect
+    tools before the policy check, so this shape proceeds once stamped.
+    """
     return {
         "name": "create_comment",
         "destination_project": "project-1",
@@ -136,8 +140,8 @@ async def test_shadow_mode_records_would_have_decision_without_canceling_tool():
     assert type(action).__name__ == "Proceed"
     runtime.audit.record_step.assert_awaited_once()
     decision = runtime.audit.record_step.await_args.kwargs["decision"]
-    assert decision.kind is DecisionKind.INTERRUPT
-    assert decision.rule == "delivery:idempotency"
+    assert decision.kind is DecisionKind.PROCEED
+    assert decision.rule == "policy:ok"
 
 
 async def test_shadow_mode_never_persists_an_interruption():
@@ -166,7 +170,7 @@ async def test_shadow_mode_emits_would_have_decision_metrics(monkeypatch):
 
     counters = registry.snapshot()["counters"]
     assert counters.get("draftly_steering_shadow_decisions_total") == 1
-    assert counters.get("draftly_steering_actions_interrupt_total") == 1
+    assert counters.get("draftly_steering_actions_proceed_total") == 1
     assert counters.get("draftly_steering_roles_delivery_total") == 1
     assert counters.get("draftly_steering_surfaces_pull_request_total") == 1
     assert "draftly_steering_interrupts_created_total" not in counters
@@ -196,7 +200,7 @@ async def test_concurrent_shadow_steers_have_no_side_effects():
 # Enforcement mode
 # ----------------------------------------------------------------------
 
-async def test_enforcement_mode_interrupts_side_effect_and_persists():
+async def test_enforcement_mode_proceeds_side_effect_once_key_stamped():
     runtime = build_delivery_runtime(
         enforcement=True, interventions=FakeInterventions()
     )
@@ -206,11 +210,9 @@ async def test_enforcement_mode_interrupts_side_effect_and_persists():
     action = await handler.steer_before_tool(
         agent=FakeAgent(), tool_use=unsafe_side_effect_tool()
     )
-    assert type(action).__name__ == "Interrupt"
-    runtime.interventions.create_pending.assert_awaited_once()
-    record = runtime.interventions.create_pending.await_args.kwargs["record"]
-    assert record.interrupt_id == handler.last_interrupt_id
-    assert record.reason["reason"] == "side-effecting tool requires idempotency metadata"
+    assert type(action).__name__ == "Proceed"
+    runtime.interventions.create_pending.assert_not_awaited()
+    assert handler.last_interrupt_id is None
 
 
 async def test_enforcement_mode_is_default_when_flags_unset():
@@ -223,7 +225,8 @@ async def test_enforcement_mode_is_default_when_flags_unset():
     action = await handler.steer_before_tool(
         agent=FakeAgent(), tool_use=unsafe_side_effect_tool()
     )
-    assert type(action).__name__ == "Interrupt"
+    assert type(action).__name__ == "Proceed"
+    runtime.interventions.create_pending.assert_not_awaited()
 
 
 async def test_unknown_tool_is_not_gated_in_enforcement_mode():
