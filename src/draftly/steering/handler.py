@@ -16,6 +16,7 @@ action is returned. Persistence failures fail closed for side-effecting roles
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import uuid
 from collections.abc import Awaitable, Callable
@@ -287,9 +288,42 @@ class DraftlySteeringHandler(SteeringHandler):
     # Implementation
     # ------------------------------------------------------------------
 
-    async def _handle_tool(self, *, agent, tool_use, **kwargs):
+    _IDEM_RESERVED_KEYS = frozenset(
+        {"name", "toolUseId", "tool_use_id", "metadata", "idempotency_key"}
+    )
+
+    def _stamp_idempotency_key(self, tool_use: dict) -> None:
+        """Stamp a deterministic idempotency key on side-effecting tools.
+
+        Keyed on ``org_id|run_id|tool_name|<sorted json args>`` so identical
+        calls within a run collide and honest retries are deduplicated.
+        Respects an already-present key.
+        """
         tool_name = (tool_use or {}).get("name", "")
-        tool_use_id = (tool_use or {}).get("toolUseId") or ""
+        if tool_name not in self.policy.side_effect_tools:
+            return
+        meta = dict(tool_use.get("metadata") or {})
+        if meta.get("idempotency_key"):
+            return
+        scope = self.runtime.scope
+        run_id = getattr(scope, "run_id", None) or ""
+        org_id = getattr(scope, "org_id", None) or ""
+        args = {
+            k: v
+            for k, v in tool_use.items()
+            if k not in self._IDEM_RESERVED_KEYS
+        }
+        payload = json.dumps(args, sort_keys=True, default=str)
+        meta["idempotency_key"] = hashlib.sha256(
+            f"{org_id}|{run_id}|{tool_name}|{payload}".encode()
+        ).hexdigest()
+        tool_use["metadata"] = meta
+
+    async def _handle_tool(self, *, agent, tool_use, **kwargs):
+        self._stamp_idempotency_key(tool_use)
+        tool_use = dict(tool_use or {})
+        tool_name = tool_use.get("name", "")
+        tool_use_id = tool_use.get("toolUseId") or ""
         enforcement = self.runtime.config.enforcement_enabled
         try:
             if enforcement:

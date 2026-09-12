@@ -1,5 +1,7 @@
 """Tests for the Strands steering handler adapter."""
 
+import hashlib
+import json
 import uuid
 from unittest.mock import AsyncMock, Mock
 
@@ -392,3 +394,96 @@ async def test_interrupt_id_matches_strands_tool_interrupt_scheme():
         runtime.audit.record_step.await_args.kwargs["decision"].interrupt_id
         == record.interrupt_id
     )
+
+
+class ProceedPolicy(RolePolicy):
+    """Minimal DELIVERY policy that always allows the tool."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            role=AgentRole.DELIVERY,
+            side_effecting=True,
+            failure_mode=FailureMode.INTERRUPT,
+            side_effect_tools=frozenset({"create_comment"}),
+        )
+
+    async def evaluate_tool_async(self, **kwargs):
+        return SteeringDecision.proceed(
+            phase=SteeringPhase.BEFORE_TOOL,
+            reason="allowed",
+            role=AgentRole.DELIVERY,
+        )
+
+
+_IDEM_RESERVED = {"name", "toolUseId", "tool_use_id", "metadata", "idempotency_key"}
+
+
+def _idem_payload(tool_use: dict) -> str:
+    args = {k: v for k, v in tool_use.items() if k not in _IDEM_RESERVED}
+    return json.dumps(args, sort_keys=True, default=str)
+
+
+async def test_idempotency_key_injected_on_side_effect_tool():
+    runtime = build_runtime(role=AgentRole.DELIVERY)
+    handler = DraftlySteeringHandler(runtime=runtime, policy=ProceedPolicy())
+
+    tool_use = {
+        "name": "create_comment",
+        "destination_project": "project-1",
+        "repo_dir": f"{CHECKOUT}/docs",
+        "body": "excerpt",
+    }
+    action = await handler.steer_before_tool(agent=FakeAgent(), tool_use=tool_use)
+
+    assert type(action).__name__ == "Proceed"
+    key = (tool_use.get("metadata") or {}).get("idempotency_key")
+    assert isinstance(key, str) and len(key) == 64
+
+    expected = hashlib.sha256(
+        f"org-1|run-1|create_comment|{_idem_payload(tool_use)}".encode()
+    ).hexdigest()
+    assert key == expected
+
+
+async def test_identical_calls_produce_deterministic_key():
+    runtime = build_runtime(role=AgentRole.DELIVERY)
+    handler = DraftlySteeringHandler(runtime=runtime, policy=ProceedPolicy())
+
+    keys = []
+    for _ in range(3):
+        tool_use = {
+            "name": "create_comment",
+            "destination_project": "project-1",
+            "repo_dir": f"{CHECKOUT}/docs",
+            "body": "excerpt",
+        }
+        await handler.steer_before_tool(agent=FakeAgent(), tool_use=tool_use)
+        keys.append((tool_use.get("metadata") or {}).get("idempotency_key"))
+    assert len(set(keys)) == 1
+
+
+async def test_differs_when_input_changes():
+    runtime = build_runtime(role=AgentRole.DELIVERY)
+    handler = DraftlySteeringHandler(runtime=runtime, policy=ProceedPolicy())
+
+    keys = []
+    for body in ("excerpt", "different body"):
+        tool_use = {
+            "name": "create_comment",
+            "destination_project": "project-1",
+            "repo_dir": f"{CHECKOUT}/docs",
+            "body": body,
+        }
+        await handler.steer_before_tool(agent=FakeAgent(), tool_use=tool_use)
+        keys.append((tool_use.get("metadata") or {}).get("idempotency_key"))
+    assert keys[0] != keys[1]
+
+
+async def test_read_only_tool_not_injected():
+    runtime = build_runtime(role=AgentRole.WRITER)
+    handler = DraftlySteeringHandler(runtime=runtime, policy=policy_for(AgentRole.WRITER))
+
+    tool_use = {"name": "read_file", "path": f"{CHECKOUT}/docs/index.md"}
+    await handler.steer_before_tool(agent=FakeAgent(), tool_use=tool_use)
+    meta = tool_use.get("metadata") or {}
+    assert "idempotency_key" not in meta
