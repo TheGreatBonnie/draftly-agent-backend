@@ -85,6 +85,31 @@ def completed_result() -> MultiAgentResult:
     return MultiAgentResult(status=Status.COMPLETED)
 
 
+def blocked_delivery_result() -> MultiAgentResult:
+    """A graph that completed but whose delivery node reported blocked.
+
+    Mirrors live run 7ddccdd0: the agent refused to fabricate content and
+    emitted ``DeliveryReceipt(status="blocked")``, yet the run surfaced
+    ``delivered``. A blocked receipt must NOT be a delivered outcome.
+    """
+    from draftly.agents.schemas import DeliveryReceipt
+
+    result = MultiAgentResult(status=Status.COMPLETED)
+    deliver = SimpleNamespace(
+        node_id="deliver",
+        result=SimpleNamespace(
+            structured_output=DeliveryReceipt(
+                delivered_to="pr://acme/api/8",
+                surface="pull_request",
+                reference="https://github/acme/api/pull/8",
+                status="blocked",
+            )
+        ),
+    )
+    result.execution_order = [deliver]
+    return result
+
+
 def failed_result() -> MultiAgentResult:
     result = MultiAgentResult(status=Status.FAILED)
     result.failed_nodes = 1
@@ -131,3 +156,11 @@ async def test_events_mark_failure_does_not_abort_failed_run() -> None:
 
     assert status.status.value == "failed"
     assert ("jobs", "failed") in context.repositories.jobs.timeline
+
+
+async def test_blocked_delivery_is_not_delivered() -> None:
+    status, context = await run_result(blocked_delivery_result())
+
+    assert status.status.value == "failed"
+    timeline = context.repositories.events.timeline
+    assert _terminal_index(timeline, "jobs", "failed") < _terminal_index(timeline, "events", "failed")  # noqa: E501

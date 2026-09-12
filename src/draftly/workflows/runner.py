@@ -101,6 +101,36 @@ def extract_token_usage(graph_result: Any, *, model: str) -> dict[str, int]:
     return totals
 
 
+def delivery_receipt_from_result(graph_result: Any) -> dict[str, Any] | None:
+    """Extract the deliver node's structured receipt (dict) from a graph result.
+
+    Returns ``None`` when no deliver node ran, or its result carries no
+    parsable structured output. Used both to route terminal status
+    (``blocked`` is NOT ``delivered``) and to persist the receipt.
+    """
+    for node in getattr(graph_result, "execution_order", None) or []:
+        if str(getattr(node, "node_id", "")) != "deliver":
+            continue
+        structured = getattr(getattr(node, "result", None), "structured_output", None)
+        if hasattr(structured, "model_dump"):
+            structured = structured.model_dump()
+        if isinstance(structured, dict):
+            return structured
+    return None
+
+
+def is_blocked_delivery(receipt: dict[str, Any] | None) -> bool:
+    """True when the delivery agent explicitly refused to act (blocked).
+
+    Blocks are a distinct terminal outcome: the graph completed, but nothing
+    was delivered. Treating a blocked receipt as ``delivered`` (live run
+    7ddccdd0) silently lies to the reviewer/notifier.
+    """
+    if not receipt:
+        return False
+    return str(receipt.get("status") or "").lower() == "blocked"
+
+
 async def _post_run_memory(context: Any, state: Any, surface: str, *, hook: Any = None) -> None:
     """Record episode + enqueue memory candidates. Never raises."""
     try:
@@ -1052,7 +1082,39 @@ class WorkflowRunner:
 
         if result.status == Status.COMPLETED:
             evaluation = self._node_payload(result, "evaluate")
-            lifecycle_result: dict[str, Any] = {"status": "COMPLETED"}
+            delivery_receipt = delivery_receipt_from_result(result)
+            if is_blocked_delivery(delivery_receipt):
+                # The graph completed but the delivery agent refused to act
+                # (blocked). That is NOT a delivered outcome: surface it as
+                # failed so the reviewer/notifier is not told the changes were
+                # applied. Live run 7ddccdd0 surfaced "delivered" while the
+                # receipt was blocked and no commit reached the PR.
+                state.errors.append(
+                    "delivery blocked: agent refused to deliver (no content)"
+                )
+                lifecycle_result: dict[str, Any] = {
+                    "status": "FAILED",
+                    "failed_nodes": ["deliver"],
+                }
+                if evaluation:
+                    lifecycle_result["evaluation"] = evaluation
+                await self._persist_lifecycle(
+                    event,
+                    "failed",
+                    run_id=run_id,
+                    error="; ".join(state.errors) or "delivery blocked",
+                    result=lifecycle_result,
+                )
+                await self._persist_evaluation_outcome(event, run_id, evaluation)
+                await self._mark(event, "failed")
+                await self._broadcast_lifecycle(
+                    org_id=str(event.get("project_id") or ""),
+                    run_id=run_id,
+                    status="failed",
+                    surface=surface,
+                )
+                return state.finish(WorkflowStatus.FAILED)
+            lifecycle_result = {"status": "COMPLETED"}
             if evaluation:
                 lifecycle_result["evaluation"] = evaluation
             await self._persist_document_changes(event, run_id, result)
@@ -1563,17 +1625,7 @@ class WorkflowRunner:
         """
         repositories = getattr(self.context, "repositories", None)
 
-        receipt: dict[str, Any] | None = None
-        for node in getattr(graph_result, "execution_order", []) or []:
-            if str(getattr(node, "node_id", "")) != "deliver":
-                continue
-            node_result = getattr(node, "result", None)
-            structured = getattr(node_result, "structured_output", None)
-            if hasattr(structured, "model_dump"):
-                structured = structured.model_dump()
-            if isinstance(structured, dict):
-                receipt = structured
-                break
+        receipt = delivery_receipt_from_result(graph_result)
         if not receipt:
             return None
         surface = str(receipt.get("surface") or "").lower()
