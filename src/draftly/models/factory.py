@@ -439,6 +439,43 @@ def build_model_router(
         )
     )
 
+    # Non-requesty verification/evaluation models so review and rubric
+    # grading survive a requesty 402 (payment) disable. Priorities sit
+    # below the requesty stage models so requesty is preferred while healthy.
+    registry.register_model(
+        ModelConfig(
+            name="review-orca",
+            provider="orcarouter",
+            model_id=_resolve_model_id(
+                "REVIEW_ORCA_MODEL",
+                "ORCA_DEEPSEEK_V4_FLASH_MODEL",
+                default="deepseek/deepseek-v4-flash",
+            ),
+            capabilities=(
+                "verification",
+                "tool_calling",
+            ),
+            priority=40,
+        )
+    )
+
+    registry.register_model(
+        ModelConfig(
+            name="grader-orca",
+            provider="orcarouter",
+            model_id=_resolve_model_id(
+                "GRADER_ORCA_MODEL",
+                "ORCA_DEEPSEEK_V4_FLASH_MODEL",
+                default="deepseek/deepseek-v4-flash",
+            ),
+            capabilities=(
+                "evaluation",
+                "tool_calling",
+            ),
+            priority=40,
+        )
+    )
+
 
 
 
