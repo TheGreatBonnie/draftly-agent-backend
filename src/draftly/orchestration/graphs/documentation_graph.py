@@ -51,6 +51,7 @@ from draftly.orchestration.nodes.rubric_grader import (
 from draftly.orchestration.routing.conditions import (
     changelog_eval_passed,
     changelog_needs_revision,
+    delivery_content_ready,
     eval_passed,
     generated,
     generated_changelog,
@@ -391,6 +392,19 @@ def build_documentation_graph(
 
     # Changelog passes → deliver
     builder.add_edge("changelog_evaluate", "deliver", condition=changelog_eval_passed)
+
+    # Delivery content edges: the deliver prompt is built from the outputs of
+    # nodes with a directed edge into it (see Graph._build_node_input). Without
+    # these edges the approved DocChangePlan body and changelog markdown never
+    # reach the delivery agent. They are gated by delivery_content_ready so
+    # scheduling (which fires on ANY freshly-satisfied in-edge) cannot trigger
+    # deliver early — each edge is False when its writer/changelog completes,
+    # and only True once the changelog gate has passed, when the plain
+    # changelog_evaluate → deliver edge above schedules the node.
+    builder.add_edge("update", "deliver", condition=delivery_content_ready)
+    builder.add_edge("create", "deliver", condition=delivery_content_ready)
+    builder.add_edge("answer", "deliver", condition=delivery_content_ready)
+    builder.add_edge("changelog", "deliver", condition=delivery_content_ready)
 
     # Safety rails
     builder.set_max_node_executions(max_node_executions)

@@ -168,6 +168,22 @@ def changelog_eval_passed(state: GraphState) -> bool:
     return data is not None and data["passed"]
 
 
+def delivery_content_ready(state: GraphState) -> bool:
+    """The changelog gate passed, so deliver's content-carrying edges may fire.
+
+    Gates the fan-in ``update``/``create``/``answer``/``changelog → deliver``
+    edges. Scheduling fires a node when ANY freshly-completed in-edge's
+    condition is satisfied, so without this guard the writer/changelog edges
+    would trigger ``deliver`` before the changelog was evaluated. This
+    condition stays False for every writer/changelog completion (evaluate has
+    not run yet), but is True once ``changelog_evaluate`` has passed — at which
+    point ``_build_node_input`` folds those completed results into the deliver
+    prompt, and the existing ``changelog_evaluate → deliver`` edge actually
+    schedules the node.
+    """
+    return changelog_eval_passed(state)
+
+
 def pull_request_opened(state: GraphState) -> bool:
     """True when the task is a ``pull_request.opened`` event.
 

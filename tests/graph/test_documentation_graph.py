@@ -5,7 +5,50 @@ from __future__ import annotations
 from strands.multiagent.base import Status
 
 from draftly.integrations.strands.graph import build_graph_for_run
-from tests.graph.conftest import PR_TASK, RELEASE_TASK
+from tests.graph.conftest import PR_TASK, RELEASE_TASK, stub_model
+from tests.stub_model import StubModel
+
+PLAN_CONTENT_MARKER = "widgets docs/widgets.md widgets"
+CHANGELOG_MARKER = "## [v2.0.0] - 2026-09-04"
+
+
+def _flatten_messages(messages: list) -> str:
+    """Concatenate the text of every content block in a message list."""
+    chunks: list[str] = []
+    for message in messages or []:
+        for block in message.get("content") or []:
+            if isinstance(block, dict):
+                text = block.get("text")
+                if text:
+                    chunks.append(text)
+    return "\n".join(chunks)
+
+
+class RecordingStubModel(StubModel):
+    """StubModel that records the full text of every delivery prompt it sees.
+
+    The delivery agent runs with a forced ``DeliveryReceipt`` structured tool,
+    so a stream call whose tool_specs contain that name is the delivery agent
+    receiving its node input — capture it and let StubModel continue.
+    """
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.delivery_prompts: list[str] = []
+
+    async def stream(self, messages, tool_specs=None, system_prompt=None, *, tool_choice=None, system_prompt_content=None, invocation_state=None, **kwargs):
+        if any(spec.get("name") == "DeliveryReceipt" for spec in (tool_specs or [])):
+            self.delivery_prompts.append(_flatten_messages(messages))
+        async for event in super().stream(
+            messages,
+            tool_specs=tool_specs,
+            system_prompt=system_prompt,
+            tool_choice=tool_choice,
+            system_prompt_content=system_prompt_content,
+            invocation_state=invocation_state,
+            **kwargs,
+        ):
+            yield event
 
 
 async def test_full_pipeline_with_quality_gate(
@@ -474,3 +517,48 @@ def test_documentation_graph_wires_required_rubric_graders(model, tools, tmp_ses
 
     changelog_evaluator = graph.nodes["changelog_evaluate"].executor
     assert changelog_evaluator.rubric_grader is not None
+
+
+async def test_deliver_prompt_contains_approved_plan_and_changelog(
+    tools, tmp_sessions, comment_factory
+) -> None:
+    """The delivered content must actually reach the delivery agent's prompt.
+
+    Regression: update/create/answer/changelog results are only passed to the
+    deliver node as prompt input if a directed edge exists between the two.
+    Without them the delivery agent only sees the bare changelog_evaluate
+    verdict, so the approved DocChangePlan body (``files[].content``) and the
+    changelog markdown never appear in the prompt.
+    """
+    factory, _ = comment_factory
+    recording = RecordingStubModel(
+        structured_outputs=stub_model()._structured_outputs
+    )
+    graph = build_graph_for_run(
+        "deliver-content-1",
+        surface="pull_request",
+        tools_registry=tools,
+        model=recording,
+        storage_dir=tmp_sessions,
+        comment_factory=factory,
+    )
+
+    result = await graph.invoke_async(
+        PR_TASK,
+        invocation_state={"run_id": "deliver-content-1", "review_policy": "never"},
+    )
+
+    assert result.status == Status.COMPLETED
+    order = [n.node_id for n in result.execution_order]
+    # delivery must not fire early from the new content-carrying edges: it
+    # still waits for the changelog gate
+    assert order.index("changelog_evaluate") < order.index("deliver")
+
+    assert recording.delivery_prompts, "delivery agent never ran"
+    prompt_text = "\n".join(recording.delivery_prompts)
+    assert PLAN_CONTENT_MARKER in prompt_text, (
+        "approved DocChangePlan file content missing from deliver prompt"
+    )
+    assert CHANGELOG_MARKER in prompt_text, (
+        "changelog markdown missing from deliver prompt"
+    )
