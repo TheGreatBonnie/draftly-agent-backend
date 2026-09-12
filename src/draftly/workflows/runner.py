@@ -40,6 +40,11 @@ from draftly.integrations.support.runtime import (
     set_support_runtime,
     support_runtime_for,
 )
+from draftly.memory.scope import (
+    memory_scope_for,
+    reset_memory_scope,
+    set_memory_scope,
+)
 from draftly.observability.metrics import Metrics
 from draftly.observability.metrics import metrics as _default_metrics
 from draftly.workflows.context import WorkflowContext
@@ -153,9 +158,12 @@ def _workflow_key_for(event: dict[str, Any], surface: str) -> str:
         return workflow_key
     event_type = str(event.get("event_type") or "")
     return (
-        "github_release" if event_type.startswith("release")
-        else "github_issue" if event_type.startswith("issues")
-        else "github_pr" if event_type.startswith("pull_request")
+        "github_release"
+        if event_type.startswith("release")
+        else "github_issue"
+        if event_type.startswith("issues")
+        else "github_pr"
+        if event_type.startswith("pull_request")
         else surface
     )
 
@@ -385,6 +393,7 @@ class WorkflowRunner:
             "repo_dir": event.get("repo_dir"),
         }
         build_token = set_support_runtime(support_runtime_for(event))
+        build_memory_token = set_memory_scope(memory_scope_for(event, surface))
         grounding_token = set_grounding(grounding)
         steering_token = set_steering_scope(
             SteeringRunScope(
@@ -401,6 +410,7 @@ class WorkflowRunner:
         finally:
             reset_steering_scope(steering_token)
             reset_grounding(grounding_token)
+            reset_memory_scope(build_memory_token)
             reset_support_runtime(build_token)
         await self._persist_lifecycle(event, "running", run_id=run_id)
         await self._broadcast_lifecycle(
@@ -416,6 +426,7 @@ class WorkflowRunner:
         invocation_state = self._invocation_state(event, surface)
         installation_token = set_installation_id(event.get("installation_id"))
         support_token = set_support_runtime(support_runtime_for(event))
+        memory_token = set_memory_scope(memory_scope_for(event, surface))
         try:
             if self.publisher is not None:
                 result = await self._invoke_streaming(
@@ -445,6 +456,7 @@ class WorkflowRunner:
                     )
         finally:
             reset_support_runtime(support_token)
+            reset_memory_scope(memory_token)
             reset_installation_id(installation_token)
         await self._record_routing_outcome(
             run_id=run_id,
@@ -538,9 +550,7 @@ class WorkflowRunner:
         if not resumable:
             from draftly.review.resume import ReviewResumeError
 
-            message = (
-                "interrupted session state not found; the run cannot be resumed"
-            )
+            message = "interrupted session state not found; the run cannot be resumed"
             logger.warning(
                 "review_resume_blocked",
                 run_id=run_id,
@@ -568,6 +578,7 @@ class WorkflowRunner:
         started = time.monotonic()
         installation_token = set_installation_id(event.get("installation_id"))
         support_token = set_support_runtime(support_runtime_for(event))
+        memory_token = set_memory_scope(memory_scope_for(event, surface))
         try:
             if self.publisher is not None:
                 result = await self._invoke_streaming(
@@ -631,6 +642,7 @@ class WorkflowRunner:
             return state.finish(WorkflowStatus.FAILED)
         finally:
             reset_support_runtime(support_token)
+            reset_memory_scope(memory_token)
             reset_installation_id(installation_token)
 
         await self._drain_audit_flush(graph, run_id)
@@ -689,9 +701,7 @@ class WorkflowRunner:
         )
         _metrics.increment("draftly_intervention_resume_total")
 
-        pending = await self._safe_intervention_lookup(
-            interventions, run_id, interrupt_id, org_id
-        )
+        pending = await self._safe_intervention_lookup(interventions, run_id, interrupt_id, org_id)
         if pending is not None and self._intervention_expired(pending):
             _metrics.increment("draftly_steering_interrupts_expired_total")
             _metrics.increment("draftly_intervention_resume_failures_total")
@@ -811,6 +821,7 @@ class WorkflowRunner:
         started = time.monotonic()
         installation_token = set_installation_id(event.get("installation_id"))
         support_token = set_support_runtime(support_runtime_for(event))
+        memory_token = set_memory_scope(memory_scope_for(event, surface))
         try:
             if self.publisher is not None:
                 result = await self._invoke_streaming(
@@ -854,6 +865,7 @@ class WorkflowRunner:
             return state.finish(WorkflowStatus.FAILED)
         finally:
             reset_support_runtime(support_token)
+            reset_memory_scope(memory_token)
             reset_installation_id(installation_token)
 
         await self._drain_audit_flush(graph, run_id)
@@ -963,9 +975,7 @@ class WorkflowRunner:
         if getattr(manager, "_is_new_session", True):
             return False
         try:
-            state = manager.session_repository.read_multi_agent(
-                manager.session_id, graph.id
-            )
+            state = manager.session_repository.read_multi_agent(manager.session_id, graph.id)
         except Exception:
             return False
         if not state:
@@ -977,9 +987,7 @@ class WorkflowRunner:
         # When the persisted interrupt state is present, require the requested
         # interrupt to actually be among the ones the graph is waiting on.
         internal_state = state.get("_internal_state") or {}
-        interrupt_state = (internal_state.get("interrupt_state") or {}).get(
-            "interrupts"
-        )
+        interrupt_state = (internal_state.get("interrupt_state") or {}).get("interrupts")
         return bool(interrupt_state is None or interrupt_id in interrupt_state)
 
     def _invocation_state(self, event: dict[str, Any], surface: str) -> dict[str, Any]:
@@ -1013,9 +1021,7 @@ class WorkflowRunner:
         except Exception:
             logger.warning("review_notify_dispatch_failed", run_id=run_id, exc_info=True)
             return
-        totals = {
-            platform: len(recipients) for platform, recipients in (sent or {}).items()
-        }
+        totals = {platform: len(recipients) for platform, recipients in (sent or {}).items()}
         total = sum(totals.values())
         if total == 0:
             logger.info("review_notify_skipped", run_id=run_id, reason="no_recipients")
@@ -1272,9 +1278,7 @@ class WorkflowRunner:
                 )
             )
         if result is None:
-            raise RuntimeError(
-                f"stream ended without a result event run_id={run_id}"
-            )
+            raise RuntimeError(f"stream ended without a result event run_id={run_id}")
         return result
 
     async def _safe_publish(self, envelope: StreamEnvelope) -> None:

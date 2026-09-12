@@ -6,6 +6,7 @@ from .health import (
     FAILURE_AUTH,
     FAILURE_CONTEXT_LENGTH,  # noqa: F401 - reserved for future classification
     FAILURE_INVALID_REQUEST,
+    FAILURE_PAYMENT,
     FAILURE_RATE_LIMIT,
     FAILURE_TIMEOUT,
     FAILURE_UNAVAILABLE,
@@ -218,6 +219,18 @@ class ModelRouter:
                     exc,
                 )
 
+                if failure == FAILURE_PAYMENT:
+                    # Billing exhaustion (e.g. router 402) is a hard
+                    # provider-level outage: disable so the next resolve()
+                    # skips the provider until explicitly reset.
+                    provider_health.disable()
+                    errors.append(exc)
+
+                    if not policy.allow_fallback:
+                        raise
+
+                    continue
+
                 if failure == FAILURE_INVALID_REQUEST:
                     raise
 
@@ -357,6 +370,15 @@ class ModelRouter:
 
         if "auth" in name or "401" in message or "api key" in message or "unauthorized" in message:
             return FAILURE_AUTH
+
+        if (
+            "402" in message
+            or "payment" in message
+            or "billing" in message
+            or "insufficient balance" in message
+            or "balance is too low" in message
+        ):
+            return FAILURE_PAYMENT
 
         if "429" in message or "rate" in message or "limit" in message:
             return FAILURE_RATE_LIMIT

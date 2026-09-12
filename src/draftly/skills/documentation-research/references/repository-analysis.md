@@ -42,7 +42,7 @@ grep -r "@click\|@app.command\|argparse" --include="*.py" src/
 
 ### Semantic Search
 
-Use `semantic_search` with embeddings for:
+Use `semantic_search` (query embeddings are generated internally) for:
 - Conceptual queries ("how does authentication work")
 - Cross-cutting concerns ("error handling patterns")
 - Unknown codebases (no prior knowledge)

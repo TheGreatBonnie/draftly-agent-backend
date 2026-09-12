@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
-
 from strands.tools import tool
 
 from draftly.tools.search.keyword_search import keyword_search
@@ -16,14 +14,12 @@ _SEMANTIC_WEIGHT = 0.7
 async def hybrid_search(
     query: str,
     namespace: str,
-    embedding: Sequence[float],
     limit: int = 10,
 ) -> list[dict]:
     """Combine semantic and keyword search, merging results by id."""
     semantic = await semantic_search(
         query=query,
         namespace=namespace,
-        embedding=embedding,
         limit=limit,
     )
     keyword = await keyword_search(query=query, namespace=namespace, limit=limit)

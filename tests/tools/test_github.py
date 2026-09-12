@@ -55,3 +55,30 @@ def test_tool_schemas_render() -> None:
         spec = getattr(fn, "tool_spec", None) or tool_decorator(fn).tool_spec
         assert spec["name"]
         assert "description" in spec or "desc" in str(spec).lower()
+
+
+async def test_github_search_code_round_trip(fake_github: FakeGitHubClient) -> None:
+    from draftly.tools.github.search_code import github_search_code
+
+    result = await github_search_code("acme", "widget", "def login", limit=5)
+
+    assert result[0]["path"] == "auth.py"
+    assert ("search_code", "acme/widget", "def login", 5) in fake_github.calls
+
+
+async def test_github_read_file_round_trip(fake_github: FakeGitHubClient) -> None:
+    from draftly.tools.github.read_file import github_read_file
+
+    result = await github_read_file("acme", "widget", "auth.py", "main")
+
+    assert "Login helpers" in result
+    assert ("get_file_contents", "acme", "widget", "auth.py", "main") in fake_github.calls
+
+
+async def test_github_get_tree_round_trip(fake_github: FakeGitHubClient) -> None:
+    from draftly.tools.github.get_tree import github_get_tree
+
+    result = await github_get_tree("acme", "widget", "main")
+
+    assert result[0]["path"] == "auth.py"
+    assert ("get_tree", "acme", "widget", "main") in fake_github.calls

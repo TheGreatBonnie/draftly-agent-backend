@@ -5,9 +5,14 @@ from unittest.mock import MagicMock
 import pytest
 
 from draftly.integrations.strands.models import (
+    PaymentAwareModel,
     RoleAwareModelResolver,
     resolve_model_for_role,
 )
+
+
+def _inner(model):
+    return model._inner if isinstance(model, PaymentAwareModel) else model
 
 
 @pytest.fixture()
@@ -53,12 +58,12 @@ def test_real_roles_map_through_route(router):
     """documentation_engineer must NOT fall back to SUPPORT."""
     resolver = RoleAwareModelResolver(router)
     model = resolver.for_role("documentation_engineer")
-    assert model == "MODEL<writer-model>"
+    assert _inner(model) == "MODEL<writer-model>"
 
 
 def test_memory_curator_resolves_fast_profile(router):
     resolver = RoleAwareModelResolver(router)
-    assert resolver.for_role("memory_curator") == "MODEL<curator-model>"
+    assert _inner(resolver.for_role("memory_curator")) == "MODEL<curator-model>"
 
 
 def test_unknown_role_raises_not_silently_defaults(router):
@@ -72,15 +77,16 @@ def test_helper_passthrough_non_resolver():
 
 
 def test_helper_resolves_via_resolver(router):
-    assert resolve_model_for_role(
+    model = resolve_model_for_role(
         RoleAwareModelResolver(router), "github_intelligence"
-    ) == "MODEL<writer-model>"
+    )
+    assert _inner(model) == "MODEL<writer-model>"
 
 
 def test_for_role_with_decision_returns_model_and_decision(router):
     resolver = RoleAwareModelResolver(router)
     model, decision = resolver.for_role_with_decision("documentation_engineer")
-    assert model == "MODEL<writer-model>"
+    assert _inner(model) == "MODEL<writer-model>"
     assert decision.selected_model == "writer-model"
     assert decision.task_type == "documentation_generation"
 
@@ -92,7 +98,7 @@ def test_for_role_publishes_decision_to_run_scoped_sink(router):
         decision_sink=lambda role, decision: captured.append((role, decision)),
     )
 
-    assert resolver.for_role("github_intelligence") == "MODEL<writer-model>"
+    assert _inner(resolver.for_role("github_intelligence")) == "MODEL<writer-model>"
     assert len(captured) == 1
     assert captured[0][0] == "github_intelligence"
     assert captured[0][1].task_type == "research"
@@ -101,7 +107,10 @@ def test_for_role_publishes_decision_to_run_scoped_sink(router):
 def test_for_role_delegates_to_for_role_with_decision(router):
     resolver = RoleAwareModelResolver(router)
     model, _decision = resolver.for_role_with_decision("github_intelligence")
-    assert resolver.for_role("github_intelligence") == model
+    foo = resolver.for_role("github_intelligence")
+    assert _inner(foo) == _inner(model)
+    assert isinstance(foo, PaymentAwareModel)
+    assert isinstance(model, PaymentAwareModel)
 
 
 def test_for_role_with_decision_degrades_offline():

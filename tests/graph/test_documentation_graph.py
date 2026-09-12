@@ -372,7 +372,15 @@ def test_github_grounding_gives_context_and_swarm_github_api_tools(
     )
 
     context_tools = _tool_names(captured["context_tools"])
-    assert {"get_pull_request", "get_diff", "get_files", "code_search"} <= context_tools
+    assert {
+        "get_pull_request",
+        "get_diff",
+        "get_files",
+        "github_search_code",
+        "github_read_file",
+        "github_get_tree",
+    } <= context_tools
+    assert "code_search" not in context_tools
     assert "git_diff" not in context_tools
     assert "read_file" not in context_tools
     assert "create_comment" not in context_tools
@@ -383,6 +391,50 @@ def test_github_grounding_gives_context_and_swarm_github_api_tools(
     gh_tools = _tool_names(swarm["github_tools"] or [])
     assert {"get_pull_request", "get_diff", "get_files"} <= gh_tools
     assert "create_comment" not in gh_tools
+
+
+def test_github_grounding_impact_agent_uses_api_repo_tools(
+    model,
+    tools,
+    tmp_sessions,
+) -> None:
+    """Impact (github grounding) must analyze the API repo, not walk a
+    nonexistent local checkout: no code_search, and no read-only local fs/git."""
+    from types import SimpleNamespace
+
+    from draftly.agents.documentation.analyzer import build_impact_agent
+
+    captured: dict = {}
+
+    def impact_builder(agent_model, agent_tools, **kwargs):
+        captured["impact_tools"] = agent_tools
+        return build_impact_agent(agent_model, agent_tools, **kwargs)
+
+    build_graph_for_run(
+        "github-impact-1",
+        surface="pull_request",
+        tools_registry=tools,
+        model=model,
+        agents=SimpleNamespace(impact_agent=impact_builder),
+        storage_dir=tmp_sessions,
+        grounding="github",
+    )
+
+    impact_tools = _tool_names(captured["impact_tools"])
+    assert "code_search" not in impact_tools
+    assert "read_file" not in impact_tools
+    assert "list_directory" not in impact_tools
+    assert "git_diff" not in impact_tools
+    assert "git_status" not in impact_tools
+    expected_github_tools = {
+        "get_diff",
+        "get_files",
+        "github_search_code",
+        "github_read_file",
+        "github_get_tree",
+    }
+    assert expected_github_tools <= impact_tools
+    assert {"semantic_search", "keyword_search", "hybrid_search"} <= impact_tools
 
 
 def test_default_local_grounding_keeps_checkout_tools(

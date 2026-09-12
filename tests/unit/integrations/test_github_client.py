@@ -95,6 +95,56 @@ async def test_installation_client_uses_installation_token_for_async_requests():
 
 
 @pytest.mark.asyncio
+async def test_get_pull_request_diff_uses_installation_token():
+    from draftly.integrations.github import client as client_module
+
+    client = GitHubClient(installation_id=987)
+    response = MagicMock()
+    response.text = "diff --git a/README.md b/README.md"
+    response.raise_for_status = MagicMock()
+    http_client = AsyncMock()
+    http_client.request.return_value = response
+    with patch.object(
+        client_module,
+        "get_installation_token",
+        new_callable=AsyncMock,
+        return_value="installation-token",
+    ) as token_factory, patch.object(
+        client,
+        "_client",
+        return_value=http_client,
+    ):
+        result = await client.get_pull_request_diff("owner/repo", 42)
+
+    assert result == "diff --git a/README.md b/README.md"
+    token_factory.assert_awaited_once_with(987)
+    headers = http_client.request.await_args.kwargs["headers"]
+    assert headers["Authorization"] == "Bearer installation-token"
+    assert headers["Accept"] == "application/vnd.github.v3.diff"
+
+
+@pytest.mark.asyncio
+async def test_get_pull_request_diff_forwards_explicit_token():
+    client = _client()
+    response = MagicMock()
+    response.text = "diff --git a/README.md b/README.md"
+    response.raise_for_status = MagicMock()
+    http_client = AsyncMock()
+    http_client.request.return_value = response
+    with patch.object(
+        client,
+        "_client",
+        return_value=http_client,
+    ):
+        result = await client.get_pull_request_diff("owner/repo", 42)
+
+    assert result == "diff --git a/README.md b/README.md"
+    headers = http_client.request.await_args.kwargs["headers"]
+    # Explicit-token callers keep the auth-token header rather than crashing.
+    assert headers["Authorization"].startswith("Bearer ")
+
+
+@pytest.mark.asyncio
 async def test_get_file_contents_skips_large_files():
     client = _client()
     # Simulate a file > 1MB by returning empty content

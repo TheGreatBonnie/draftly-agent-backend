@@ -66,6 +66,154 @@ def resolve_concrete_model(router: Any = None, *, index: int = 0) -> Any:
     return provider.create_model(config)
 
 
+class PaymentAwareModel:
+    """Wraps a concrete Strands model with 402-payment failover.
+
+    The router binds one concrete model per role at graph-build time; a
+    completion call that fails with a payment-required (402) error (e.g. an
+    exhausted router balance) would otherwise fail the whole node. This
+    wrapper:
+
+      1. disables the failing provider in the router's health registry, so
+         subsequent ``route()`` calls skip it;
+      2. re-resolves the same role through the router; and
+      3. retries the call once against the replacement model.
+
+    Only payment-classified failures trigger failover. Retrying happens at
+    most once per call. ``stream``/``structured_output`` are re-entered
+    transparently; attributes and other methods delegate to the current
+    inner model so the wrapper is usable anywhere a Strands ``Model`` is.
+    """
+
+    _MAX_FAILOVERS = 1
+
+    def __init__(
+        self,
+        inner: Any,
+        *,
+        router: Any,
+        role: str,
+        provider: str,
+    ) -> None:
+        self._inner = inner
+        self._router = router
+        self._role = role
+        self._provider = provider
+
+    # -- attributes ---------------------------------------------------------
+
+    def __getattr__(self, name: str) -> Any:
+        """Delegate unknown attribute probes to the current inner model."""
+        if name.startswith("__"):
+            raise AttributeError(name)
+        return getattr(self._inner, name)
+
+    @property
+    def stateful(self) -> bool:
+        return getattr(self._inner, "stateful", False)
+
+    @property
+    def context_window_limit(self) -> int | None:
+        return getattr(self._inner, "context_window_limit", None)
+
+    def get_config(self) -> Any:
+        return self._inner.get_config()
+
+    def update_config(self, **model_config: Any) -> None:
+        self._inner.update_config(**model_config)
+
+    def count_tokens(self, messages: Any, tool_specs: Any | None = None, **kwargs: Any) -> Any:
+        async def _with_failover():
+            attempt = 0
+            while True:
+                try:
+                    return await self._inner.count_tokens(messages, tool_specs=tool_specs, **kwargs)
+                except Exception as exc:
+                    if attempt >= self._MAX_FAILOVERS or not self._is_payment_failure(exc):
+                        raise
+                    attempt += 1
+                    self._failover(exc)
+
+        return _with_failover()
+
+    def stream(self, *args: Any, **kwargs: Any) -> Any:
+        return self._stream_with_failover("stream", args, kwargs)
+
+    def structured_output(self, *args: Any, **kwargs: Any) -> Any:
+        return self._stream_with_failover("structured_output", args, kwargs)
+
+    async def _stream_with_failover(
+        self,
+        method: str,
+        args: tuple[Any, ...],
+        kwargs: dict[str, Any],
+    ) -> Any:
+        attempt = 0
+        while True:
+            try:
+                call = getattr(self._inner, method)
+                async for event in call(*args, **kwargs):
+                    yield event
+                return
+            except Exception as exc:
+                if attempt >= self._MAX_FAILOVERS or not self._is_payment_failure(exc):
+                    raise
+                attempt += 1
+                self._failover(exc)
+
+    # -- failover -----------------------------------------------------------
+
+    def _is_payment_failure(self, exc: Exception) -> bool:
+        from draftly.models.health import FAILURE_PAYMENT
+        from draftly.models.router import ModelRouter
+
+        return ModelRouter._classify_failure(exc) == FAILURE_PAYMENT
+
+    def _failover(self, exc: Exception) -> None:
+        """Disable the failing provider and swap in a re-resolved model."""
+        from draftly.models.router import NoCandidateError
+        from draftly.models.schemas import ROLE_TO_TASK_TYPE, RoutingRequest
+
+        try:
+            task_type = ROLE_TO_TASK_TYPE[self._role]
+        except KeyError:
+            raise
+
+        self._router.health.get(self._provider).disable()
+
+        logger.warning(
+            "model_payment_failover provider=%s role=%s error=%s",
+            self._provider,
+            self._role,
+            exc,
+        )
+
+        request = RoutingRequest(
+            task_type=task_type,
+            context_tokens=4096,
+        )
+        try:
+            decision = self._router.route(request)
+        except NoCandidateError:
+            logger.warning(
+                "model_failover_no_candidate provider=%s role=%s",
+                self._provider,
+                self._role,
+            )
+            raise exc from exc
+
+        config = self._router.registry.get_model(decision.selected_model)
+        provider = self._router.registry.get_provider(decision.provider)
+        self._inner = provider.create_model(config)
+
+        logger.info(
+            "model_failover_resolved provider=%s model=%s role=%s",
+            decision.provider,
+            config.name,
+            self._role,
+        )
+
+
 class RoleAwareModelResolver:
     """Resolves a concrete Strands model PER AGENT ROLE via route()."""
 
@@ -124,6 +272,12 @@ class RoleAwareModelResolver:
 
         provider = self._router.registry.get_provider(decision.provider)
         model = provider.create_model(config)
+        model = PaymentAwareModel(
+            model,
+            router=self._router,
+            role=role,
+            provider=decision.provider,
+        )
         sink = self._decision_sink or _routing_decision_sink.get()
         if sink is not None:
             try:

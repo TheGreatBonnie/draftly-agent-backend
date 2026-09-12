@@ -7,6 +7,7 @@ __all__ = [
     "FAILURE_AUTH",
     "FAILURE_CONTEXT_LENGTH",
     "FAILURE_INVALID_REQUEST",
+    "FAILURE_PAYMENT",
     "FAILURE_RATE_LIMIT",
     "FAILURE_TIMEOUT",
     "FAILURE_UNAVAILABLE",
@@ -24,9 +25,10 @@ FAILURE_UNAVAILABLE = "service_unavailable"
 FAILURE_AUTH = "authentication"
 FAILURE_CONTEXT_LENGTH = "context_length"
 FAILURE_INVALID_REQUEST = "invalid_request"
+FAILURE_PAYMENT = "payment_required"
 
 # Failure types that should trigger provider fallback (vs retry/fail-fast).
-FALLBACK_FAILURES = frozenset({FAILURE_RATE_LIMIT, FAILURE_UNAVAILABLE})
+FALLBACK_FAILURES = frozenset({FAILURE_RATE_LIMIT, FAILURE_UNAVAILABLE, FAILURE_PAYMENT})
 
 
 @dataclass

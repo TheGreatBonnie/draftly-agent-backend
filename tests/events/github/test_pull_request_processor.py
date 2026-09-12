@@ -209,3 +209,30 @@ async def test_normalization_summary_is_logged(monkeypatch) -> None:
     assert markers[0]["actor"] == "dev"
     assert markers[0]["changed_files"] == 2
     assert markers[0]["has_diff"] is True
+
+
+async def test_real_github_webhook_changed_files_count_does_not_crash() -> None:
+    """GitHub webhook pull_request objects carry ``changed_files`` as an int
+    count (not a list of paths). Normalization must not ``len()`` the int, and
+    must not forward the count into the list-shaped evidence slot that
+    downstream consumers iterate."""
+    processor = PullRequestProcessor()
+    event = await processor.process(
+        {
+            "action": "opened",
+            "delivery_id": "d-real-count",
+            "repository": {"full_name": "acme/api"},
+            "sender": {"login": "dev"},
+            "pull_request": {
+                "number": 13,
+                "title": "OAuth login",
+                "state": "open",
+                "head": {"ref": "feat/oauth", "sha": "b0d7fb8"},
+                "base": {"ref": "master"},
+                "html_url": "https://github.com/acme/api/pull/13",
+                "changed_files": 3,
+            },
+        }
+    )
+    assert event.pull_request["action"] == "opened"
+    assert "changed_files" not in event.pull_request

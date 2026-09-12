@@ -15,7 +15,7 @@ Determine what the documentation already covers and where the gaps are.
 
 ## Steps
 
-1. Run `semantic_search` with an embedding of the topic.
+1. Run `semantic_search` on the topic — it embeds the query internally.
 2. Cross-check with `keyword_search` and `hybrid_search` for robustness.
 3. Read the top matches with `read_file` and summarize coverage.
 4. Report missing topics, stale sections, and broken links.

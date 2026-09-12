@@ -49,6 +49,7 @@ def _feedback_item(event: dict[str, Any]) -> FeedbackItem:
 async def ingest_github_feedback(
     context: WorkflowContext,
     event: dict[str, Any],
+    run_id: str | None = None,
 ) -> WorkflowState:
     """Persist one normalized GitHub feedback event."""
     run_id = str(event.get("event_id") or "github-feedback")

@@ -50,10 +50,20 @@ async def keyword_search(
     """Search memory items by keyword in a namespace."""
     require_nonempty(query, "query", "keyword_search")
     require_nonempty(namespace, "namespace", "keyword_search")
+
     from draftly.integrations.database.client import DatabaseClient
+    from draftly.memory.scope import current_memory_scope
+
+    scope = current_memory_scope()
+    resolved_namespace = scope.namespace if scope and scope.namespace else namespace
+    org_id = scope.org_id if scope else None
 
     client = DatabaseClient()
     pattern = f"%{query}%"
+    org_clause = "AND org_id = $4" if org_id else ""
+    args: list = [resolved_namespace, pattern, limit]
+    if org_id:
+        args.append(org_id)
     start = time.perf_counter()
     try:
         rows = await asyncio.wait_for(
@@ -63,18 +73,19 @@ async def keyword_search(
                 FROM memory_items
                 WHERE namespace = $1
                   AND (content ILIKE $2 OR summary ILIKE $2)
+                  {org_clause}
                 ORDER BY importance DESC, updated_at DESC
                 LIMIT $3
                 """,
-                namespace,
-                pattern,
-                limit,
+                *args,
             ),
             timeout=SEARCH_TIMEOUT_SECONDS,
         )
         logger.debug(
             "keyword_search_done",
-            namespace=namespace,
+            namespace=resolved_namespace,
+            org_id=org_id,
+            scope_active=scope is not None,
             limit=limit,
             elapsed_ms=int((time.perf_counter() - start) * 1000),
             hits=len(rows),
@@ -83,7 +94,7 @@ async def keyword_search(
     except TimeoutError:
         logger.error(
             "keyword_search_timeout",
-            namespace=namespace,
+            namespace=resolved_namespace,
             timeout_seconds=SEARCH_TIMEOUT_SECONDS,
             elapsed_ms=int((time.perf_counter() - start) * 1000),
             error=f"keyword search exceeded {SEARCH_TIMEOUT_SECONDS}s (offline or stalled DB)",
@@ -92,7 +103,7 @@ async def keyword_search(
     except Exception:
         logger.exception(
             "keyword_search_error",
-            namespace=namespace,
+            namespace=resolved_namespace,
             elapsed_ms=int((time.perf_counter() - start) * 1000),
         )
         raise

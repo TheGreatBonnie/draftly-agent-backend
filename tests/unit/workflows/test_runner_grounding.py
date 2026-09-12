@@ -96,7 +96,16 @@ class FakeGraph:
 
     async def invoke_async(self, task, invocation_state=None, **kwargs):
         del kwargs
-        self.calls.append({"task": task, "invocation_state": invocation_state})
+        from draftly.memory.scope import current_memory_scope
+
+        scope = current_memory_scope()
+        self.calls.append(
+            {
+                "task": task,
+                "invocation_state": invocation_state,
+                "memory_scope": scope,
+            }
+        )
         return self.result
 
 
@@ -220,3 +229,33 @@ async def test_grounding_context_is_reset_after_run(monkeypatch, tmp_path) -> No
     )
 
     assert current_grounding() == {}
+
+
+async def test_runner_sets_memory_scope_for_documentation_run(monkeypatch, tmp_path) -> None:
+    context = make_context()
+    event = {**_pr_event(), "project_id": "org-123"}
+
+    state, graph, _ = await _run_and_capture(
+        context, event, monkeypatch, checkout_root=str(tmp_path)
+    )
+
+    assert state.status == WorkflowStatus.DELIVERED
+    scope = graph.calls[0]["memory_scope"]
+    assert scope is not None
+    assert scope.org_id == "org-123"
+    assert scope.namespace == "documents"
+
+
+async def test_memory_scope_is_cleared_after_run(monkeypatch, tmp_path) -> None:
+    from draftly.memory.scope import current_memory_scope
+
+    context = make_context()
+
+    await _run_and_capture(
+        context,
+        {**_pr_event(), "project_id": "org-123"},
+        monkeypatch,
+        checkout_root=str(tmp_path),
+    )
+
+    assert current_memory_scope() is None

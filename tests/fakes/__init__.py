@@ -59,6 +59,27 @@ class FakeGitHubClient:
         self.calls.append(("get_repository", repo))
         return {"full_name": repo}
 
+    async def search_code(self, repo: str, query: str, limit: int = 20) -> list[dict]:
+        self.calls.append(("search_code", repo, query, limit))
+        return [
+            {"name": "auth.py", "path": "auth.py", "repo": {"full_name": repo}}
+        ]
+
+    async def get_file_contents(
+        self, owner: str, repo: str, path: str, ref: str, token: str | None = None
+    ) -> str:
+        self.calls.append(("get_file_contents", owner, repo, path, ref))
+        return "# auth\n\nLogin helpers."
+
+    async def get_tree(
+        self, owner: str, repo: str, ref: str, token: str | None = None
+    ) -> list[dict]:
+        self.calls.append(("get_tree", owner, repo, ref))
+        return [
+            {"path": "auth.py", "type": "blob", "sha": "abc"},
+            {"path": "docs/", "type": "tree", "sha": "def"},
+        ]
+
 
 @dataclass
 class FakeSlackClient:

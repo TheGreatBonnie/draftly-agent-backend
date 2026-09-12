@@ -54,6 +54,17 @@ async def test_ingestion_persists_normalized_feedback_before_delivery() -> None:
     assert repository.items[0].source_url.endswith("issuecomment-1")
 
 
+async def test_ingestion_accepts_dispatcher_run_id_kwarg() -> None:
+    repository = RecordingFeedbackRepository()
+
+    state = await ingest_github_feedback(
+        _context(repository), _event(), run_id="delivery-1"
+    )
+
+    assert state.status == WorkflowStatus.DELIVERED
+    assert len(repository.items) == 1
+
+
 async def test_ingestion_fails_when_persistence_fails() -> None:
     repository = RecordingFeedbackRepository(error=RuntimeError("database unavailable"))
 

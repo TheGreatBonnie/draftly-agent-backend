@@ -62,10 +62,22 @@ class PullRequestProcessor(BaseProcessor):
         # Forward optional diff evidence shipped by real GitHub (or the crafted
         # webhook) payloads so the run grounds in the true changed files even
         # when no git checkout is available. Empty values stay absent.
+        # GitHub webhooks carry ``changed_files`` as an int count, not a list of
+        # paths — only forward list-shaped values so the list contract held by
+        # downstream consumers (candidate_extractor, affected_docs) is preserved.
         for key in ("changed_files", "changed_file_details", "file_actions", "diff"):
-            if pr.get(key):
-                pull_request_fields[key] = pr[key]
+            value = pr.get(key)
+            if key == "changed_files" and not isinstance(value, (list, tuple)):
+                continue
+            if value:
+                pull_request_fields[key] = value
 
+        changed_files = pr.get("changed_files")
+        changed_files_count = (
+            len(changed_files)
+            if isinstance(changed_files, (list, tuple))
+            else int(changed_files or 0)
+        )
         resolved_id = event_id or self._derive_id(payload, pr, action)
         logger.info(
             "github_pr_normalized",
@@ -73,7 +85,7 @@ class PullRequestProcessor(BaseProcessor):
             action=action,
             repository=repo,
             actor=sender,
-            changed_files=len(pr.get("changed_files") or []),
+            changed_files=changed_files_count,
             has_diff=bool(pr.get("diff")),
             content_relevant=content_relevant,
         )

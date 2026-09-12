@@ -153,11 +153,12 @@ class GitHubClient:
     ) -> str:
         url = f"{self.BASE_URL}{path}"
 
-        headers = self.auth.headers()
+        resolved_token = token
+        if resolved_token is None and self.installation_id is not None:
+            resolved_token = await get_installation_token(self.installation_id)
+        headers = self._headers(resolved_token)
         if accept:
             headers = {**headers, "Accept": accept}
-        if token:
-            headers = {**headers, "Authorization": f"Bearer {token}"}
 
         client = self._client()
         response = await client.request(
@@ -386,7 +387,7 @@ class GitHubClient:
         owner: str,
         repo: str,
         ref: str,
-        token: str,
+        token: str | None = None,
     ) -> list[dict[str, Any]]:
         """Get recursive Git tree for a repository ref.
 
@@ -427,7 +428,7 @@ class GitHubClient:
         repo: str,
         path: str,
         ref: str,
-        token: str,
+        token: str | None = None,
     ) -> str:
         """Get decoded file contents from a repository."""
         data = await self._request(
