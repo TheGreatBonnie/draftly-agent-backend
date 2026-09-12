@@ -114,7 +114,14 @@ class SlackClient:
         *,
         channel_id: str | None = None,
         limit: int = 20,
+        org_id: str | None = None,
+        team_id: str | None = None,
     ) -> list[dict[str, Any]]:
+
+        if team_id:
+            await self._resolve_installation_token(team_id)
+        elif org_id:
+            await self._resolve_installation_for_org(org_id)
 
         search_query = query
 
