@@ -34,6 +34,9 @@ from draftly.tools.github.get_diff import get_diff
 from draftly.tools.github.get_files import get_files
 from draftly.tools.github.get_issue import get_issue
 from draftly.tools.github.get_pull_request import get_pull_request
+from draftly.tools.github.get_tree import github_get_tree
+from draftly.tools.github.read_file import github_read_file
+from draftly.tools.github.search_code import github_search_code
 from draftly.tools.memory.affected_docs import affected_docs
 from draftly.tools.memory.curation import (
     archive_memory,
@@ -115,7 +118,9 @@ _GITHUB_INTELLIGENCE_TOOLS = [
     get_diff,
     get_files,
     create_comment,
-    code_search,
+    github_search_code,
+    github_read_file,
+    github_get_tree,
 ]
 
 _SUPPORT_ENGINEER_TOOLS = [
@@ -231,6 +236,37 @@ def _unique_tools(*groups: list[Any]) -> list[Any]:
             result.append(tool)
 
     return result
+
+
+_LOCAL_ONLY_TOOL_NAMES = frozenset(
+    {
+        "read_file",
+        "write_file",
+        "list_directory",
+        "file_exists",
+        "git_status",
+        "git_diff",
+        "git_log",
+    }
+)
+
+
+def filter_grounded_tools(grounding: str | None, tools: list[Any]) -> list[Any]:
+    """Strip local-checkout-only tools when the run has no local checkout.
+
+    ``grounding=None`` reads the run-level context var set by the workflow
+    runner; callers that already know the mode can pass it directly.
+    """
+    from draftly.orchestration.graphs.tool_scoping import tool_name
+    from draftly.workflows.grounding import LOCAL, current_grounding
+
+    if grounding is None:
+        grounding = current_grounding().get("mode") or LOCAL
+    if grounding == LOCAL:
+        return tools
+    if not tools:
+        return tools
+    return [t for t in tools if tool_name(t) not in _LOCAL_ONLY_TOOL_NAMES]
 
 
 def build_tools() -> ToolRegistry:

@@ -31,6 +31,7 @@ import structlog
 from strands.multiagent import GraphBuilder
 from strands.session.session_manager import SessionManager
 
+from draftly.app.composition.tools import filter_grounded_tools
 from draftly.evaluation.evaluators.completeness import COMPLETENESS_RUBRIC
 from draftly.evaluation.evaluators.groundedness import GROUNDEDNESS_RUBRIC
 from draftly.integrations.strands.models import resolve_model_for_role
@@ -219,13 +220,22 @@ def build_documentation_graph(
         node_id="research",
     )
     impact_builder = getattr(registry, "impact_agent", None) or build_impact_agent
+    if grounding == GITHUB:
+        impact_repo_tools = _dedupe(
+            _scope_read_only_tools(reg.github_intelligence),
+            [t for t in reg.documentation if t is not code_search],
+        )
+    elif grounding == DOCS:
+        impact_repo_tools = [t for t in reg.documentation if t is not code_search]
+    else:
+        impact_repo_tools = reg.documentation
     impact_agent = impact_builder(
         intelligence_model,
         _dedupe(
             reg.semantic_search,
             reg.keyword_search,
             reg.hybrid_search,
-            reg.documentation,
+            impact_repo_tools,
         ),
         runtime=steering_runtime,
         agent_id="documentation.impact",
@@ -252,7 +262,7 @@ def build_documentation_graph(
     # Per-task routing: writer nodes resolve their own model when a
     # resolver is wired in; concrete/shared models pass through verbatim.
     writer_model = resolve_model_for_role(model, "documentation_engineer")
-    writer_tools = _scope_writer_tools(reg.documentation_engineer, reg.documentation)
+    writer_tools = filter_grounded_tools(grounding, _scope_writer_tools(reg.documentation_engineer, reg.documentation))
     writer_builder = getattr(registry, "writer_agent", None) or build_writer_agent
     update_writer = writer_builder(
         writer_model,
@@ -280,7 +290,7 @@ def build_documentation_graph(
     changelog_builder = getattr(registry, "changelog_agent", None) or build_changelog_agent
     changelog_agent = changelog_builder(
         writer_model,
-        _scope_writer_tools(reg.documentation_engineer, reg.documentation),
+        filter_grounded_tools(grounding, _scope_writer_tools(reg.documentation_engineer, reg.documentation)),
         runtime=steering_runtime,
         agent_id="documentation.changelog",
         node_id="changelog",

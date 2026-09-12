@@ -11,6 +11,7 @@ import structlog
 from strands.multiagent import GraphBuilder
 from strands.session.session_manager import SessionManager
 
+from draftly.app.composition.tools import filter_grounded_tools
 from draftly.evaluation.evaluators.completeness import COMPLETENESS_RUBRIC
 from draftly.evaluation.evaluators.groundedness import GROUNDEDNESS_RUBRIC
 from draftly.orchestration.graphs.documentation_graph import (
@@ -147,14 +148,14 @@ def build_issue_graph(
     writer_builder = getattr(registry, "writer_agent", None) or build_writer_agent
     update_writer = writer_builder(
         writer_model,
-        scope_writer_tools(reg.documentation_engineer, reg.documentation),
+        filter_grounded_tools(None, scope_writer_tools(reg.documentation_engineer, reg.documentation)),
         runtime=steering_runtime,
         agent_id="documentation.writer",
         node_id="update",
     )
     create_writer = writer_builder(
         writer_model,
-        scope_writer_tools(reg.documentation_engineer, reg.documentation),
+        filter_grounded_tools(None, scope_writer_tools(reg.documentation_engineer, reg.documentation)),
         runtime=steering_runtime,
         agent_id="documentation.writer",
         node_id="create",
