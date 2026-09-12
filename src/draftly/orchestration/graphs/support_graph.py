@@ -192,14 +192,18 @@ def build_support_graph(
     writer_builder = getattr(registry, "writer_agent", None) or build_writer_agent
     update_writer = writer_builder(
         writer_model,
-        filter_grounded_tools(None, scope_writer_tools(reg.documentation_engineer, reg.documentation)),
+        filter_grounded_tools(
+            None, scope_writer_tools(reg.documentation_engineer, reg.documentation)
+        ),
         runtime=steering_runtime,
         agent_id="support.writer",
         node_id="update",
     )
     create_writer = writer_builder(
         writer_model,
-        filter_grounded_tools(None, scope_writer_tools(reg.documentation_engineer, reg.documentation)),
+        filter_grounded_tools(
+            None, scope_writer_tools(reg.documentation_engineer, reg.documentation)
+        ),
         runtime=steering_runtime,
         agent_id="support.writer",
         node_id="create",

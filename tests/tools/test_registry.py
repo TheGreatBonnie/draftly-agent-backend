@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from draftly.app.composition.tools import build_tools
+from draftly.app.composition.tools import build_tools, filter_grounded_tools
+from draftly.orchestration.graphs.tool_scoping import scope_writer_tools
 
 
 def test_registry_populates_scoped_groups() -> None:
@@ -63,10 +64,6 @@ def test_github_intelligence_exposes_github_api_repo_tools() -> None:
     assert "github_search_code" in names
     assert "github_read_file" in names
     assert "github_get_tree" in names
-
-
-from draftly.app.composition.tools import build_tools, filter_grounded_tools
-from draftly.orchestration.graphs.tool_scoping import scope_writer_tools
 
 
 def _all_writer_tools():

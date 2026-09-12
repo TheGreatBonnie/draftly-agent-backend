@@ -262,7 +262,9 @@ def build_documentation_graph(
     # Per-task routing: writer nodes resolve their own model when a
     # resolver is wired in; concrete/shared models pass through verbatim.
     writer_model = resolve_model_for_role(model, "documentation_engineer")
-    writer_tools = filter_grounded_tools(grounding, _scope_writer_tools(reg.documentation_engineer, reg.documentation))
+    writer_tools = filter_grounded_tools(
+        grounding, _scope_writer_tools(reg.documentation_engineer, reg.documentation)
+    )
     writer_builder = getattr(registry, "writer_agent", None) or build_writer_agent
     update_writer = writer_builder(
         writer_model,
@@ -290,7 +292,9 @@ def build_documentation_graph(
     changelog_builder = getattr(registry, "changelog_agent", None) or build_changelog_agent
     changelog_agent = changelog_builder(
         writer_model,
-        filter_grounded_tools(grounding, _scope_writer_tools(reg.documentation_engineer, reg.documentation)),
+        filter_grounded_tools(
+            grounding, _scope_writer_tools(reg.documentation_engineer, reg.documentation)
+        ),
         runtime=steering_runtime,
         agent_id="documentation.changelog",
         node_id="changelog",

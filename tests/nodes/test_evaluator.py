@@ -8,8 +8,14 @@ import pytest
 from strands.agent.agent_result import AgentResult
 
 from draftly.orchestration.nodes.base import parse_node_input
+from draftly.orchestration.nodes.changelog_evaluate import ChangelogEvaluatorNode
 from draftly.orchestration.nodes.evaluate import EvaluatorNode, _draft_text, compute_quality
-from draftly.orchestration.nodes.rubric_grader import RubricGrade
+from draftly.orchestration.nodes.rubric_grader import (
+    DeterministicRubricGrader,
+    RubricGrade,
+    build_changelog_rubric_grader,
+    build_docs_rubric_grader,
+)
 
 
 def _blocks(
@@ -608,15 +614,6 @@ class TestRubricGrader:
 
         rubric_reasons = [r for r in payload["reasons"] if r.startswith("[rubric]")]
         assert rubric_reasons == []
-
-
-from draftly.orchestration.nodes.changelog_evaluate import ChangelogEvaluatorNode
-from draftly.orchestration.nodes.rubric_grader import (
-    DeterministicRubricGrader,
-    RubricGrade,
-    build_changelog_rubric_grader,
-    build_docs_rubric_grader,
-)
 
 
 def _task_block() -> list[dict]:
