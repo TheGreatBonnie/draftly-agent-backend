@@ -16,6 +16,7 @@ A representative GitHub PR workflow must meet all of the following:
 
 - Use at least 60 percent fewer model requests than the captured PR #17 baseline.
 - Reach `pending_review` within eight minutes under healthy provider conditions.
+- Complete the automated pipeline (through `pending_review`) within fifteen minutes and the writer stage within five minutes under healthy provider conditions. Wait time contributed by the human review gate is excluded: it is human latency, not processing latency.
 - Complete a normal run with one writer generation.
 - Use at most one optional LLM steering judgment per agent stage.
 - Add no more than one failed attempt when a connector or provider is unavailable.
@@ -35,6 +36,8 @@ This design changes six internal areas:
 4. Impact-to-evaluation requirement contracts.
 5. File-specific revision and batch draft operations.
 6. Provider health filtering and per-run cost telemetry.
+7. Writer model-tier selection (middle chain for the drafting tool loop; `reasoning` retained for the plan step and sealed generation).
+8. A best-effort provider warm-up probe issued after the impact stage so the writer's first call does not pay cold first-byte latency.
 
 All new graph payload fields are additive. Existing stored sessions and test fixtures that omit them remain readable.
 
@@ -225,7 +228,7 @@ Provider health gains durable reason and cooldown fields. Payment and authentica
 
 Routing filters disabled providers before constructing stage agents. A provider rejected by the health filter does not count as a model attempt for the new run. Re-enablement happens through cooldown expiry or an explicit successful health probe.
 
-Classifier, optional steering, and notification roles prefer the lowest-cost model satisfying their capabilities. Research synthesis, writing, rubric review, and delivery retain role-specific quality requirements. Payment failover remains limited to one replacement attempt.
+Classifier, optional steering, and notification roles prefer the lowest-cost model satisfying their capabilities. Research synthesis, rubric review, and delivery retain role-specific quality requirements. The writer is the one exception: its drafting tool loop routes through a middle chain (the `research` tier used by `context` and `content_strategist`) while the initial plan step and the sealed generation resolve to the `reasoning` tier via per-call capability routing. Deep reasoning is preserved where output becomes durable prose; the tool-loop chatter does not pay for it. Payment failover remains limited to one replacement attempt.
 
 ## 8. Cost and Performance Telemetry
 
@@ -240,6 +243,22 @@ Each run owns an in-memory accumulator that is flushed durably at stage boundari
 - node latency and total workflow latency.
 
 The worker emits one compact `workflow_stage_summary` per completed stage and one `workflow_cost_summary` at termination or review pause. Existing detailed audit records remain available for investigation.
+
+## 9. Latency Addendum: Writer Tier Routing and Cold-Start Warm-Up
+
+Two additive deltas approved against this design. Each is gated by its own default-off flag (`writer_middle_tier`, `provider_warmup`); the composite `DRAFTLY_FASTPATH` toggle enables the whole latency bundle (selective steering, capability-aware research, batch draft tools, writer tier routing, and warm-up) for A/B comparison and live demonstration.
+
+### 9.1 Writer Capability-Aware Tiering
+
+`documentation_engineer` uses the `research` chain for the drafting tool loop; per-call capability routing retains `reasoning` for the initial plan and the sealed generation. Rationale: the tool loop performs bounded, single-purpose operations whose measured latency is dominated by serialized chain and steering overhead, not reasoning depth (captured baseline run `ed42b4f0`: ~25 minutes across writer gap and drafting, ~100 tool calls).
+
+Behavior is reversible with `writer_middle_tier=false`. The primary rollback trigger for a quality regression is evaluate escalation rate or reviewer-observed prose quality.
+
+### 9.2 Provider Warm-Up Probe
+
+Immediately after the impact stage completes, the runner issues a best-effort one-token completion to the same provider and model the writer's first plan call will resolve to. The probe is non-blocking for graph progress, uses a 5-second timeout, and never counts as a model attempt for the health filter or cost telemetry. Its purpose is to pay cold-start/first-byte latency before the writer issues its large first generate, collapsing the measured ~14-minute silent gap.
+
+Provider stabilization (§7) is unchanged: requesty-class `402` and orcarouter fallback churn are answered by cooldown and re-routing, and the probe runs only against providers currently healthy for the target model.
 
 ## Failure Handling
 
@@ -264,6 +283,10 @@ Independent feature flags control:
 - `targeted_draft_revisions`
 - `batch_draft_tools`
 - `run_cost_summary`
+- `writer_middle_tier`
+- `provider_warmup`
+
+The composite `DRAFTLY_FASTPATH` enables `selective_steering_judge`, `capability_aware_research`, `batch_draft_tools`, `writer_middle_tier`, and `provider_warmup` together for A/B and live demonstration while leaving measurement (`run_cost_summary`) and the structural flags independently controllable.
 
 Flags default off until their tests and captured-run comparison pass. Rollout order is:
 
@@ -273,7 +296,8 @@ Flags default off until their tests and captured-run comparison pass. Rollout or
 4. Targeted revision.
 5. Capability-aware research.
 6. Batched draft operations.
-7. Default-on cleanup after compatibility coverage passes.
+7. Writer tier routing and provider warm-up (may land concurrently as a measured pair; warm-up is the first to enable because it only removes latency).
+8. Default-on cleanup after compatibility coverage passes.
 
 Rollback disables the affected flag. Readers use defaults when new payload fields are absent, allowing pre-change sessions to resume.
 
