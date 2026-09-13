@@ -261,6 +261,7 @@ def _default_graph_factory(context: WorkflowContext) -> GraphFactory:
                 )
 
         jobs_repo = getattr(getattr(context, "repositories", None), "jobs", None)
+        drafts_repo = getattr(getattr(context, "repositories", None), "drafts", None)
         graph = build_graph_for_run(
             run_id,
             surface=surface,
@@ -274,6 +275,7 @@ def _default_graph_factory(context: WorkflowContext) -> GraphFactory:
             memory=context.memory_bundle(),
             publisher=getattr(context, "publisher", None),
             jobs_repo=jobs_repo,
+            drafts_repo=drafts_repo,
             grounding=grounding.get("mode", "local"),
             repo_dir=grounding.get("repo_dir"),
             steering_runtime=steering_runtime,
@@ -423,7 +425,7 @@ class WorkflowRunner:
         # 3. Invoke; runtime context rides in invocation_state, never in
         #    the prompt. ReviewGate reads review_policy before delivering.
         started = time.monotonic()
-        invocation_state = self._invocation_state(event, surface)
+        invocation_state = await self._invocation_state(event, surface)
         installation_token = set_installation_id(event.get("installation_id"))
         support_token = set_support_runtime(support_runtime_for(event))
         memory_token = set_memory_scope(memory_scope_for(event, surface))
@@ -531,7 +533,7 @@ class WorkflowRunner:
         finally:
             reset_steering_scope(steering_token)
             reset_grounding(grounding_token)
-        invocation_state = self._invocation_state(event, surface)
+        invocation_state = await self._invocation_state(event, surface)
         resume_input = [
             {
                 "interruptResponse": {
@@ -776,7 +778,7 @@ class WorkflowRunner:
             reset_steering_scope(steering_token)
             reset_grounding(grounding_token)
 
-        invocation_state = self._invocation_state(event, surface)
+        invocation_state = await self._invocation_state(event, surface)
         resume_input = [
             {
                 "interruptResponse": {
@@ -990,8 +992,8 @@ class WorkflowRunner:
         interrupt_state = (internal_state.get("interrupt_state") or {}).get("interrupts")
         return bool(interrupt_state is None or interrupt_id in interrupt_state)
 
-    def _invocation_state(self, event: dict[str, Any], surface: str) -> dict[str, Any]:
-        return {
+    async def _invocation_state(self, event: dict[str, Any], surface: str) -> dict[str, Any]:
+        state = {
             "run_id": str(event.get("event_id") or ""),
             "review_policy": event.get("review_policy") or self.context.review_policy(),
             "delivery_summary": "",
@@ -1006,6 +1008,21 @@ class WorkflowRunner:
             "review_revision_of": event.get("review_revision_of"),
             "review_feedback": event.get("review_feedback"),
         }
+        # Draft generations must not collide with sealed rows on resume: seed
+        # the writer hook counter with MAX(generation)+1 from the store. Only
+        # the docs surfaces write drafts; absent repo → no seed (noop).
+        if surface == "pull_request":
+            drafts = getattr(getattr(self.context, "repositories", None), "drafts", None)
+            if drafts is not None:
+                run_id = state["run_id"]
+                try:
+                    seed = await drafts.next_generation(run_id)
+                except Exception:
+                    logger.warning("draft_seed_lookup_failed", run_id=run_id, exc_info=True)
+                else:
+                    if seed > 1:
+                        state["draft_generation_seed"] = seed
+        return state
 
     async def _notify_reviewers(self, run_id: str) -> None:
         """Best-effort Slack/Discord notifications on a pending-review transition.
@@ -1921,7 +1938,7 @@ class WorkflowRunner:
         reason: Any,
         state: WorkflowState,
     ) -> dict[str, Any]:
-        """Add organization-scoped original document bodies before persistence."""
+        """Add organization-scoped original + drafted document bodies before persistence."""
         if not isinstance(reason, dict):
             return {}
         enriched = deepcopy(reason)
@@ -1934,28 +1951,50 @@ class WorkflowRunner:
         repository = document.get("repository")
         documents = getattr(getattr(self.context, "repositories", None), "documents", None)
         org_id = str(state.event.get("project_id") or "")
+        # Drafted bodies come from the sealed draft store (never inline JSON):
+        # the writer streams update/create bytes through start_draft/appends,
+        # so hydrate the persisted reviewer document from the latest sealed
+        # generation. Absent store/path → content_available False.
+        drafted_by_path: dict[str, str] = {}
+        drafts = getattr(getattr(self.context, "repositories", None), "drafts", None)
+        if drafts is not None:
+            try:
+                latest = await drafts.get_latest(state.run_id)
+                drafted_by_path = {rev.path: rev.content for rev in (latest or [])}
+            except Exception:
+                logger.warning(
+                    "review_draft_content_lookup_failed",
+                    run_id=state.run_id,
+                    exc_info=True,
+                )
         for file in files:
             if not isinstance(file, dict):
                 continue
             action = str(file.get("action") or "").lower()
             if action not in {"update", "create"}:
                 continue
+            file["content"] = None
+            file["content_available"] = False
+            path = str(file.get("path") or "")
+            if path in drafted_by_path:
+                file["content"] = drafted_by_path[path]
+                file["content_available"] = True
             file["original_content"] = None
             file["original_content_available"] = False
-            if action == "create" or not repository or not file.get("path") or documents is None:
+            if action == "create" or not repository or not path or documents is None:
                 continue
             try:
                 existing = await documents.get_by_org_repository_path(
                     org_id=org_id,
                     repository=str(repository),
-                    path=str(file["path"]),
+                    path=path,
                 )
             except Exception:
                 logger.warning(
                     "review_original_content_lookup_failed",
                     org_id=org_id,
                     repository=repository,
-                    path=file.get("path"),
+                    path=path,
                     exc_info=True,
                 )
                 continue

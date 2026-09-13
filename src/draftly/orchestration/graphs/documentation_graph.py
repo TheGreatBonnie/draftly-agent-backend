@@ -42,6 +42,7 @@ from draftly.orchestration.graphs.tool_scoping import (
     scope_writer_tools as _scope_writer_tools,
 )
 from draftly.orchestration.hooks.audit import RunAuditLogger
+from draftly.orchestration.hooks.draft_generation import NextGenerationHook
 from draftly.orchestration.hooks.review_gate import ReviewGate
 from draftly.orchestration.nodes.evaluate import EvaluatorNode
 from draftly.orchestration.nodes.rubric_grader import (
@@ -49,7 +50,6 @@ from draftly.orchestration.nodes.rubric_grader import (
     build_docs_rubric_grader,
 )
 from draftly.orchestration.routing.conditions import (
-    changelog_eval_passed,
     changelog_needs_revision,
     delivery_content_ready,
     eval_passed,
@@ -62,6 +62,12 @@ from draftly.orchestration.routing.conditions import (
     route_to_answer,
     route_to_create,
     route_to_update,
+)
+from draftly.tools.documentation.drafts import (
+    append_chunk,
+    finalize_draft,
+    get_drafted_docs,
+    start_draft,
 )
 from draftly.tools.repository.code_search import code_search
 from draftly.workflows.grounding import DOCS, GITHUB, LOCAL
@@ -115,6 +121,7 @@ def build_documentation_graph(
     repo_dir: str | None = None,
     comment_factory: Any = None,
     steering_runtime: Any = None,
+    drafts_repo: Any = None,
 ):
     """Build the unified Draftly Graph for documentation workflows.
 
@@ -263,8 +270,11 @@ def build_documentation_graph(
     # Per-task routing: writer nodes resolve their own model when a
     # resolver is wired in; concrete/shared models pass through verbatim.
     writer_model = resolve_model_for_role(model, "documentation_engineer")
-    writer_tools = filter_grounded_tools(
-        grounding, _scope_writer_tools(reg.documentation_engineer, reg.documentation)
+    writer_tools = _dedupe(
+        filter_grounded_tools(
+            grounding, _scope_writer_tools(reg.documentation_engineer, reg.documentation)
+        ),
+        [start_draft, append_chunk, finalize_draft],
     )
     writer_builder = getattr(registry, "writer_agent", None) or build_writer_agent
     update_writer = writer_builder(
@@ -284,7 +294,12 @@ def build_documentation_graph(
     delivery_builder = getattr(registry, "delivery_agent", None) or build_delivery_agent
     delivery_agent = delivery_builder(
         delivery_model,
-        _dedupe(reg.github_delivery, reg.slack_post_message, reg.discord_post_message),
+        _dedupe(
+            reg.github_delivery,
+            reg.slack_post_message,
+            reg.discord_post_message,
+            [get_drafted_docs],
+        ),
         hitl=False,  # the graph-level ReviewGate owns human approval
         runtime=steering_runtime,
         agent_id="delivery.github",
@@ -356,6 +371,7 @@ def build_documentation_graph(
         "evaluate",
         max_iterations=evaluator_max_iterations,
         rubric_grader=docs_rubric_grader,
+        drafts_repo=drafts_repo,
     )
     builder.add_node(evaluator, "evaluate")
     builder.add_edge("answer", "evaluate", condition=generated)
@@ -390,8 +406,13 @@ def build_documentation_graph(
     # Changelog revision loop
     builder.add_edge("changelog_evaluate", "changelog", condition=changelog_needs_revision)
 
-    # Changelog passes → deliver
-    builder.add_edge("changelog_evaluate", "deliver", condition=changelog_eval_passed)
+    # Changelog passes → deliver. Delivery content edges (update/create/... →
+    # deliver below) only feed the prompt; this edge schedules the node and is
+    # therefore also the drafts gate: when a docs writer ran, delivery waits
+    # for a sealed draft generation (has_drafts) so the deliver agent never
+    # opens a PR for bytes that were never persisted. Offline fixtures
+    # (drafts_repo=None) omit has_drafts and schedule as before.
+    builder.add_edge("changelog_evaluate", "deliver", condition=delivery_content_ready)
 
     # Delivery content edges: the deliver prompt is built from the outputs of
     # nodes with a directed edge into it (see Graph._build_node_input). Without
@@ -415,7 +436,7 @@ def build_documentation_graph(
     # Session persistence + hooks (providers MUST be set pre-build)
     if session_manager is not None:
         builder.set_session_manager(session_manager)
-    providers: list[Any] = [ReviewGate()]
+    providers: list[Any] = [ReviewGate(), NextGenerationHook()]
     audit_hook: Any = None
     if audit_repo is not None or publisher is not None or jobs_repo is not None:
         audit_hook = RunAuditLogger(audit_repo, publisher=publisher, jobs_repo=jobs_repo)

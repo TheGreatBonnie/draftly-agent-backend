@@ -81,6 +81,7 @@ def build_graph_for_run(
     grounding: str = "local",
     repo_dir: str | None = None,
     steering_runtime: Any = None,
+    drafts_repo: Any = None,
     **graph_kwargs: Any,
 ):
     """Build the graph for ONE surface, with its own session manager.
@@ -108,9 +109,13 @@ def build_graph_for_run(
 
     # Grounding mode (local checkout vs GitHub API vs docs-only) is a
     # documentation-graph concern; other builders must not receive it.
+    # Same for the drafts store repo: only the docs writer/evaluator consume
+    # it, other surface builders reject the unknown kwarg through
+    # ``**graph_kwargs``.
     if surface == "pull_request":
         graph_kwargs["grounding"] = grounding
         graph_kwargs["repo_dir"] = repo_dir
+        graph_kwargs["drafts_repo"] = drafts_repo
 
     return builder(
         session_manager=manager,

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 
 import pytest
 from strands.agent.agent_result import AgentResult
@@ -547,6 +548,69 @@ class _FailingRubricGrader:
 class _NoopRubricGrader:
     async def grade(self, *, draft: str, evidence: list[dict]) -> RubricGrade:
         return RubricGrade()
+
+
+class _FakeDraftsRepo:
+    def __init__(self, revisions: list[dict]) -> None:
+        self.revisions = revisions
+        self.calls: list[str] = []
+
+    async def get_latest(self, run_id: str) -> list:
+        self.calls.append(run_id)
+        return [
+            SimpleNamespace(path=r["path"], action=r["action"], content=r["content"])
+            for r in self.revisions
+        ]
+
+
+class TestEvaluatorDraftStore:
+    @pytest.mark.asyncio
+    async def test_sealed_generation_marks_files_and_scores_store_content(self) -> None:
+        """With a drafts repo injected, has_drafts/files_present come from the
+        sealed store and the scored draft includes its assembled content."""
+        evidence = [{"id": "doc-1", "topic": "neon"}]
+        repo = _FakeDraftsRepo(
+            [
+                {
+                    "path": "docs/neon.md",
+                    "action": "update",
+                    "content": ("neon serverless postgres doc-1 " * 10),
+                }
+            ]
+        )
+        node = EvaluatorNode(drafts_repo=repo, rubric_grader=_NoopRubricGrader())
+        result = await node.invoke_async(
+            _blocks(evidence, "", source="update"),
+            invocation_state={"run_id": "run-1"},
+        )
+        data = json.loads(result.results["evaluate"].result.message["content"][0]["text"])
+        assert data["passed"] is True
+        assert data["has_drafts"] is True
+        assert repo.calls == ["run-1"]
+
+    @pytest.mark.asyncio
+    async def test_unsealed_generation_reports_has_drafts_false(self) -> None:
+        """No sealed revision → has_drafts False (delivery gate blocks)."""
+        repo = _FakeDraftsRepo([])
+        node = EvaluatorNode(drafts_repo=repo, rubric_grader=_NoopRubricGrader())
+        result = await node.invoke_async(
+            _blocks([{"id": "doc-1", "topic": "neon"}], "", source="update"),
+            invocation_state={"run_id": "run-1"},
+        )
+        data = json.loads(result.results["evaluate"].result.message["content"][0]["text"])
+        assert data["has_drafts"] is False
+
+    @pytest.mark.asyncio
+    async def test_without_draft_store_keeps_legacy_key_set(self) -> None:
+        """drafts_repo=None keeps exactly the legacy result key set."""
+        evidence = [{"id": "doc-1", "topic": "neon"}]
+        node = EvaluatorNode(rubric_grader=_NoopRubricGrader())
+        result = await node.invoke_async(
+            _blocks(evidence, ("neon serverless postgres doc-1 " * 10), source="update")
+        )
+        data = json.loads(result.results["evaluate"].result.message["content"][0]["text"])
+        assert set(data) == {"passed", "score", "reasons", "iteration", "escalated"}
+        assert data["passed"] is True
 
 
 class TestRubricGraderRequired:

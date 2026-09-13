@@ -35,6 +35,7 @@ from draftly.persistence.repositories.discord import DiscordWorkflowRepository
 from draftly.persistence.repositories.document_revisions import DocumentRevisionRepository
 from draftly.persistence.repositories.documentation_gaps import DocumentationGapRepository
 from draftly.persistence.repositories.documents import DocumentRepository
+from draftly.persistence.repositories.drafts import DraftRepository
 from draftly.persistence.repositories.evaluations import EvaluationRepository
 from draftly.persistence.repositories.events import EventRepository
 from draftly.persistence.repositories.feedback import FeedbackRepository
@@ -247,6 +248,7 @@ class RepositoryDependencies:
     knowledge: KnowledgeRepository
     documents: DocumentRepository
     revisions: DocumentRevisionRepository
+    drafts: DraftRepository
     github_installations: GitHubInstallationsRepository
     evaluations: EvaluationRepository
     support: SupportRepository
@@ -312,6 +314,8 @@ def build_repositories(
     )
 
     revisions = DocumentRevisionRepository(database=database)
+
+    drafts = DraftRepository(database=database)
 
     github_installations = GitHubInstallationsRepository(db=database)
 
@@ -387,6 +391,7 @@ def build_repositories(
         knowledge=knowledge,
         documents=documents,
         revisions=revisions,
+        drafts=drafts,
         github_installations=github_installations,
         evaluations=evaluations,
         support=support,
