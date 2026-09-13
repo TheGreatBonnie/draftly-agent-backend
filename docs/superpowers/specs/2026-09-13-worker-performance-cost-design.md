@@ -16,7 +16,7 @@ A representative GitHub PR workflow must meet all of the following:
 
 - Use at least 60 percent fewer model requests than the captured PR #17 baseline.
 - Reach `pending_review` within eight minutes under healthy provider conditions.
-- Complete the automated pipeline (through `pending_review`) within fifteen minutes and the writer stage within five minutes under healthy provider conditions. Wait time contributed by the human review gate is excluded: it is human latency, not processing latency.
+- Complete the writer stage within five minutes and the full automated pipeline — through `pending_review` and, after approval, delivery — within fifteen minutes under healthy provider conditions. Wait time contributed by the human review gate is excluded: it is human latency, not processing latency. The 15-minute full-pipeline target is a secondary, longer-horizon gate; it never relaxes the 8-minute `pending_review` criterion above.
 - Complete a normal run with one writer generation.
 - Use at most one optional LLM steering judgment per agent stage.
 - Add no more than one failed attempt when a connector or provider is unavailable.

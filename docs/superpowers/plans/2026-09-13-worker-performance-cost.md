@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Reduce normal documentation-worker model traffic by at least 60%, complete a typical run within eight minutes, complete the automated pipeline (through `pending_review`) within fifteen minutes and the writer stage within five minutes, eliminate raw agent chatter from logs, and preserve deterministic safety and human review. Human gate wait time is excluded from the latency targets.
+**Goal:** Reduce normal documentation-worker model traffic by at least 60%, reach `pending_review` in a typical run within eight minutes, complete the writer stage within five minutes and the full automated pipeline (including delivery, excluding human gate wait) within fifteen minutes, eliminate raw agent chatter from logs, and preserve deterministic safety and human review.
 
 **Architecture:** Keep the current documentation graph, but make expensive behavior conditional and revision work incremental. A default-off flag protects every behavior change while structured requirements, selective steering, capability-aware research, atomic draft batches, shared provider cooldowns, and per-stage telemetry replace the current retry-heavy path.
 
@@ -1287,7 +1287,7 @@ The canary passes only when all are true:
 - Each unhealthy connector/provider records no more than one failed attempt.
 - Worker stdout contains no `Tool #`, `Let me`, or raw assistant reasoning lines.
 - Evaluation/revision logs contain file paths and requirement IDs but no authored body content.
-- The writer stage completes in ≤ five minutes and the automated pipeline reaches `pending_review` in ≤ fifteen minutes (human gate wait excluded).
+- The writer stage completes in ≤ five minutes and the full automated pipeline (including delivery, excluding human gate wait) completes within fifteen minutes, while `pending_review` still arrives within eight minutes.
 - When `provider_warmup` is on, `draftly_writer_first_call_seconds` (impact-end to first writer event) shows no multi-minute cold-start gap.
 
 If any check fails, turn off only the flag introduced at that rollout step, retain `run_cost_summary`, and use the emitted stage summary to identify the regression before continuing.
