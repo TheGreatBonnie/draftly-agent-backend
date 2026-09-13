@@ -22,7 +22,7 @@ class FakeDrafts:
         self.revisions = revisions or []
         self.calls: list[str] = []
 
-    async def get_latest(self, run_id: str) -> list:
+    async def get_latest(self, *, run_id: str) -> list:
         self.calls.append(run_id)
         return [
             SimpleNamespace(path=r["path"], action=r["action"], content=r["content"])

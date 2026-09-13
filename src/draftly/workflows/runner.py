@@ -1016,7 +1016,7 @@ class WorkflowRunner:
             if drafts is not None:
                 run_id = state["run_id"]
                 try:
-                    seed = await drafts.next_generation(run_id)
+                    seed = await drafts.next_generation(run_id=run_id)
                 except Exception:
                     logger.warning("draft_seed_lookup_failed", run_id=run_id, exc_info=True)
                 else:
@@ -1077,7 +1077,27 @@ class WorkflowRunner:
     ) -> WorkflowState:
         run_id = state.run_id
         state.result = result
-        if result.status == Status.INTERRUPTED:
+        # strands 1.52.0 rewrites the terminal status to FAILED post-hoc when
+        # any earlier node self-reported FAILED (graph.stream_async:
+        # `if self.state.failed_nodes: self.state.status = FAILED`), even when
+        # the graph actually paused on the review gate or delivered. Normalize
+        # on the stronger evidence: interrupts imply a gate pause; a real,
+        # non-blocked delivery receipt implies delivery. Live incident: run
+        # d190a090 paused at deliver while status surfaced as a 'research'
+        # node failure.
+        interrupts = list(getattr(result, "interrupts", None) or ())
+        delivery_receipt = delivery_receipt_from_result(result)
+        effective = result.status
+        if result.status == Status.FAILED and interrupts:
+            effective = Status.INTERRUPTED
+        elif result.status == Status.FAILED and delivery_receipt is not None and (
+            not is_blocked_delivery(delivery_receipt)
+        ):
+            effective = Status.COMPLETED
+        if effective != result.status:
+            state.errors.extend(node_id for node_id in self._failed_node_ids(result))
+
+        if effective == Status.INTERRUPTED:
             steering_ids = await self._store_interrupts(run_id, surface, result, state)
             evaluation = self._node_payload(result, "evaluate")
             if steering_ids:
@@ -1103,7 +1123,7 @@ class WorkflowRunner:
             await self._notify_reviewers(run_id)
             return state.finish(WorkflowStatus.PENDING_REVIEW)
 
-        if result.status == Status.COMPLETED:
+        if effective == Status.COMPLETED:
             evaluation = self._node_payload(result, "evaluate")
             delivery_receipt = delivery_receipt_from_result(result)
             if is_blocked_delivery(delivery_receipt):
@@ -1959,7 +1979,7 @@ class WorkflowRunner:
         drafts = getattr(getattr(self.context, "repositories", None), "drafts", None)
         if drafts is not None:
             try:
-                latest = await drafts.get_latest(state.run_id)
+                latest = await drafts.get_latest(run_id=state.run_id)
                 drafted_by_path = {rev.path: rev.content for rev in (latest or [])}
             except Exception:
                 logger.warning(

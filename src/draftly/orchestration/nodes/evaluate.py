@@ -237,7 +237,7 @@ class EvaluatorNode(MultiAgentBase):
         if self.drafts_repo is None or not run_id:
             return "", False
         try:
-            revisions = await self.drafts_repo.get_latest(run_id)
+            revisions = await self.drafts_repo.get_latest(run_id=run_id)
         except Exception:
             logger.warning("drafts_get_latest_failed", run_id=run_id, exc_info=True)
             return "", False
