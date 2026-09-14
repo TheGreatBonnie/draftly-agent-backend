@@ -46,6 +46,87 @@ async def test_create_comment_round_trip(fake_github: FakeGitHubClient) -> None:
     assert len(fake_github.comments) == 1
 
 
+async def test_create_comment_rejects_empty_body(fake_github: FakeGitHubClient) -> None:
+    from draftly.tools._guard import EmptyToolInputError
+    from draftly.tools.github.create_comment import create_comment
+
+    with pytest.raises(EmptyToolInputError):
+        await create_comment("acme", "widget", 5, "   ")
+
+
+async def test_create_commit_round_trip(fake_github: FakeGitHubClient) -> None:
+    from draftly.tools.github.create_commit import create_commit
+
+    result = await create_commit(
+        "acme",
+        "widget",
+        "main",
+        "docs: update guide",
+        [{"path": "docs/guide.md", "content": "new body"}],
+    )
+
+    assert result["sha"] == "newsha"
+    assert ("create_commit_and_tree", "acme/widget", "main", "docs: update guide") in (
+        fake_github.calls
+    )
+
+
+@pytest.mark.parametrize("message", ["", "   "])
+async def test_create_commit_rejects_empty_message(
+    fake_github: FakeGitHubClient, message: str
+) -> None:
+    from draftly.tools._guard import EmptyToolInputError
+    from draftly.tools.github.create_commit import create_commit
+
+    with pytest.raises(EmptyToolInputError):
+        await create_commit(
+            "acme", "widget", "main", message, [{"path": "docs/guide.md", "content": "x"}]
+        )
+
+
+async def test_create_commit_rejects_empty_files(fake_github: FakeGitHubClient) -> None:
+    from draftly.tools.github.create_commit import create_commit
+
+    with pytest.raises(RuntimeError):
+        await create_commit("acme", "widget", "main", "docs: update guide", [])
+
+
+async def test_create_commit_rejects_file_missing_content(
+    fake_github: FakeGitHubClient,
+) -> None:
+    from draftly.tools._guard import EmptyToolInputError
+    from draftly.tools.github.create_commit import create_commit
+
+    with pytest.raises(EmptyToolInputError):
+        await create_commit(
+            "acme", "widget", "main", "docs: update guide", [{"path": "docs/guide.md"}]
+        )
+
+
+async def test_create_branch_resolves_base_sha_when_omitted(
+    fake_github: FakeGitHubClient,
+) -> None:
+    from draftly.tools.github.create_branch import create_branch
+
+    result = await create_branch("acme", "widget", "docs/pr-7")
+
+    assert result == {"ref": "docs/pr-7"}
+    assert ("get_branch_head_sha", "acme/widget", None) in fake_github.calls
+    assert ("create_ref", "acme/widget", "docs/pr-7", "base-sha") in fake_github.calls
+
+
+async def test_create_branch_uses_explicit_base_sha(
+    fake_github: FakeGitHubClient,
+) -> None:
+    from draftly.tools.github.create_branch import create_branch
+
+    result = await create_branch("acme", "widget", "docs/pr-7", "abc123")
+
+    assert result == {"ref": "docs/pr-7"}
+    assert ("create_ref", "acme/widget", "docs/pr-7", "abc123") in fake_github.calls
+    assert not any(call[0] == "get_branch_head_sha" for call in fake_github.calls)
+
+
 def test_tool_schemas_render() -> None:
     from draftly.tools.github.create_comment import create_comment
     from draftly.tools.github.get_diff import get_diff

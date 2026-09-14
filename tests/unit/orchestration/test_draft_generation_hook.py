@@ -65,6 +65,24 @@ def test_non_writer_nodes_leave_scope_untouched() -> None:
         reset_draft_scope(token)
 
 
+def test_deliver_node_publishes_scope_without_advancing_generation() -> None:
+    """Delivery reads the sealed draft store via get_drafted_docs, so it needs
+    a run-scoped DraftScope but must NOT open a new generation."""
+    hook = NextGenerationHook()
+    hook._on_node_start(_event("update"))
+    assert current_draft_scope().generation == 1
+
+    hook._on_node_start(_event("deliver"))
+    scope = current_draft_scope()
+    assert scope is not None
+    assert scope.run_id == "run-1"
+    assert scope.org_id == "org-1"
+    assert scope.generation == 1
+
+    hook._on_node_start(_event("update"))
+    assert current_draft_scope().generation == 2
+
+
 def test_missing_run_id_is_a_noop() -> None:
     hook = NextGenerationHook()
     hook._on_node_start(_event("update", {"project_id": "org-1"}))

@@ -1,4 +1,4 @@
-"""Per-run draft generation publisher for writer nodes.
+"""Per-run draft generation publisher for writer and draft-reader nodes.
 
 Each writer-node execution opens exactly one draft generation (see
 ``draft_scope.DraftScope``). The hook counts writer executions per run and
@@ -7,6 +7,9 @@ publishes the current generation into the scope before the node fires, so the
 generation. The runner seeds the counter from the store
 (``draft_generation_seed`` = MAX(generation)+1) so resume-after-review opens a
 fresh generation instead of colliding with sealed rows.
+
+Reader nodes (delivery) publish a scope too — ``get_drafted_docs`` keys on the
+run id, not a generation — but must NOT advance the writer counter.
 """
 
 from __future__ import annotations
@@ -23,6 +26,11 @@ logger = structlog.get_logger(__name__)
 #: Writer nodes that stream file bytes through the draft store.
 WRITER_NODE_IDS = ("update", "create")
 
+#: Nodes whose agents read the sealed draft store via ``get_drafted_docs``.
+#: Delivery commits the writer's bodies, so it needs a scope — but opening a
+#: new generation would collide with the sealed rows it must read.
+READER_NODE_IDS = ("deliver",)
+
 
 class NextGenerationHook(HookProvider):
     """Publish the immutable draft generation before each writer node."""
@@ -34,7 +42,9 @@ class NextGenerationHook(HookProvider):
         registry.add_callback(BeforeNodeCallEvent, self._on_node_start)
 
     def _on_node_start(self, event: BeforeNodeCallEvent) -> None:
-        if event.node_id not in WRITER_NODE_IDS:
+        is_writer = event.node_id in WRITER_NODE_IDS
+        is_reader = event.node_id in READER_NODE_IDS
+        if not is_writer and not is_reader:
             return
         state = event.invocation_state or {}
         run_id = state.get("run_id")
@@ -42,11 +52,14 @@ class NextGenerationHook(HookProvider):
             logger.debug("draft_generation_skip", reason="missing_run_id")
             return
 
-        count = self._counters.get(run_id, 0) + 1
-        seed = state.get("draft_generation_seed")
-        if isinstance(seed, int) and count < seed:
-            count = seed
-        self._counters[run_id] = count
+        if is_writer:
+            count = self._counters.get(run_id, 0) + 1
+            seed = state.get("draft_generation_seed")
+            if isinstance(seed, int) and count < seed:
+                count = seed
+            self._counters[run_id] = count
+        else:
+            count = self._counters.get(run_id, 0)
 
         set_draft_scope(
             DraftScope(

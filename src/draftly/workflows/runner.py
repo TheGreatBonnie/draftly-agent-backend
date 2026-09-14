@@ -137,6 +137,26 @@ def is_blocked_delivery(receipt: dict[str, Any] | None) -> bool:
     return str(receipt.get("status") or "").lower() == "blocked"
 
 
+def is_empty_delivery(receipt: dict[str, Any] | None) -> bool:
+    """True when a GitHub receipt claims completion but carries no reference.
+
+    A hollow receipt (status ``completed``, empty ``reference``) means the
+    delivery agent emitted its structured output without any ``create_*`` call
+    actually succeeding. Counting that as ``delivered`` silently lies: no
+    commit, comment, or PR reached GitHub. Live run 82ddf040 ended
+    ``delivered`` with no commit and no comment on the source PR.
+    """
+    if not receipt:
+        return False
+    surface = str(receipt.get("surface") or "").lower()
+    if surface and surface != "github":
+        return False
+    if str(receipt.get("status") or "completed").lower() != "completed":
+        return False
+    reference = str(receipt.get("reference") or "").strip()
+    return not reference
+
+
 async def _post_run_memory(context: Any, state: Any, surface: str, *, hook: Any = None) -> None:
     """Record episode + enqueue memory candidates. Never raises."""
     try:
@@ -1126,6 +1146,7 @@ class WorkflowRunner:
             effective = Status.INTERRUPTED
         elif result.status == Status.FAILED and delivery_receipt is not None and (
             not is_blocked_delivery(delivery_receipt)
+            and not is_empty_delivery(delivery_receipt)
         ):
             effective = Status.COMPLETED
         if effective != result.status:
@@ -1160,15 +1181,23 @@ class WorkflowRunner:
         if effective == Status.COMPLETED:
             evaluation = self._node_payload(result, "evaluate")
             delivery_receipt = delivery_receipt_from_result(result)
-            if is_blocked_delivery(delivery_receipt):
+            if is_blocked_delivery(delivery_receipt) or is_empty_delivery(delivery_receipt):
                 # The graph completed but the delivery agent refused to act
-                # (blocked). That is NOT a delivered outcome: surface it as
+                # (blocked) or emitted an empty receipt without any successful
+                # create_* call. That is NOT a delivered outcome: surface it as
                 # failed so the reviewer/notifier is not told the changes were
-                # applied. Live run 7ddccdd0 surfaced "delivered" while the
-                # receipt was blocked and no commit reached the PR.
-                state.errors.append(
-                    "delivery blocked: agent refused to deliver (no content)"
-                )
+                # applied. Live runs 7ddccdd0 (blocked) and 82ddf040 (empty
+                # receipt, no commit/comment) surfaced "delivered" while no
+                # commit reached the PR.
+                if is_blocked_delivery(delivery_receipt):
+                    state.errors.append(
+                        "delivery blocked: agent refused to deliver (no content)"
+                    )
+                else:
+                    state.errors.append(
+                        "delivery completed without a reference "
+                        "(empty receipt, nothing delivered)"
+                    )
                 lifecycle_result: dict[str, Any] = {
                     "status": "FAILED",
                     "failed_nodes": ["deliver"],
