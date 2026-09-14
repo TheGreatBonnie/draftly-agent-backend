@@ -1,9 +1,10 @@
-.PHONY: help sync run test test-live lint fmt typecheck migrate docker-build docker-push clean
+.PHONY: help sync run run-agentcore test test-live lint fmt typecheck migrate docker-build docker-build-agentcore docker-push docker-push-agentcore clean
 
 help:
 	@echo "Draftly - Available targets:"
 	@echo "  sync         Install dependencies with uv"
 	@echo "  run          Run the API server (main.py)"
+	@echo "  run-agentcore Run the AgentCore runtime server (port 8080)"
 	@echo "  worker-rq    Run the unified RQ worker (workflow, indexing, evaluation queues)"
 	@echo "  worker-event Run the event worker (API under uvicorn)"
 	@echo "  test         Run offline tests"
@@ -21,6 +22,9 @@ sync:
 
 run:
 	python main.py
+
+run-agentcore:
+	python agentcore_server.py
 
 worker-event:
 	python -m workers.event_worker
@@ -61,6 +65,15 @@ docker-push:
 	docker tag draftly/worker:latest $$(aws sts get-caller-identity --query Account --output text).dkr.ecr.us-east-1.amazonaws.com/draftly/worker:latest
 	docker push $$(aws sts get-caller-identity --query Account --output text).dkr.ecr.us-east-1.amazonaws.com/draftly/api:latest
 	docker push $$(aws sts get-caller-identity --query Account --output text).dkr.ecr.us-east-1.amazonaws.com/draftly/worker:latest
+
+docker-build-agentcore:
+	docker buildx create --use 2>/dev/null || true
+	docker buildx build --platform linux/arm64 -f docker/Dockerfile.agentcore -t draftly/agentcore:latest --load .
+
+docker-push-agentcore:
+	aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin $$(aws sts get-caller-identity --query Account --output text).dkr.ecr.us-east-1.amazonaws.com
+	docker tag draftly/agentcore:latest $$(aws sts get-caller-identity --query Account --output text).dkr.ecr.us-east-1.amazonaws.com/draftly-agentcore:latest
+	docker push $$(aws sts get-caller-identity --query Account --output text).dkr.ecr.us-east-1.amazonaws.com/draftly-agentcore:latest
 
 clean:
 	rm -rf .venv .pytest_cache .mypy_cache .ruff_cache dist build *.egg-info
