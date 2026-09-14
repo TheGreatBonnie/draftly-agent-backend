@@ -1,4 +1,10 @@
 # Local dev dependency for event streaming (spec: 2026-08-23-event-streaming-design)
+# Real-PR mode: rq-worker mounts no local authly checkout, so grounding resolves
+# to `github` mode (installation token) instead of a stale `local` checkout.
+#
+# Merged from the former docker-compose.realpr.yml override: that override reset
+# rq-worker volumes to none (`volumes: !reset []`, Compose v2.23+); here the
+# mount is simply omitted so the merged behavior is the default.
 services:
   redis:
     image: redis:7-alpine
@@ -21,8 +27,6 @@ services:
       - REDIS_URL=redis://redis:6379/0
       - DATABASE_URL=${DATABASE_URL}
       - GITHUB_PRIVATE_KEY_PATH=secrets/private-key.pem
-    volumes:
-      - ../authly:/tmp/repos/TheGreatBonnie/authly
     depends_on:
       redis:
         condition: service_healthy
