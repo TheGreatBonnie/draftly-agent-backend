@@ -113,15 +113,6 @@ resource "aws_route_table_association" "private" {
   route_table_id = aws_route_table.private[count.index].id
 }
 
-resource "aws_db_subnet_group" "main" {
-  name       = "${var.project_name}-${var.environment}-db-subnet-group"
-  subnet_ids = aws_subnet.db[*].id
-
-  tags = {
-    Name = "${var.project_name}-${var.environment}-db-subnet-group"
-  }
-}
-
 resource "aws_security_group" "alb" {
   name        = "${var.project_name}-${var.environment}-alb-sg"
   description = "Security group for ALB"
