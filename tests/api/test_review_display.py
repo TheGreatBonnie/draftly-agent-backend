@@ -98,6 +98,7 @@ def test_display_is_nullable_safe_for_legacy_records() -> None:
     assert display["repository"] is None
     assert display["files"] == []
     assert display["risk"] is None
+    assert display["changelog"] is None
     assert display["evaluation"] == {
         "overall_score": None,
         "dimensions": [],
@@ -106,3 +107,30 @@ def test_display_is_nullable_safe_for_legacy_records() -> None:
     }
     assert display["evidence"] == []
     assert display["github_url"] is None
+
+
+def test_display_maps_changelog_entry() -> None:
+    """The gate's changelog payload must surface on the read model so the
+    review page can render the proposed changelog entry."""
+    row = record(
+        detail={
+            "summary": "Release v1.1.0",
+            "document": {
+                "kind": "change_plan",
+                "files": [{"path": "docs/whats-new.md", "action": "create"}],
+            },
+            "changelog": {
+                "version": "v1.1.0",
+                "date": "2026-09-04",
+                "entries": [{"category": "Added", "text": "OAuth login"}],
+                "raw_markdown": "## [v1.1.0] - 2026-09-04\n### Added\n- OAuth login",
+            },
+        }
+    )
+
+    display = build_review_display(row, {"pr": None})
+
+    assert display["changelog"]["version"] == "v1.1.0"
+    assert display["changelog"]["date"] == "2026-09-04"
+    assert display["changelog"]["entries"] == [{"category": "Added", "text": "OAuth login"}]
+    assert display["changelog"]["raw_markdown"].startswith("## [v1.1.0]")

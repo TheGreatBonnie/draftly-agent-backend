@@ -29,6 +29,7 @@ def _reason_detail(reason: Any) -> dict[str, Any]:
             "classification": reason.get("classification"),
             "evidence": reason.get("evidence"),
             "document": reason.get("document"),
+            "changelog": reason.get("changelog"),
         }
     return {}
 
