@@ -220,7 +220,7 @@ def test_issue_surface_agents_register_skills(stub_model: StubModel) -> None:
     assert {"github-issue-analysis", "documentation-gap-detection"} <= skill_names(analyzer)
 
     responder = build_issue_responder(stub_model, tools.github_intelligence)
-    assert {"github-delivery"} <= skill_names(responder)
+    assert {"github-issue-response"} <= skill_names(responder)
 
     answer = build_answer_writer(stub_model, tools.support_engineer)
     assert {"support-answering"} <= skill_names(answer)
@@ -273,9 +273,10 @@ def test_skills_load_from_directory() -> None:
     skills_root = Path(__file__).resolve().parents[3] / "src" / "draftly" / "skills"
     skills = Skill.from_directory(skills_root)
     names = {skill.name for skill in skills}
-    assert len(skills) == 21
+    assert len(skills) == 22
     assert "content-production" in names
     assert "github-pr-analysis" in names
+    assert "github-issue-response" in names
     assert "documentation-generation" in names
     assert "support-answering" in names
     for skill in skills:

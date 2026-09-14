@@ -37,7 +37,7 @@ def build_issue_responder(
         plugins=[
             AgentSkills(
                 skills=load_skills(
-                    "github-delivery",
+                    "github-issue-response",
                 )
             )
         ],
