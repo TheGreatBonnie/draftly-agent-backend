@@ -161,3 +161,9 @@ variable "agentcore_image_uri" {
   type        = string
   default     = ""
 }
+
+variable "agentcore_otlp_endpoint" {
+  description = "ADOT/OTLP collector endpoint for AgentCore observability"
+  type        = string
+  default     = ""
+}

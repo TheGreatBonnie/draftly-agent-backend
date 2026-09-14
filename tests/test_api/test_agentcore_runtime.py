@@ -10,6 +10,7 @@ from draftly.app.agentcore.app import create_agentcore_app
 from draftly.app.agentcore.routes import (
     InvocationInput,
     InvocationRequest,
+    _extract_trace_id,
     _resolve_event_id,
     invocations,
 )
@@ -109,6 +110,7 @@ async def test_invocations_runs_workflow_and_wraps_output() -> None:
     runner = MagicMock()
     runner.run = AsyncMock(return_value=state)
     request = MagicMock()
+    request.headers = {}
     request.app.state.draftly = MagicMock(workflows=MagicMock(runner=runner))
 
     response = await invocations(
@@ -157,3 +159,49 @@ async def test_invocations_wraps_run_failure_as_500() -> None:
 
     assert excinfo.value.status_code == 500
     assert "boom" in excinfo.value.detail
+
+
+def test_extract_trace_id_returns_traceparent() -> None:
+    assert _extract_trace_id({"traceparent": "00-abc-1-01"}) == "00-abc-1-01"
+
+
+def test_extract_trace_id_missing_returns_none() -> None:
+    assert _extract_trace_id({}) is None
+
+
+async def test_invocations_threads_trace_id_into_output() -> None:
+    state = WorkflowState(run_id="ev-1", event={"event_type": "slack_support"})
+    state.finish(WorkflowStatus.SKIPPED)
+    runner = MagicMock()
+    runner.run = AsyncMock(return_value=state)
+    request = MagicMock()
+    request.headers = {"traceparent": "00-abc-1-01"}
+    request.app.state.draftly = MagicMock(workflows=MagicMock(runner=runner))
+
+    response = await invocations(
+        InvocationRequest(
+            input=InvocationInput(event={"event_id": "ev-1", "event_type": "slack_support"})
+        ),
+        request,
+    )
+
+    assert response["output"]["trace_id"] == "00-abc-1-01"
+
+
+async def test_invocations_omits_trace_id_when_absent() -> None:
+    state = WorkflowState(run_id="ev-1", event={"event_type": "slack_support"})
+    state.finish(WorkflowStatus.SKIPPED)
+    runner = MagicMock()
+    runner.run = AsyncMock(return_value=state)
+    request = MagicMock()
+    request.headers = {}
+    request.app.state.draftly = MagicMock(workflows=MagicMock(runner=runner))
+
+    response = await invocations(
+        InvocationRequest(
+            input=InvocationInput(event={"event_id": "ev-1", "event_type": "slack_support"})
+        ),
+        request,
+    )
+
+    assert "trace_id" not in response["output"]

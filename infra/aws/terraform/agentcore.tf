@@ -95,6 +95,8 @@ resource "null_resource" "deploy_agentcore_runtime" {
         --runtime-name draftly-agentcore \
         --region "${var.aws_region}" \
         --network-mode PUBLIC \
+        --env "OTEL_EXPORTER_OTLP_ENDPOINT=${var.agentcore_otlp_endpoint}" \
+        --env "OTEL_SERVICE_NAME=draftly-agentcore" \
         --out "${path.module}/agentcore-runtime.json"
     EOT
   }

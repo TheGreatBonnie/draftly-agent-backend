@@ -29,6 +29,14 @@ def _resolve_event_id(event: dict[str, Any], session_id: str) -> str:
     return f"agentcore-{uuid4()}"
 
 
+def _extract_trace_id(headers: Any) -> str | None:
+    """Return the incoming W3C trace header (traceparent), if present."""
+    value = headers.get("traceparent")
+    if value:
+        return str(value)
+    return None
+
+
 def _runner(request: Request) -> Any:
     draftly = getattr(request.app.state, "draftly", None)
     workflows = getattr(draftly, "workflows", None)
@@ -72,4 +80,8 @@ async def invocations(
             detail=f"agent processing failed: {exc}",
         ) from exc
 
-    return {"output": state.to_dict()}
+    output = state.to_dict()
+    trace_id = _extract_trace_id(request.headers)
+    if trace_id is not None:
+        output["trace_id"] = trace_id
+    return {"output": output}
