@@ -107,11 +107,16 @@ def _swarm_for_plan(
     github_tools: list[Any],
     runtime: SteeringRuntime | None,
     node_id: str | None,
+    execution_timeout: float | None = None,
+    node_timeout: float | None = None,
 ) -> Swarm:
     """Construct ONLY the planned researchers with the plan's budget limits.
 
     ``plan.failure`` (missing mandatory capability) is handled by the caller;
     here every planned researcher is a capability the run has evidence for.
+    Explicit ``execution_timeout``/``node_timeout`` overrides win over the
+    plan's lowered defaults so the operator-configured Strands budgets
+    (``STRANDS_NODE_TIMEOUT`` etc.) reach the research swarm.
     """
     agents: list[Agent] = []
     for name in plan.researchers:
@@ -145,8 +150,10 @@ def _swarm_for_plan(
         entry_point=agents[0],
         max_handoffs=plan.max_handoffs,
         max_iterations=plan.max_iterations,
-        execution_timeout=plan.execution_timeout,
-        node_timeout=plan.node_timeout,
+        execution_timeout=(
+            execution_timeout if execution_timeout is not None else plan.execution_timeout
+        ),
+        node_timeout=node_timeout if node_timeout is not None else plan.node_timeout,
         repetitive_handoff_detection_window=8,
         repetitive_handoff_min_unique_agents=3,
     )
@@ -203,12 +210,17 @@ def build_doc_research_swarm(
     agent_id: str | None = None,
     node_id: str | None = None,
     plan: Any | None = None,
+    execution_timeout: float | None = None,
+    node_timeout: float | None = None,
 ) -> MultiAgentBase:
     """Build the research swarm used by the documentation graph.
 
     With a ``ResearchPlan`` (capability-aware lane), construct only the planned
     researchers; a plan with ``failure`` yields a deterministic
     ``ResearchCapabilityGate`` instead of a swarm.
+
+    ``execution_timeout``/``node_timeout`` bound the swarm; when omitted the
+    legacy hardcoded budgets (1800s/600s) or the plan's own budgets apply.
     """
     if plan is not None and plan.failure:
         return ResearchCapabilityGate(
@@ -224,6 +236,8 @@ def build_doc_research_swarm(
             github_tools=github_tools or [],
             runtime=runtime,
             node_id=node_id or "doc_research",
+            execution_timeout=execution_timeout,
+            node_timeout=node_timeout,
         )
 
     docs_agent = build_docs_researcher(
@@ -257,8 +271,8 @@ def build_doc_research_swarm(
         entry_point=entry_point,
         max_handoffs=20,
         max_iterations=20,
-        execution_timeout=900.0,
-        node_timeout=300.0,
+        execution_timeout=execution_timeout if execution_timeout is not None else 1800.0,
+        node_timeout=node_timeout if node_timeout is not None else 600.0,
         repetitive_handoff_detection_window=8,
         repetitive_handoff_min_unique_agents=3,
     )

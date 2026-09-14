@@ -160,6 +160,8 @@ def build_support_graph(
         runtime=steering_runtime,
         agent_id="support.research",
         node_id="research",
+        execution_timeout=execution_timeout,
+        node_timeout=node_timeout,
     )
     question_builder = getattr(registry, "question_analyzer", None) or build_question_analyzer
     question_analyzer = question_builder(

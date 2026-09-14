@@ -124,6 +124,8 @@ def build_issue_graph(
         runtime=steering_runtime,
         agent_id="issue.research",
         node_id="research",
+        execution_timeout=execution_timeout,
+        node_timeout=node_timeout,
     )
     analyzer_builder = getattr(registry, "issue_analyzer", None) or build_issue_analyzer
     issue_analyzer = analyzer_builder(

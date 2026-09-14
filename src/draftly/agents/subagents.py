@@ -22,8 +22,15 @@ def build_research_swarm(
     runtime: SteeringRuntime | None = None,
     agent_id: str | None = None,
     node_id: str | None = None,
+    execution_timeout: float | None = None,
+    node_timeout: float | None = None,
 ) -> Swarm:
-    """Build the 4-agent research swarm used by the ``research`` node."""
+    """Build the 4-agent research swarm used by the ``research`` node.
+
+    ``execution_timeout``/``node_timeout`` bound the swarm; defaults to the
+    legacy budgets (1800s/600s) unless overridden by the configured Strands
+    budgets.
+    """
 
     github_agent = build_github_researcher(
         model,
@@ -55,8 +62,8 @@ def build_research_swarm(
         entry_point=github_agent,
         max_handoffs=20,
         max_iterations=20,
-        execution_timeout=900.0,
-        node_timeout=300.0,
+        execution_timeout=execution_timeout if execution_timeout is not None else 1800.0,
+        node_timeout=node_timeout if node_timeout is not None else 600.0,
         repetitive_handoff_detection_window=8,
         repetitive_handoff_min_unique_agents=3,
     )

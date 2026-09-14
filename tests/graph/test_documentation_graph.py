@@ -515,6 +515,10 @@ def test_github_grounding_gives_context_and_swarm_github_api_tools(
     gh_tools = _tool_names(swarm["github_tools"] or [])
     assert {"get_pull_request", "get_diff", "get_files"} <= gh_tools
     assert "create_comment" not in gh_tools
+    # The graph's configured Strands budgets must reach the swarm so the
+    # research agent gets the full node budget instead of a hardcoded ceiling.
+    assert swarm["execution_timeout"] == 3600.0
+    assert swarm["node_timeout"] == 1200.0
 
 
 def test_github_grounding_impact_agent_uses_api_repo_tools(

@@ -79,10 +79,10 @@ _LOCAL_CODE_SEARCH = [code_search]
 
 DEFAULT_GRAPH_ID = "draftly-main-graph"
 DEFAULT_MAX_NODE_EXECUTIONS = 15
-# 600s killed delivered PR runs at the tail (8+ sequential LLM nodes plus a
+# 1200s killed delivered PR runs at the tail (8+ sequential LLM nodes plus a
 # datadog-style revision loop); keep enough ceiling to reach the ReviewGate.
-DEFAULT_EXECUTION_TIMEOUT = 1800.0
-DEFAULT_NODE_TIMEOUT = 600.0
+DEFAULT_EXECUTION_TIMEOUT = 3600.0
+DEFAULT_NODE_TIMEOUT = 1200.0
 DEFAULT_EVALUATOR_MAX_ITERATIONS = 2
 
 
@@ -226,6 +226,13 @@ def build_documentation_graph(
         "runtime": steering_runtime,
         "agent_id": "documentation.research",
         "node_id": "research",
+        # Operator-configured Strands budgets: the same node_timeout /
+        # execution_timeout the graph applies (STRANDS_NODE_TIMEOUT etc.),
+        # overriding the swarm's hardcoded 300s/900s defaults so a research
+        # agent doing heavy tooling is never killed twice as fast as the
+        # graph node allows.
+        "execution_timeout": execution_timeout,
+        "node_timeout": node_timeout,
     }
     if research_plan is not None:
         research_kwargs["plan"] = research_plan
