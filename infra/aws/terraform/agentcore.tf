@@ -89,7 +89,7 @@ resource "null_resource" "deploy_agentcore_runtime" {
 
   provisioner "local-exec" {
     command = <<-EOT
-      python ${path.module}/../../../scripts/deploy_agentcore.py \
+      python3 ${path.module}/../../../scripts/deploy_agentcore.py \
         --container-uri "${var.agentcore_image_uri}" \
         --role-arn "${aws_iam_role.agentcore_runtime.arn}" \
         --runtime-name draftly-agentcore \
