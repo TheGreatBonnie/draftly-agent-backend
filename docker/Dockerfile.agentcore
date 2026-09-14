@@ -1,0 +1,43 @@
+# Build stage
+FROM --platform=linux/arm64 python:3.11-slim AS builder
+
+ENV UV_VERSION=0.4.20
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN curl -LsSf https://astral.sh/uv/${UV_VERSION}/install.sh | sh
+ENV PATH="/root/.cargo/bin:${PATH}"
+
+WORKDIR /app
+
+COPY pyproject.toml uv.lock README.md ./
+RUN uv sync --frozen --no-dev --no-install-project
+
+COPY agentcore_server.py ./
+COPY src ./src
+RUN uv sync --frozen --no-dev
+
+# Runtime stage
+FROM --platform=linux/arm64 python:3.11-slim AS runtime
+
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+ENV PATH="/app/.venv/bin:${PATH}"
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY --from=builder /app/.venv ./.venv
+COPY --from=builder /app/agentcore_server.py ./
+COPY --from=builder /app/src ./src
+
+EXPOSE 8080
+
+CMD ["python", "agentcore_server.py"]
