@@ -55,7 +55,9 @@ class ModelRouter:
         self.registry = registry
         self.health = health
         self._enabled_providers = (
-            set(enabled_providers) if enabled_providers else set(KNOWN_PROVIDERS)
+            set(enabled_providers)
+            if enabled_providers is not None
+            else set(KNOWN_PROVIDERS)
         )
         self._stats_store = stats_store or EMAStatsStore()
         self._model_health = model_health or ModelHealthRegistry()

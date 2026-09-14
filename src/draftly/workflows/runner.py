@@ -49,6 +49,7 @@ from draftly.observability.metrics import Metrics
 from draftly.observability.metrics import metrics as _default_metrics
 from draftly.workflows.context import WorkflowContext
 from draftly.workflows.grounding import (
+    enrich_grounding,
     repo_checkout_for,
     reset_grounding,
     resolve_grounding,
@@ -229,6 +230,28 @@ def _steering_event_sink(
     return sink
 
 
+def _build_research_plan(context: WorkflowContext, grounding: dict[str, Any]) -> Any:
+    """Build the capability-bounded research plan when the lane flag is on.
+
+    Gated on Task 1's ``capability_aware_research``: off ⇒ None keeps the
+    legacy all-researchers swarm. The plan is re-derived per run so grounding
+    capabilities (and document-search availability) affect later runs'
+    construction, not just the current graph.
+    """
+    strands = getattr(context.config, "strands", None)
+    if not getattr(strands, "capability_aware_research", False):
+        return None
+    from draftly.agents.documentation.research_capabilities import (
+        ResearchCapabilities,
+        build_research_plan,
+    )
+
+    return build_research_plan(
+        grounding=grounding.get("mode", "local"),
+        capabilities=ResearchCapabilities.from_dict(grounding.get("capabilities")),
+    )
+
+
 def _default_graph_factory(context: WorkflowContext) -> GraphFactory:
     """Build the real per-run graph via the Phase 4 integration layer."""
 
@@ -262,6 +285,7 @@ def _default_graph_factory(context: WorkflowContext) -> GraphFactory:
 
         jobs_repo = getattr(getattr(context, "repositories", None), "jobs", None)
         drafts_repo = getattr(getattr(context, "repositories", None), "drafts", None)
+        research_plan = _build_research_plan(context, grounding)
         graph = build_graph_for_run(
             run_id,
             surface=surface,
@@ -279,6 +303,7 @@ def _default_graph_factory(context: WorkflowContext) -> GraphFactory:
             grounding=grounding.get("mode", "local"),
             repo_dir=grounding.get("repo_dir"),
             steering_runtime=steering_runtime,
+            research_plan=research_plan,
             **context.graph_limits(),
         )
         graph._draftly_stream_seq = stream_seq
@@ -387,13 +412,16 @@ class WorkflowRunner:
             # Surface the discovered checkout into the task so the LOCAL note
             # can point evidence agents at the real path (never a guess).
             event["repo_dir"] = repo_dir
-        grounding = {
-            "mode": resolve_grounding(
-                repo_dir=repo_dir,
-                installation_id=event.get("installation_id"),
-            ),
-            "repo_dir": event.get("repo_dir"),
-        }
+        grounding = enrich_grounding(
+            {
+                "mode": resolve_grounding(
+                    repo_dir=repo_dir,
+                    installation_id=event.get("installation_id"),
+                ),
+                "repo_dir": event.get("repo_dir"),
+            },
+            event=event,
+        )
         build_token = set_support_runtime(support_runtime_for(event))
         build_memory_token = set_memory_scope(memory_scope_for(event, surface))
         grounding_token = set_grounding(grounding)
@@ -510,13 +538,16 @@ class WorkflowRunner:
         repo_dir = repo_checkout_for(event)
         if repo_dir and not event.get("repo_dir"):
             event["repo_dir"] = repo_dir
-        grounding = {
-            "mode": resolve_grounding(
-                repo_dir=repo_dir,
-                installation_id=event.get("installation_id"),
-            ),
-            "repo_dir": event.get("repo_dir"),
-        }
+        grounding = enrich_grounding(
+            {
+                "mode": resolve_grounding(
+                    repo_dir=repo_dir,
+                    installation_id=event.get("installation_id"),
+                ),
+                "repo_dir": event.get("repo_dir"),
+            },
+            event=event,
+        )
         grounding_token = set_grounding(grounding)
         steering_token = set_steering_scope(
             SteeringRunScope(
@@ -754,13 +785,16 @@ class WorkflowRunner:
         repo_dir = repo_checkout_for(event)
         if repo_dir and not event.get("repo_dir"):
             event["repo_dir"] = repo_dir
-        grounding = {
-            "mode": resolve_grounding(
-                repo_dir=repo_dir,
-                installation_id=event.get("installation_id"),
-            ),
-            "repo_dir": event.get("repo_dir"),
-        }
+        grounding = enrich_grounding(
+            {
+                "mode": resolve_grounding(
+                    repo_dir=repo_dir,
+                    installation_id=event.get("installation_id"),
+                ),
+                "repo_dir": event.get("repo_dir"),
+            },
+            event=event,
+        )
         grounding_token = set_grounding(grounding)
         steering_token = set_steering_scope(
             SteeringRunScope(

@@ -36,10 +36,6 @@ AGENT_CATALOG: list[dict[str, Any]] = [
             "semantic_search",
             "keyword_search",
             "hybrid_search",
-            "slack_search",
-            "slack_get_thread",
-            "discord_search",
-            "discord_get_thread",
         ],
     },
     {

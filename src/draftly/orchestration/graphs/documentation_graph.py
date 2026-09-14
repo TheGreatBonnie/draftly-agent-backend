@@ -31,10 +31,8 @@ import structlog
 from strands.multiagent import GraphBuilder
 from strands.session.session_manager import SessionManager
 
-from draftly.app.composition.tools import filter_grounded_tools
 from draftly.evaluation.evaluators.completeness import COMPLETENESS_RUBRIC
 from draftly.evaluation.evaluators.groundedness import GROUNDEDNESS_RUBRIC
-from draftly.integrations.strands.models import resolve_model_for_role
 from draftly.orchestration.graphs.tool_scoping import (
     scope_read_only_tools as _scope_read_only_tools,
 )
@@ -122,6 +120,7 @@ def build_documentation_graph(
     comment_factory: Any = None,
     steering_runtime: Any = None,
     drafts_repo: Any = None,
+    research_plan: Any = None,
 ):
     """Build the unified Draftly Graph for documentation workflows.
 
@@ -134,6 +133,11 @@ def build_documentation_graph(
     when omitted the node lazily builds a ``GitHubClient`` at invoke time so
     the runner's installation context applies.
     """
+    # Lazy imports break the import cycle content_graph ↔ documentation_graph
+    # (surface graphs are directly importable regardless of whether the
+    # ``draftly.integrations.strands`` package has initialized). These are used
+    # only here, mirroring the lazy-import pattern in the content/issue/support
+    # graph builders.
     # Import agents (factories — one instance per graph node)
     from draftly.agents.documentation.analyzer import build_impact_agent
     from draftly.agents.documentation.changelog import build_changelog_agent
@@ -144,6 +148,8 @@ def build_documentation_graph(
     from draftly.agents.shared.classifier import build_classifier
     from draftly.agents.shared.delivery import build_delivery_agent
     from draftly.agents.support.answer_writer import build_answer_writer
+    from draftly.app.composition.tools import filter_grounded_tools
+    from draftly.integrations.strands.models import resolve_model_for_role
     from draftly.orchestration.nodes.changelog_evaluate import ChangelogEvaluatorNode
     from draftly.orchestration.nodes.notify_post import NotifyPostNode
 
@@ -187,10 +193,6 @@ def build_documentation_graph(
             reg.semantic_search,
             reg.keyword_search,
             reg.hybrid_search,
-            reg.slack_search,
-            reg.slack_get_thread,
-            reg.discord_search,
-            reg.discord_get_thread,
         ),
         grounding=grounding,
         repo_dir=repo_dir,
@@ -216,17 +218,18 @@ def build_documentation_graph(
             reg.hybrid_search,
             _LOCAL_CODE_SEARCH,
         )
-    research_swarm = research_builder(
-        research_model,
-        reg,
-        local_tools=swarm_local_tools,
-        github_tools=swarm_github_tools,
-        grounding=grounding,
-        repo_dir=repo_dir,
-        runtime=steering_runtime,
-        agent_id="documentation.research",
-        node_id="research",
-    )
+    research_kwargs: dict[str, Any] = {
+        "local_tools": swarm_local_tools,
+        "github_tools": swarm_github_tools,
+        "grounding": grounding,
+        "repo_dir": repo_dir,
+        "runtime": steering_runtime,
+        "agent_id": "documentation.research",
+        "node_id": "research",
+    }
+    if research_plan is not None:
+        research_kwargs["plan"] = research_plan
+    research_swarm = research_builder(research_model, reg, **research_kwargs)
     impact_builder = getattr(registry, "impact_agent", None) or build_impact_agent
     if grounding == GITHUB:
         impact_repo_tools = _dedupe(
@@ -341,9 +344,17 @@ def build_documentation_graph(
     builder.add_node(research_swarm, "research")
     builder.add_edge("context", "research")
 
-    # Impact analysis
+    research_failed = bool(
+        research_plan is not None and getattr(research_plan, "failure", None)
+    )
+
+    # Impact analysis. When research fails fast (missing mandatory capability)
+    # the research edge is omitted: impact then has no in-edges and is never
+    # scheduled, so the graph terminates with the failed research node
+    # (FAILED via failed_nodes) and impact/writers/delivery are not invoked.
     builder.add_node(impact_agent, "impact")
-    builder.add_edge("research", "impact")
+    if not research_failed:
+        builder.add_edge("research", "impact")
 
     # Generation fan-out (mutually exclusive conditions)
     builder.add_node(answer_agent, "answer")
