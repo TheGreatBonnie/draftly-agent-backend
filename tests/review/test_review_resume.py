@@ -338,6 +338,36 @@ async def test_adapter_delegates_to_runtime_core():
     assert len(reviews.decisions) == 2
 
 
+async def test_approval_paused_by_steering_intervention_keeps_review_actionable():
+    """A pending_intervention outcome pauses delivery: do NOT record the
+    decision or raise — the durable steering intervention drives the resume."""
+    reviews = FakeReviews(_review_record())
+    app_state = fake_app_state(
+        workflow_status="pending_intervention",
+        record=_review_record(workflow="pull_request"),
+        event_payload={
+            "event_id": "run-1",
+            "event_type": "pull_request.merged",
+            "repository": "acme/api",
+            "source": "github",
+            "actor": "dev",
+            "installation_id": 55,
+        },
+    )
+    app_state.dependencies.repositories.reviews = reviews
+    state = await resume_review_decision(
+        review_id="review-1",
+        approved=True,
+        reviewer_id="user-1",
+        comment="ship it",
+        app_state=app_state,
+        org_id="org-1",
+    )
+    assert state.status.value == "pending_intervention"
+    assert reviews.decisions == []  # treated as not-yet-delivered, not approved
+    assert app_state.workflows.runner.calls[0]["interrupt_id"] == "int-1"
+
+
 async def test_worker_workflow_resumes_approval_against_composed_context():
     app_state = fake_app_state(workflow_status="delivered")
     context = SimpleNamespace(

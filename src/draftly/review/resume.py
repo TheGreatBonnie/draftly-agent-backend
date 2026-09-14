@@ -178,6 +178,20 @@ async def resume_review_from_runtime(
 
     status = getattr(getattr(state, "status", None), "value", "")
     expected = "delivered" if approved_value else "failed"
+    if status == "pending_intervention":
+        # The delivery was paused by a persisted steering interruption (for
+        # example the deterministic `argument:required` guide budget being
+        # exhausted on the delivery tools). That intervention is resolved
+        # through its own durable API; the review must stay actionable and no
+        # decision should be recorded until delivery actually completes.
+        logger.info(
+            "review_resume_paused_by_intervention",
+            review_id=review_id,
+            run_id=run_id,
+            interrupt_id=interrupt_id,
+            status=status,
+        )
+        return cast(WorkflowState, state)
     if status != expected:
         raise ReviewResumeError(
             f"Review did not reach expected status {expected!r} (status={status})"

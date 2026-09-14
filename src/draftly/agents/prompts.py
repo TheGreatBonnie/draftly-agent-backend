@@ -957,6 +957,88 @@ during authoring.
 If you receive ONLY a changelog entry (no documentation plan), make one
 commit with the CHANGELOG.md and open a PR.
 
+## Commit message — required for every create_commit call
+
+Every `create_commit` call MUST include a non-empty `message` argument.
+Never omit it, and never leave it as an empty string.
+
+- If the DocChangePlan provides a `commit_message`, use it verbatim.
+- If it does not, compose one from the changed files following the format in
+  `references/commit-policy.md`: `docs(<scope>): <summary>` with a
+  `Refs: <event_id>` trailer on the second line.
+- For the second commit (CHANGELOG.md), always use:
+  `docs(release): add <version> changelog entry`.
+
+You have NO file-reading tool in this flow, so never try to open `references/`
+files or any local paths. Use ONLY the commit format above plus the scope and
+trailer rules restated here:
+
+- Scope is one of: `api`, `cli`, `config`, `guide`, `troubleshooting`,
+  `release`, `ref`, `meta` — pick the area the changed file documents.
+- Summary in imperative mood (add/update/fix/remove), max ~72 chars, no
+  trailing period.
+- Optional body: one bullet per changed file, `- <file>: <what changed>`.
+- Trailers on the last two lines: `Refs: <event_id>` then
+  `Source: <type>#<id>` (e.g. `Source: pr#35`).
+
+## Worked example — source-PR docs commit
+
+Given `repository="acme/api"`, `pull_request.head.ref="feat/001-oauth-login"`,
+`pull_request.number=35`, and `event_id="70804270..."`:
+
+1. `get_drafted_docs()` returns `files` of the shape
+   `[{"path": "docs/guide/oauth.md", "action": "update", "content": "…",
+     "content_available": true}]`.
+2. Call `create_commit` once with ALL five arguments, including a non-empty
+   `message` (split `owner`/`repo` from `repository`; use `pull_request.head.ref`
+   as `branch`):
+   ```
+   create_commit(
+       owner="acme",
+       repo="api",
+       branch="feat/001-oauth-login",
+       message="docs(guide): document OAuth code exchange\n"
+               "- docs/guide/oauth.md: add exchange steps\n"
+               "Refs: 70804270-b01d-11f1-8064-60cc8019d45a\n"
+               "Source: pr#35",
+       files=[{"path": "docs/guide/oauth.md", "content": "<body from get_drafted_docs>"}],
+   )
+   ```
+3. On success, post the summary with
+   `create_comment(owner="acme", repo="api", number=35, body=<comment body>)`.
+
+## Comment body — required for every create_comment call
+
+Every `create_comment` call MUST include a non-empty `body` argument.
+Never omit it, and never leave it as an empty string.
+
+- Always include the run `event_id` and the commit `sha` (or shas) in the body.
+- Keep the body to 1–3 lines: a short summary of what was delivered, the
+  commit sha(s), and the run id for traceability.
+- If the tool returns the comment URL, record it as the delivery reference.
+
+**Template:**
+
+```
+Draftly delivered docs in <commit_sha> for run <event_id>.
+
+Changed: <comma-separated list of changed files>
+```
+
+## DeliveryReceipt — post-condition only
+
+You MUST NOT emit the final `DeliveryReceipt` until ALL of the following
+are true for this run:
+
+- At least one side-effecting tool call (`create_commit`, `create_comment`,
+  `create_pull_request`, `create_branch`) has returned SUCCESS.
+- The `reference` field contains the commit sha, PR number, or PR URL that
+  was actually created. Never leave `reference` as an empty string.
+
+If a tool call fails, retry with the corrected arguments (respect
+`argument:required` guides). Emitting an empty receipt is worse than pausing
+for intervention.
+
 ## Source PR delivery (pull_request head.ref)
 
 When the task carries a source pull request with a `pull_request.head` object

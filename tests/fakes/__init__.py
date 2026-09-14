@@ -51,8 +51,21 @@ class FakeGitHubClient:
         self.calls.append(("create_ref", repo, branch, sha))
         return {"ref": branch}
 
-    async def create_commit_and_tree(self, **kwargs: Any) -> dict:
-        self.calls.append(("create_commit_and_tree",))
+    async def get_branch_head_sha(
+        self, repo: str, branch: str | None = None
+    ) -> str:
+        self.calls.append(("get_branch_head_sha", repo, branch))
+        return "base-sha"
+
+    async def create_commit_and_tree(
+        self,
+        repository: str,
+        branch: str,
+        message: str,
+        files: list[dict],
+        **kwargs: Any,
+    ) -> dict:
+        self.calls.append(("create_commit_and_tree", repository, branch, message))
         return {"sha": "newsha"}
 
     async def get_repository(self, repo: str) -> dict:

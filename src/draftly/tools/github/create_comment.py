@@ -1,5 +1,7 @@
 from strands.tools import tool
 
+from draftly.tools._guard import require_nonempty
+
 
 @tool
 async def create_comment(
@@ -9,6 +11,10 @@ async def create_comment(
     body: str,
 ) -> dict:
     """Post a comment on a GitHub pull request or issue."""
+    require_nonempty(owner, "owner", "create_comment")
+    require_nonempty(repo, "repo", "create_comment")
+    require_nonempty(body, "body", "create_comment")
+
     from draftly.integrations.github.client import GitHubClient
 
     client = GitHubClient()

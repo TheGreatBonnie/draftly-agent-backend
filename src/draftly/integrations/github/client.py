@@ -215,6 +215,24 @@ class GitHubClient:
             ),
         )
 
+    async def get_branch_head_sha(
+        self,
+        repository: str,
+        branch: str | None = None,
+    ) -> str:
+        """Resolve the HEAD SHA of a branch (defaults to the repo default)."""
+        if not branch:
+            repo_ref = await self.get_repository(repository)
+            branch = repo_ref.get("default_branch") or "main"
+        ref = cast(
+            dict[str, Any],
+            await self._request(
+                "GET",
+                f"/repos/{repository}/git/ref/heads/{branch}",
+            ),
+        )
+        return ref["object"]["sha"]
+
     async def create_commit_and_tree(
         self,
         repository: str,
