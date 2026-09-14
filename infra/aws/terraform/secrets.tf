@@ -227,27 +227,123 @@ variable "bedrock_session_token" {
   sensitive   = true
 }
 
-variable "nvidia_api_key" { type = string; default = ""; sensitive = true }
-variable "nvidia_base_url" { type = string; default = ""; sensitive = true }
-variable "requesty_api_key" { type = string; default = ""; sensitive = true }
-variable "requesty_base_url" { type = string; default = ""; sensitive = true }
-variable "orcarouter_api_key" { type = string; default = ""; sensitive = true }
-variable "orcarouter_base_url" { type = string; default = ""; sensitive = true }
-variable "openrouter_api_key" { type = string; default = ""; sensitive = true }
-variable "openrouter_base_url" { type = string; default = ""; sensitive = true }
-variable "mantle_api_key" { type = string; default = ""; sensitive = true }
-variable "mantle_endpoint_url" { type = string; default = ""; sensitive = true }
-variable "github_app_id" { type = string; default = ""; sensitive = true }
-variable "github_app_private_key" { type = string; default = ""; sensitive = true }
-variable "github_webhook_secret" { type = string; default = ""; sensitive = true }
-variable "slack_client_id" { type = string; default = ""; sensitive = true }
-variable "slack_client_secret" { type = string; default = ""; sensitive = true }
-variable "slack_signing_secret" { type = string; default = ""; sensitive = true }
-variable "slack_bot_token" { type = string; default = ""; sensitive = true }
-variable "discord_client_id" { type = string; default = ""; sensitive = true }
-variable "discord_client_secret" { type = string; default = ""; sensitive = true }
-variable "discord_public_key" { type = string; default = ""; sensitive = true }
-variable "discord_bot_token" { type = string; default = ""; sensitive = true }
-variable "clerk_secret_key" { type = string; default = ""; sensitive = true }
-variable "clerk_publishable_key" { type = string; default = ""; sensitive = true }
-variable "clerk_webhook_secret" { type = string; default = ""; sensitive = true }
+variable "nvidia_api_key" {
+  type      = string
+  default   = ""
+  sensitive = true
+}
+variable "nvidia_base_url" {
+  type      = string
+  default   = ""
+  sensitive = true
+}
+variable "requesty_api_key" {
+  type      = string
+  default   = ""
+  sensitive = true
+}
+variable "requesty_base_url" {
+  type      = string
+  default   = ""
+  sensitive = true
+}
+variable "orcarouter_api_key" {
+  type      = string
+  default   = ""
+  sensitive = true
+}
+variable "orcarouter_base_url" {
+  type      = string
+  default   = ""
+  sensitive = true
+}
+variable "openrouter_api_key" {
+  type      = string
+  default   = ""
+  sensitive = true
+}
+variable "openrouter_base_url" {
+  type      = string
+  default   = ""
+  sensitive = true
+}
+variable "mantle_api_key" {
+  type      = string
+  default   = ""
+  sensitive = true
+}
+variable "mantle_endpoint_url" {
+  type      = string
+  default   = ""
+  sensitive = true
+}
+variable "github_app_id" {
+  type      = string
+  default   = ""
+  sensitive = true
+}
+variable "github_app_private_key" {
+  type      = string
+  default   = ""
+  sensitive = true
+}
+variable "github_webhook_secret" {
+  type      = string
+  default   = ""
+  sensitive = true
+}
+variable "slack_client_id" {
+  type      = string
+  default   = ""
+  sensitive = true
+}
+variable "slack_client_secret" {
+  type      = string
+  default   = ""
+  sensitive = true
+}
+variable "slack_signing_secret" {
+  type      = string
+  default   = ""
+  sensitive = true
+}
+variable "slack_bot_token" {
+  type      = string
+  default   = ""
+  sensitive = true
+}
+variable "discord_client_id" {
+  type      = string
+  default   = ""
+  sensitive = true
+}
+variable "discord_client_secret" {
+  type      = string
+  default   = ""
+  sensitive = true
+}
+variable "discord_public_key" {
+  type      = string
+  default   = ""
+  sensitive = true
+}
+variable "discord_bot_token" {
+  type      = string
+  default   = ""
+  sensitive = true
+}
+variable "clerk_secret_key" {
+  type      = string
+  default   = ""
+  sensitive = true
+}
+variable "clerk_publishable_key" {
+  type      = string
+  default   = ""
+  sensitive = true
+}
+variable "clerk_webhook_secret" {
+  type      = string
+  default   = ""
+  sensitive = true
+}
