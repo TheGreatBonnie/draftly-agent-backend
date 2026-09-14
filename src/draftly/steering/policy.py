@@ -48,9 +48,9 @@ class FailureMode(StrEnum):
 class SteeringLimits:
     """Bounded automatic-guide budgets shared by every role."""
 
-    tool_guides_per_call: int = 2
+    tool_guides_per_call: int = 4
     model_guides_per_turn: int = 2
-    total_guides_per_agent: int = 5
+    total_guides_per_agent: int = 7
 
     def __post_init__(self) -> None:
         for name, value in (

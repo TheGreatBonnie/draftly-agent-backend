@@ -325,6 +325,92 @@ async def test_guide_limit_exhaustion_terminal_interrupt_for_side_effecting():
     runtime.interventions.create_pending.assert_awaited_once()
 
 
+async def test_delivery_survives_guide_then_succeeds_on_later_attempt():
+    """Recovery after guided attempts must not exhaust the default budget.
+
+    Mirrors run 6bc88090: create_commit is guided twice for an empty
+    ``message`` before the model returns a valid one on a later attempt.
+    """
+    runtime = build_runtime(
+        role=AgentRole.DELIVERY,
+        interventions=FakeInterventions(),
+    )
+    handler = DraftlySteeringHandler(
+        runtime=runtime, policy=policy_for(AgentRole.DELIVERY)
+    )
+    empty_message = {
+        "name": "create_commit",
+        "owner": "org",
+        "repo": "repo",
+        "branch": "main",
+        "message": "",
+        "files": [{"path": "docs/x.md", "content": "y"}],
+    }
+    first = await handler.steer_before_tool(agent=FakeAgent(), tool_use=empty_message)
+    assert type(first).__name__ == "Guide"
+    second = await handler.steer_before_tool(agent=FakeAgent(), tool_use=empty_message)
+    assert type(second).__name__ == "Guide"
+
+    valid = dict(empty_message, message="docs(scope): summary")
+    third = await handler.steer_before_tool(agent=FakeAgent(), tool_use=valid)
+    assert type(third).__name__ == "Proceed"
+    assert len(runtime.attempts.tool_claims) == 2
+
+
+async def test_nested_input_args_are_flattened_before_policy_checks():
+    """Providers that nest args under ``input`` must still pass text checks.
+
+    Mirrors run 035f5820: the model emitted create_commit with ``message``
+    nested under ``input`` and steering incorrectly claimed it was empty.
+    """
+    runtime = build_runtime(
+        role=AgentRole.DELIVERY,
+        interventions=FakeInterventions(),
+    )
+    handler = DraftlySteeringHandler(
+        runtime=runtime, policy=policy_for(AgentRole.DELIVERY)
+    )
+    nested = {
+        "toolUseId": "call_282d7ce1f4d0451793712fec",
+        "name": "create_commit",
+        "input": {
+            "owner": "org",
+            "repo": "repo",
+            "branch": "main",
+            "message": "docs(scope): summary",
+            "files": [{"path": "docs/x.md", "content": "y"}],
+        },
+    }
+    action = await handler.steer_before_tool(agent=FakeAgent(), tool_use=nested)
+    assert action.__class__.__name__ == "Proceed", (
+        f"nested-input create_commit must pass text-args, got {action.__class__.__name__}"
+    )
+
+
+async def test_nested_input_empty_message_still_guides():
+    """A nested ``input`` carrying an empty message must still be guided."""
+    runtime = build_runtime(
+        role=AgentRole.DELIVERY,
+        interventions=FakeInterventions(),
+    )
+    handler = DraftlySteeringHandler(
+        runtime=runtime, policy=policy_for(AgentRole.DELIVERY)
+    )
+    nested = {
+        "toolUseId": "call_x",
+        "name": "create_commit",
+        "input": {
+            "owner": "org",
+            "repo": "repo",
+            "branch": "main",
+            "message": "",
+            "files": [],
+        },
+    }
+    action = await handler.steer_before_tool(agent=FakeAgent(), tool_use=nested)
+    assert action.__class__.__name__ == "Guide"
+
+
 async def test_guide_limit_exhaustion_fails_open_for_read_only_role():
     runtime = build_runtime(role=AgentRole.RESEARCH)
     runtime.attempts.tool_allow = False

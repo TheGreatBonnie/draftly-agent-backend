@@ -319,9 +319,25 @@ class DraftlySteeringHandler(SteeringHandler):
         ).hexdigest()
         tool_use["metadata"] = meta
 
+    @staticmethod
+    def _flatten_tool_use(tool_use) -> dict:
+        """Merge provider-nested tool args up to the top level.
+
+        Strands providers vary in shape: Bedrock/Anthropic-style tools carry
+        their arguments under an ``input`` key, while flat providers put them
+        at the top level. Policy checks read args at the top level, so promote
+        the nested ``input`` mapping without clobbering reserved keys.
+        """
+        flat = dict(tool_use or {})
+        raw = flat.get("input")
+        if isinstance(raw, dict):
+            for key, value in raw.items():
+                flat.setdefault(key, value)
+        return flat
+
     async def _handle_tool(self, *, agent, tool_use, **kwargs):
         self._stamp_idempotency_key(tool_use)
-        tool_use = dict(tool_use or {})
+        tool_use = self._flatten_tool_use(tool_use)
         tool_name = tool_use.get("name", "")
         tool_use_id = tool_use.get("toolUseId") or ""
         enforcement = self.runtime.config.enforcement_enabled

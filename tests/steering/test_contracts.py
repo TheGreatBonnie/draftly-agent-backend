@@ -60,9 +60,9 @@ def test_steering_limits_rejects_negative_values():
 
 def test_steering_limits_defaults():
     limits = SteeringLimits()
-    assert limits.tool_guides_per_call == 2
+    assert limits.tool_guides_per_call == 4
     assert limits.model_guides_per_turn == 2
-    assert limits.total_guides_per_agent == 5
+    assert limits.total_guides_per_agent == 7
 
 
 def test_agent_identity_requires_run_agent_node_role():

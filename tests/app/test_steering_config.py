@@ -9,9 +9,9 @@ def test_steering_config_defaults():
     assert config.steering_enforcement_enabled is True
     assert config.steering_policy_version == "v1"
     assert config.steering_llm_enabled is True
-    assert config.steering_tool_guides_per_call == 2
+    assert config.steering_tool_guides_per_call == 4
     assert config.steering_model_guides_per_turn == 2
-    assert config.steering_total_guides_per_agent == 5
+    assert config.steering_total_guides_per_agent == 7
     assert config.steering_judge_timeout_seconds == 10.0
     assert config.steering_reason_max_chars == 1_000
     assert config.steering_payload_max_bytes == 4 * 1024
@@ -22,7 +22,7 @@ def test_settings_strands_property_exposes_steering_fields():
     config = settings.strands
     assert isinstance(config, StrandsConfig)
     assert config.steering_policy_version == "v1"
-    assert config.steering_tool_guides_per_call == 2
+    assert config.steering_tool_guides_per_call == 4
 
 
 def test_settings_load_steering_env_overrides(monkeypatch):

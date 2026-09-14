@@ -96,15 +96,15 @@ def test_steering_event_includes_attempt_summary_when_provided() -> None:
     envelope = steering_envelope(
         safe_decision(),
         attempt_summary={
-            "tool_guides_per_call": 2,
+            "tool_guides_per_call": 4,
             "model_guides_per_turn": 2,
-            "total_guides_per_agent": 5,
+            "total_guides_per_agent": 7,
         },
     )
     assert envelope.payload["attempt_summary"] == {
-        "tool_guides_per_call": 2,
+        "tool_guides_per_call": 4,
         "model_guides_per_turn": 2,
-        "total_guides_per_agent": 5,
+        "total_guides_per_agent": 7,
     }
 
 
