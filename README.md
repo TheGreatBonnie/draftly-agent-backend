@@ -148,6 +148,37 @@ The checked-in cases include machine-specific `repo_dir` values and project/orga
 
 For any published run, record the commit, dataset, model, date, case count, repeated-run count, completion results, review checks, and measured runtime/cost. Authly is a fictional evaluation project; its results alone do not establish performance across arbitrary repositories. See [evaluation internals](docs/architecture/evaluation.md) and the [evidence audit](docs/readme-evidence-audit.md).
 
+## Deploy to Amazon Bedrock AgentCore Runtime
+
+Draftly ships a standalone AgentCore Runtime entrypoint (`agentcore_server.py`, port 8080) that drives the composed Strands workflows. It exposes the two mandatory endpoints:
+
+- `GET /ping` — liveness probe.
+- `POST /invocations` — body `{"input": {"event": {...}}}` where `event` is a normalized Draftly workflow event (must include a routable `event_type`). The run id defaults from the `x-agentcore-session-id` header (33+ chars) when `event.event_id` is absent. Returns `{"output": <run state>}`.
+
+Deploy steps:
+
+```bash
+make docker-build-agentcore        # linux/arm64 8080 image
+make docker-push-agentcore         # push to ECR (draftly-agentcore)
+cd infra/aws/terraform && terraform apply
+```
+
+The Terraform module provisions the ECR repo, AgentCore runtime IAM role, CloudWatch log group, and invokes `scripts/deploy_agentcore.py` to create the agent runtime with OTel env wired into the container (`OTEL_SERVICE_NAME`, `OTEL_EXPORTER_OTLP_ENDPOINT`). CloudWatch transaction search is a one-time per-account enable step in the CloudWatch console (Application Signals > Transaction search); for full ADOT auto-instrumentation run the container with `opentelemetry-instrument python agentcore_server.py` and the `aws-opentelemetry-distro` package.
+
+Invoke a deployed runtime:
+
+```python
+import boto3, json
+
+client = boto3.client("bedrock-agentcore", region_name="us-east-1")
+response = client.invoke_agent_runtime(
+    agentRuntimeArn="arn:aws:bedrock-agentcore:us-east-1:<account>:runtime/draftly-agentcore-suffix",
+    runtimeSessionId="a" * 33,  # 33+ characters
+    payload=json.dumps({"input": {"event": {"event_type": "slack_support"}}}).encode(),
+)
+print(json.loads(response["response"].read()))
+```
+
 ## Run Draftly
 
 This is the recommended **native API + native RQ worker + containerized Redis** development topology, derived from the current source. A fresh database setup and integrated delivery were not executed during this documentation review.
