@@ -149,3 +149,15 @@ variable "maintenance_window" {
   type        = string
   default     = "sun:04:00-sun:05:00"
 }
+
+variable "agentcore_enabled" {
+  description = "Provision the AgentCore runtime resources"
+  type        = bool
+  default     = true
+}
+
+variable "agentcore_image_uri" {
+  description = "ECR image URI for the AgentCore runtime container"
+  type        = string
+  default     = ""
+}

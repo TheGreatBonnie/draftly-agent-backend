@@ -133,3 +133,8 @@ output "sns_alerts_topic_arn" {
   description = "SNS topic ARN for alerts"
   value       = aws_sns_topic.alerts.arn
 }
+
+output "agentcore_runtime_arn_file" {
+  description = "Path to the JSON file holding the AgentCore runtime ARN"
+  value       = "${path.module}/agentcore-runtime.json"
+}
