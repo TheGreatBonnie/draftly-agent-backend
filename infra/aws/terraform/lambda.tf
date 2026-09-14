@@ -1,12 +1,12 @@
 resource "aws_lambda_function" "indexing_scheduler" {
-  filename         = "indexing_scheduler.zip"
+  filename         = "../lambdas/indexing_scheduler.zip"
   function_name    = "${var.project_name}-${var.environment}-indexing-scheduler"
   role             = aws_iam_role.lambda.arn
   handler          = "indexing_scheduler.handler"
   runtime          = "python3.11"
   timeout          = 60
   memory_size      = 256
-  source_code_hash = filebase64sha256("indexing_scheduler.zip")
+  source_code_hash = filebase64sha256("../lambdas/indexing_scheduler.zip")
 
   environment {
     variables = {
@@ -44,14 +44,14 @@ resource "aws_lambda_permission" "allow_eventbridge_indexing" {
 }
 
 resource "aws_lambda_function" "evaluation_scheduler" {
-  filename         = "evaluation_scheduler.zip"
+  filename         = "../lambdas/evaluation_scheduler.zip"
   function_name    = "${var.project_name}-${var.environment}-evaluation-scheduler"
   role             = aws_iam_role.lambda.arn
   handler          = "evaluation_scheduler.handler"
   runtime          = "python3.11"
   timeout          = 60
   memory_size      = 256
-  source_code_hash = filebase64sha256("evaluation_scheduler.zip")
+  source_code_hash = filebase64sha256("../lambdas/evaluation_scheduler.zip")
 
   environment {
     variables = {

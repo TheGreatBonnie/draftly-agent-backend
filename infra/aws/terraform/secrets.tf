@@ -1,13 +1,8 @@
 resource "aws_secretsmanager_secret" "database_url" {
   name                    = "${var.secrets_manager_prefix}/database-url"
   description             = "PostgreSQL connection string for Draftly"
-  rotation_lambda_arn     = ""
   kms_key_id              = aws_kms_key.secrets.arn
   recovery_window_in_days = 30
-
-  rotation_rules {
-    automatically_after_days = 90
-  }
 }
 
 resource "aws_secretsmanager_secret_version" "database_url" {

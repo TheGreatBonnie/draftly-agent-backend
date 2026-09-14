@@ -170,11 +170,13 @@ resource "aws_cloudwatch_metric_alarm" "rds_storage_low" {
 
 resource "aws_sns_topic" "alerts" {
   name = "${var.project_name}-${var.environment}-alerts"
+}
 
-  subscription {
-    protocol = "email"
-    endpoint = var.alert_email
-  }
+resource "aws_sns_topic_subscription" "alerts" {
+  count     = length(var.alert_email) > 0 ? 1 : 0
+  topic_arn = aws_sns_topic.alerts.arn
+  protocol  = "email"
+  endpoint  = var.alert_email
 }
 
 resource "aws_sns_topic_policy" "alerts" {

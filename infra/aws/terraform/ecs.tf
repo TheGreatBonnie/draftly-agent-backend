@@ -203,10 +203,6 @@ resource "aws_ecs_service" "workflow_worker" {
     security_groups = [aws_security_group.ecs_tasks.id]
     assign_public_ip = false
   }
-
-  environment = {
-    WORKER_TYPE = "workflow"
-  }
 }
 
 resource "aws_ecs_service" "indexing_worker" {
@@ -221,10 +217,6 @@ resource "aws_ecs_service" "indexing_worker" {
     security_groups = [aws_security_group.ecs_tasks.id]
     assign_public_ip = false
   }
-
-  environment = {
-    WORKER_TYPE = "indexing"
-  }
 }
 
 resource "aws_ecs_service" "evaluation_worker" {
@@ -238,10 +230,6 @@ resource "aws_ecs_service" "evaluation_worker" {
     subnets         = aws_subnet.private[*].id
     security_groups = [aws_security_group.ecs_tasks.id]
     assign_public_ip = false
-  }
-
-  environment = {
-    WORKER_TYPE = "evaluation"
   }
 }
 
