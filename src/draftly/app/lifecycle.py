@@ -231,6 +231,24 @@ class DraftlyApplication:
             workflows=self.workflows,
         )
 
+    async def prepare_workflows(self) -> None:
+        """Compose agents + workflows for runtimes that skip the durable worker.
+
+        Starts infrastructure (database, evaluation) and builds the workflow
+        registry/runner, but does NOT boot RQ queues, the unified worker,
+        Discord gateway, or Slack socket mode. Used by the AgentCore runtime
+        entrypoint, where each session is its own short-lived microVM.
+        """
+        if self._started:
+            return
+        self._started = True
+        try:
+            await self._start_infrastructure()
+            await self._build_agents_and_workflows()
+        except Exception:
+            await self.shutdown()
+            raise
+
     def _build_memory_service(self) -> Any:
         """Build the §8.1 memory service over the persistence repo."""
         try:
