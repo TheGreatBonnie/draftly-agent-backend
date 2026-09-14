@@ -1,7 +1,9 @@
-"""RED: DocChangePlan hardening — truncated JSON and oversized payloads.
+"""DocChangePlan hardening — truncated JSON rejection + metadata-only plans.
 
 Reproduces the `failed to parse tool input json, defaulting to empty dict`
-failure seen when the writer emits a full markdown file inline.
+failure: the writer used to emit full markdown files inline, and a payload over
+the streaming budget was cut mid-string. Content now lives in the draft store;
+the plan is metadata-only and the schema validator rejects inline content.
 """
 
 from __future__ import annotations
@@ -9,6 +11,8 @@ from __future__ import annotations
 import json
 
 import pytest
+
+from draftly.agents.schemas import DocChangePlan
 
 
 def test_truncated_plan_json_is_rejected_not_silenced() -> None:
@@ -31,69 +35,55 @@ def test_empty_files_plan_is_rejected() -> None:
         validate_plan_dict({"repository": "r", "branch": "b", "files": []})
 
 
-def test_oversized_content_is_chunked() -> None:
-    from draftly.agents.documentation.plan_guard import (
-        MAX_FILE_CONTENT_CHARS,
-        chunk_content,
-    )
+def test_file_entry_without_path_is_rejected() -> None:
+    from draftly.agents.documentation.plan_guard import validate_plan_dict
 
-    big = "x" * (MAX_FILE_CONTENT_CHARS + 100)
-    chunks = chunk_content(big)
-    assert len(chunks) >= 2
-    assert "".join(chunks) == big
-    assert all(len(c) <= MAX_FILE_CONTENT_CHARS for c in chunks)
+    with pytest.raises(ValueError, match="path"):
+        validate_plan_dict({"files": [{"action": "update"}]})
 
 
-def test_valid_plan_round_trips_multiline_content() -> None:
+def test_metadata_only_plan_round_trips() -> None:
     from draftly.agents.documentation.plan_guard import parse_plan_json_strict
 
     payload = {
         "repository": "r",
         "branch": "b",
-        "files": [
-            {"path": "docs/a.md", "content": 'line1\nline2 "quoted"\n', "action": "update"}
-        ],
+        "files": [{"path": "docs/a.md", "action": "update"}],
         "commit_message": "docs: update",
         "summary": "s",
     }
     parsed = parse_plan_json_strict(json.dumps(payload))
-    assert parsed["files"][0]["content"] == 'line1\nline2 "quoted"\n'
+    assert parsed["files"][0] == {"path": "docs/a.md", "action": "update"}
 
 
-def test_too_many_files_are_rejected() -> None:
-    """More than MAX_FILES_PER_PLAN files fails validation (prevents the
-    oversized single-plan emission that truncated mid-stream in live runs."""
-    from draftly.agents.documentation.plan_guard import (
-        MAX_FILES_PER_PLAN,
-        validate_plan_dict,
-    )
+def test_multiple_files_are_allowed() -> None:
+    from draftly.agents.documentation.plan_guard import validate_plan_dict
 
     files = [
-        {"path": f"docs/doc-{i}.md", "content": "small", "action": "update"}
-        for i in range(MAX_FILES_PER_PLAN + 1)
+        {"path": f"docs/doc-{i}.md", "action": "update"}
+        for i in range(10)
     ]
-    with pytest.raises(ValueError, match="consolidate|max is"):
-        validate_plan_dict({"files": files})
+    validate_plan_dict({"files": files})
 
 
-def test_total_content_is_capped() -> None:
-    """Aggregate content across files must stay under the streaming budget so
-    the plan never exceeds the writer model's output-token ceiling."""
-    from draftly.agents.documentation.plan_guard import (
-        MAX_FILE_CONTENT_CHARS,
-        MAX_TOTAL_CONTENT_CHARS,
-        validate_plan_dict,
-    )
-
-    # Two files each under the per-file cap but collectively over the total cap.
-    per = MAX_TOTAL_CONTENT_CHARS // 2 + 1
-    assert per <= MAX_FILE_CONTENT_CHARS, "setup should keep each file under per-file cap"
-    with pytest.raises(ValueError, match="total"):
-        validate_plan_dict(
-            {
-                "files": [
-                    {"path": "docs/a.md", "content": "x" * per},
-                    {"path": "docs/b.md", "content": "x" * per},
-                ]
-            }
+def test_schema_rejects_inline_content() -> None:
+    with pytest.raises(ValueError, match="content"):
+        DocChangePlan(
+            repository="r",
+            branch="b",
+            files=[{"path": "docs/a.md", "action": "update", "content": "full markdown"}],
         )
+
+
+def test_schema_accepts_metadata_only() -> None:
+    plan = DocChangePlan(
+        repository="r",
+        branch="b",
+        files=[{"path": "docs/a.md", "action": "update"}],
+    )
+    assert plan.files == [{"path": "docs/a.md", "action": "update"}]
+
+
+def test_schema_rejects_entry_without_path() -> None:
+    with pytest.raises(ValueError, match="path"):
+        DocChangePlan(repository="r", files=[{"action": "update"}])

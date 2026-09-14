@@ -9,11 +9,13 @@ from .health import ProviderHealthRegistry
 from .performance import EMAStatsStore, ModelHealthRegistry
 from .policies import (
     FALLBACKS,
+    KNOWN_PROVIDERS,
     AgentModelPolicy,
     validate_fallback_chain,
 )
 from .providers import (
     BedrockProvider,
+    MantleOpenAIProvider,
     MantleProvider,
     NvidiaProvider,
     OpenRouterProvider,
@@ -24,6 +26,33 @@ from .registry import ModelRegistry
 from .router import ModelRouter
 
 logger = structlog.get_logger(__name__)
+
+#: Runtime provider gate — comma-separated provider names. Unset/empty => all.
+ENABLED_PROVIDERS_ENV = "DRAFTLY_ENABLED_PROVIDERS"
+
+
+def _enabled_providers_from_env() -> set[str] | None:
+    """Parse DRAFTLY_ENABLED_PROVIDERS into a provider set, warning on unknowns."""
+
+    raw = os.getenv(ENABLED_PROVIDERS_ENV)
+
+    if not raw:
+        return None
+
+    providers = {p.strip().lower() for p in raw.split(",") if p.strip()}
+
+    if not providers:
+        return None
+
+    unknown = providers - set(KNOWN_PROVIDERS)
+
+    if unknown:
+        logger.warning(
+            "enabled_providers_unknown providers=%s ignored",
+            sorted(unknown),
+        )
+
+    return providers
 
 
 def _resolve_model_id(
@@ -58,9 +87,13 @@ def build_model_router(
     *,
     stats_store: EMAStatsStore | None = None,
     model_health: ModelHealthRegistry | None = None,
+    enabled_providers: set[str] | None = None,
 ) -> ModelRouter:
 
     registry = ModelRegistry()
+
+    if enabled_providers is None:
+        enabled_providers = _enabled_providers_from_env()
 
     health = ProviderHealthRegistry()
 
@@ -130,6 +163,17 @@ def build_model_router(
                 api_key=os.getenv("MANTLE_API_KEY"),
                 base_url=os.getenv("MANTLE_ENDPOINT_URL"),
                 priority=3,  # Highest priority for Mantle models
+            )
+        )
+    )
+
+    registry.register_provider(
+        MantleOpenAIProvider(
+            ProviderConfig(
+                name="mantle-openai",
+                api_key=os.getenv("MANTLE_API_KEY"),
+                base_url=os.getenv("MANTLE_OPENAI_ENDPOINT_URL"),
+                priority=3,  # Same account, translated frontend (grok/gemma)
             )
         )
     )
@@ -616,11 +660,64 @@ def build_model_router(
         )
     )
 
+    registry.register_model(
+        ModelConfig(
+            name="reasoning-mantle-grok-4-3",
+            provider="mantle-openai",
+            model_id=_resolve_model_id(
+                "MANTLE_GROK_4_3_MODEL",
+                default="xai.grok-4.3",
+            ),
+            capabilities=(
+                "reasoning",
+                "tool_calling",
+                "structured_output",
+            ),
+            priority=3,
+
+        )
+    )
+
+    registry.register_model(
+        ModelConfig(
+            name="fast-mantle-qwen3-coder-next",
+            provider="mantle",
+            model_id=_resolve_model_id(
+                "MANTLE_QWEN3_CODER_NEXT_MODEL",
+                default="qwen.qwen3-coder-next",
+            ),
+            capabilities=(
+                "tool_calling",
+            ),
+            priority=3,
+
+        )
+    )
+
+    registry.register_model(
+        ModelConfig(
+            name="reasoning-mantle-gemma-4-31b",
+            provider="mantle-openai",
+            model_id=_resolve_model_id(
+                "MANTLE_GEMMA_4_31B_MODEL",
+                default="google.gemma-4-31b",
+            ),
+            capabilities=(
+                "reasoning",
+                "tool_calling",
+                "structured_output",
+            ),
+            priority=3,
+
+        )
+    )
+
     return ModelRouter(
         registry=registry,
         health=health,
         stats_store=stats_store or EMAStatsStore(),
         model_health=model_health or ModelHealthRegistry(),
+        enabled_providers=enabled_providers,
     )
 
 
@@ -674,6 +771,7 @@ PROVIDER_CLASSES = {
     "orcarouter": OrcaRouterProvider,
     "bedrock": BedrockProvider,
     "mantle": MantleProvider,
+    "mantle-openai": MantleOpenAIProvider,
 }
 
 def build_agent_policies() -> dict[str, AgentModelPolicy]:

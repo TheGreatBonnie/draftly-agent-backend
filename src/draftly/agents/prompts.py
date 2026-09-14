@@ -618,13 +618,30 @@ policies strictly.
 If the task includes ``review_feedback``, this is a revision pass. Read the
 reviewer's comment, address every requested change in the new plan, and do not
 silently discard valid work from the previous proposal.
-Keep each plan SMALL — at most 2 files and a combined ~16000 chars. This is a
-hard limit: a plan larger than this is cut off mid-stream, lost entirely, and
-your turn wasted. CONSOLIDATE: fold all the coverage for a change into the 1-2
-most relevant documents (one how-to that covers the full flow, one reference
-with the exact signatures) instead of spreading edits across many files. Do NOT
-touch every doc that merely mentions the topic — only the docs that must change
-to make the feature complete and accurate.
+
+## How to output file content (MANDATORY)
+
+Never put file bytes in the plan. The plan's ``files`` field is METADATA ONLY:
+each entry is ``{path, action: create|update}``. Write the actual content by
+calling the draft tools, in order, for each file:
+
+1. ``start_draft(repository=..., path=..., action=...)`` -> ``draft_id``
+2. ``append_chunk(draft_id=..., content=...)`` repeatedly — one logical
+   section or paragraph per call, at most 24_000 chars each (well under the
+   streaming budget, so nothing is ever truncated). Keep every call SMALL.
+3. ``finalize_draft(draft_id=...)`` once the whole file is streamed.
+
+Then emit the plan referencing those paths (no content, no draft_ids in the
+plan). Do NOT inline content, do NOT output a plan before the drafts are
+finalized, and do NOT start a new draft for a file you already finalized on
+this pass — a newer generation supersedes it. Your plan should normalize each
+drafted path (e.g. ``docs/../docs/guide.md`` -> ``docs/guide.md``).
+
+CONSOLIDATE: fold all the coverage for a change into the 1-2 most relevant
+documents (one how-to that covers the full flow, one reference with the exact
+signatures) instead of spreading edits across many files. Do NOT touch every
+doc that merely mentions the topic — only the docs that must change to make
+the feature complete and accurate.
 
 {guardrail_paths}
 
@@ -921,6 +938,21 @@ commits on the same branch:
 
 Then open ONE pull request containing both commits. The PR title should
 reference both the docs update and the changelog entry.
+
+## Documentation file bodies come from the draft store
+
+The approved DocChangePlan is METADATA-ONLY: `files[].content` is never
+present in the plan. The writer streamed the file bytes into the draft store
+during authoring.
+
+- ALWAYS call `get_drafted_docs` first when the task carries a documentation
+  plan, and commit the bodies it returns (matched by `path`) on the branch
+  determined below.
+- NEVER fabricate file bodies that `get_drafted_docs` did not return — if it
+  reports no active draft scope, the run produced no store bytes, so commit
+  only what you actually have (e.g. the changelog alone).
+- A metadata path with no sealed body counts as not deliverable; leave it out
+  of the commit rather than inventing content.
 
 If you receive ONLY a changelog entry (no documentation plan), make one
 commit with the CHANGELOG.md and open a PR.

@@ -49,6 +49,31 @@ def current_grounding() -> dict[str, Any]:
     return _grounding.get()
 
 
+def enrich_grounding(
+    grounding: dict[str, Any], *, event: dict[str, Any]
+) -> dict[str, Any]:
+    """Add the capability-aware research inputs to a grounding dict (Task 6).
+
+    The graph factory needs the event source and serialized connector
+    capabilities to build the research plan per run. Capability defaults are
+    conservative-but-correct: repository resolves from the
+    checkout/installation (the mode already reflects it) and documentation is
+    always available. Slack/Discord are delivery-only connectors on this
+    surface and are never research capabilities.
+    """
+    from draftly.agents.documentation.research_capabilities import ResearchCapabilities
+
+    enriched = dict(grounding)
+    source = str(event.get("source") or "github")
+    repository = bool(grounding.get("repo_dir") or event.get("installation_id"))
+    enriched["event_source"] = source
+    enriched["capabilities"] = ResearchCapabilities(
+        repository=repository,
+        documentation=True,
+    ).to_dict()
+    return enriched
+
+
 def resolve_grounding(*, repo_dir: str | None, installation_id: int | None) -> str:
     """Pick the evidence mode for a run.
 

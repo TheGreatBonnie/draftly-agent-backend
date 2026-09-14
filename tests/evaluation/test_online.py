@@ -268,7 +268,10 @@ def test_extract_authored_content_reads_writer_plans() -> None:
 
 
 def test_extract_authored_content_reads_structured_output() -> None:
-    """Writer DocChangePlan is a validated structured_output, not raw message text."""
+    """Writer DocChangePlan is a validated structured_output, not raw message
+    text — and it is METADATA-ONLY now: bytes never ride inline in the plan
+    JSON, so extraction yields nothing for the plan (the store serves bodies).
+    The inline-content rejection itself lives in the plan guard/schema tests."""
     from draftly.agents.schemas import DocChangePlan
 
     plan = DocChangePlan(
@@ -277,7 +280,6 @@ def test_extract_authored_content_reads_structured_output() -> None:
         files=[
             {
                 "path": "docs/how-to/oauth-authorization-url.md",
-                "content": "PKCE is required.",
                 "action": "update",
             }
         ],
@@ -291,7 +293,7 @@ def test_extract_authored_content_reads_structured_output() -> None:
         ]
     )
 
-    assert extract_authored_content(graph) == "PKCE is required."
+    assert extract_authored_content(graph) == ""
 
 
 def test_extract_authored_content_includes_changelog() -> None:
@@ -299,7 +301,9 @@ def test_extract_authored_content_includes_changelog() -> None:
     ChangelogEntry.raw_markdown must be part of the scored output so
     expected_contains/correctness see the 'Changed (Breaking)'/'Added' artifacts
     (the release run failed expected_contains at 33% because only the migration
-    docs were extracted)."""
+    docs were extracted). The DocChangePlan is metadata-only now: its doc body
+    is store-side, so extraction yields the changelog markdown and no store
+    bytes."""
     from draftly.agents.schemas import ChangelogEntry, DocChangePlan
 
     plan = DocChangePlan(
@@ -308,7 +312,6 @@ def test_extract_authored_content_includes_changelog() -> None:
         files=[
             {
                 "path": "docs/how-to/rbac.md",
-                "content": "RBAC guide content.",
                 "action": "create",
             }
         ],
@@ -336,7 +339,7 @@ def test_extract_authored_content_includes_changelog() -> None:
     )
 
     text = extract_authored_content(graph)
-    assert "RBAC guide content." in text
+    assert "RBAC guide content." not in text
     assert "Changed (Breaking)" in text
     assert "### Added" in text
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib
 from collections.abc import Callable
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -71,11 +72,7 @@ def stub_model() -> StubModel:
                 "repository": "acme/api",
                 "branch": "docs/update-widgets",
                 "files": [
-                    {
-                        "path": "docs/widgets.md",
-                        "content": "widgets docs/widgets.md " * 40,
-                        "action": "update",
-                    }
+                    {"path": "docs/widgets.md", "action": "update"}
                 ],
             },
             AnswerDraft: {
@@ -146,6 +143,45 @@ def comment_factory():
 @pytest.fixture
 def tmp_sessions(tmp_path):
     return str(tmp_path / "sessions")
+
+
+class FakeDrafts:
+    """In-memory sealed draft store for graph e2e runs (bytes are never inline)."""
+
+    def __init__(self, revisions: list[dict] | None = None) -> None:
+        self.revisions = revisions or []
+        self.calls: list[str] = []
+
+    async def get_latest(self, *, run_id: str) -> list:
+        self.calls.append(run_id)
+        return [
+            SimpleNamespace(path=r["path"], action=r["action"], content=r["content"])
+            for r in self.revisions
+        ]
+
+    async def next_generation(self, *, run_id: str) -> int:
+        return 1
+
+
+@pytest.fixture
+def sealed_drafts():
+    """A draft store already holding one sealed `docs/widgets.md` revision, so
+    the pipeline's writer *did* persist its bytes before delivery."""
+    return FakeDrafts(
+        [
+            {
+                "path": "docs/widgets.md",
+                "action": "update",
+                "content": "# Widgets\n\nwidgets docs/widgets.md " * 20,
+            }
+        ]
+    )
+
+
+@pytest.fixture
+def empty_drafts():
+    """A draft store with no sealed generation (writer never persisted)."""
+    return FakeDrafts([])
 
 
 class _GraphBuilderCapture:

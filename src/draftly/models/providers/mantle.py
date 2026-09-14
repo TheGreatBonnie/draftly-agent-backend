@@ -1,4 +1,4 @@
-"""Amazon Bedrock Mantle provider (OpenAI-compatible endpoint)."""
+"""Amazon Bedrock Mantle providers (OpenAI-compatible endpoint)."""
 
 from __future__ import annotations
 
@@ -12,9 +12,14 @@ from .base import ModelProvider
 
 
 class MantleProvider(ModelProvider):
-    """Provider for Amazon Bedrock Mantle (OpenAI-compatible endpoint)."""
+    """Provider for Amazon Bedrock Mantle's in-region native route.
 
-    DEFAULT_BASE_URL = "https://bedrock-mantle.us-east-1.api.aws/openai/v1"
+    Reaches the native model catalog served at ``.../v1`` (the idempotency
+    endpoint documented for the region). The OpenAI-translated frontend
+    (grok/gemma) is reached through ``MantleOpenAIProvider`` instead.
+    """
+
+    DEFAULT_BASE_URL = "https://bedrock-mantle.us-east-1.api.aws/v1"
 
     @property
     def name(self) -> str:
@@ -52,3 +57,21 @@ class MantleProvider(ModelProvider):
             "Mantle embeddings not supported directly. "
             "Use OpenAI-compatible embedding providers (OpenRouter, Requesty, etc.)."
         )
+
+
+class MantleOpenAIProvider(MantleProvider):
+    """Provider for the OpenAI-translated Mantle frontend route.
+
+    The Bedrock Mantle gateway exposes disjoint model catalogs on two of
+    its routes: the native in-region route (``.../v1``) serves the eight
+    "native" model IDs while the OpenAI-translated frontend
+    (``.../openai/v1``) only serves ``xai.grok-4.3`` and
+    ``google.gemma-4-31b``. This provider pins the translated frontend so
+    those models reach the route that accepts them.
+    """
+
+    DEFAULT_BASE_URL = "https://bedrock-mantle.us-east-1.api.aws/openai/v1"
+
+    @property
+    def name(self) -> str:
+        return "mantle-openai"
