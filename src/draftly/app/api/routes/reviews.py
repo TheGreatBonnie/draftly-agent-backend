@@ -94,6 +94,23 @@ def _display_files(document: dict[str, Any]) -> list[dict[str, Any]]:
     return []
 
 
+def _display_changelog(changelog: Any) -> dict[str, Any] | None:
+    if not isinstance(changelog, dict):
+        return None
+    raw = changelog.get("raw_markdown")
+    if not isinstance(raw, str):
+        return None
+    entries = changelog.get("entries")
+    if not isinstance(entries, list):
+        entries = []
+    return {
+        "version": str(changelog.get("version") or ""),
+        "date": str(changelog.get("date") or ""),
+        "entries": entries,
+        "raw_markdown": raw,
+    }
+
+
 def build_review_display(record: ReviewRecord, raw: dict[str, Any]) -> dict[str, Any]:
     """Build the nullable-safe read model consumed by review pages."""
     detail = _dict(record.detail)
@@ -156,6 +173,7 @@ def build_review_display(record: ReviewRecord, raw: dict[str, Any]) -> dict[str,
             "count": count,
         },
         "evidence": detail.get("evidence") if isinstance(detail.get("evidence"), list) else [],
+        "changelog": _display_changelog(detail.get("changelog")),
         "github_url": github_url,
         "updated_at": updated_at,
     }

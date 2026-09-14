@@ -98,3 +98,39 @@ async def test_store_interrupt_action_description_never_leaks_run_id() -> None:
     assert params[5] == "a documentation review is pending"
     detail = json.loads(params[-1])
     assert detail["summary"] == ""
+
+
+async def test_store_interrupt_persists_changelog() -> None:
+    """The gate's changelog payload must survive into the persisted detail
+    JSONB so the review detail page can render the proposed entry."""
+    client = FakeClient()
+    repo = ReviewsRepository(database=client)
+
+    await repo.store_interrupt(
+        run_id="ev-4",
+        interrupt_id="i-4",
+        reason={
+            "run_id": "ev-4",
+            "summary": "Release v1.1.0",
+            "evaluation": {},
+            "evidence_count": 2,
+            "document": {
+                "repository": "acme/api",
+                "files": [{"path": "docs/whats-new.md", "action": "create"}],
+                "commit_message": "docs: what's new in v1.1.0",
+            },
+            "changelog": {
+                "version": "v1.1.0",
+                "date": "2026-09-04",
+                "entries": [{"category": "Added", "text": "OAuth login"}],
+                "raw_markdown": "## [v1.1.0] - 2026-09-04\n### Added\n- OAuth login",
+            },
+        },
+        workflow_type="pull_request",
+        org_id="o-1",
+    )
+
+    _, params = client.executed[0]
+    detail = json.loads(params[-1])
+    assert detail["changelog"]["raw_markdown"].startswith("## [v1.1.0]")
+    assert detail["changelog"]["entries"] == [{"category": "Added", "text": "OAuth login"}]
