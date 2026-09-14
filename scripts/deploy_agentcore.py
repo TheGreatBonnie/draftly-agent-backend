@@ -24,6 +24,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--network-mode", choices=["PUBLIC", "VPC"], default="PUBLIC")
     parser.add_argument("--security-group-ids", nargs="*", default=[])
     parser.add_argument("--subnet-ids", nargs="*", default=[])
+    parser.add_argument("--env", action="append", default=[], help="KEY=VALUE env for the runtime")
     parser.add_argument("--out", help="path to write JSON with the runtime ARN")
     return parser.parse_args(argv)
 
@@ -38,14 +39,20 @@ def deploy(args: argparse.Namespace) -> dict[str, Any]:
             "securityGroups": args.security_group_ids,
         }
 
-    response = client.create_agent_runtime(
-        agentRuntimeName=args.runtime_name,
-        agentRuntimeArtifact={
+    create_kwargs: dict[str, Any] = {
+        "agentRuntimeName": args.runtime_name,
+        "agentRuntimeArtifact": {
             "containerConfiguration": {"containerUri": args.container_uri}
         },
-        networkConfiguration=network_configuration,
-        roleArn=args.role_arn,
-    )
+        "networkConfiguration": network_configuration,
+        "roleArn": args.role_arn,
+    }
+    if args.env:
+        create_kwargs["environmentVariables"] = {
+            item.split("=", 1)[0]: item.split("=", 1)[1] for item in args.env
+        }
+
+    response = client.create_agent_runtime(**create_kwargs)
 
     result = {
         "agentRuntimeArn": response["agentRuntimeArn"],
