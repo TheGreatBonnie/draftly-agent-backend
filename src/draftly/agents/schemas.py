@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from draftly.agents.taxonomy import (
     CHANGE_TYPES,
@@ -63,16 +63,45 @@ class ImpactAnalysis(BaseModel):
 
 
 class DocChangePlan(BaseModel):
-    """A concrete documentation change plan produced by a writer."""
+    """A concrete documentation change plan produced by a writer.
+
+    Metadata-only: ``files`` carries ``[{path, action: create|update}]`` and
+    NEVER the file bytes. Content is written by the writer's draft tools into
+    the draft store (``draftly/tools/documentation/drafts.py``) and read back
+    from ``draft_revisions``/``draft_chunks`` by the evaluator, review gate,
+    and delivery agent. Inlining content here is what overflowed the streaming
+    parser and produced `failed to parse tool input json`; the validator below
+    makes that impossible at the schema boundary.
+    """
 
     repository: str = ""
     branch: str = ""
     files: list[dict[str, Any]] = Field(
         min_length=1,
-        description="[{path, content, action: create|update}] - at least one file is required",
+        description="metadata only; stream content via the draft tools",
     )
     commit_message: str = ""
     summary: str = ""
+
+    @model_validator(mode="after")
+    def _reject_inline_content(self) -> DocChangePlan:
+        for entry in self.files:
+            if not isinstance(entry, dict):
+                raise ValueError(
+                    f"DocChangePlan file entry must be an object {{path, action}}, "
+                    f"got {type(entry).__name__}"
+                )
+            path = entry.get("path")
+            if not path or not str(path).strip():
+                raise ValueError("DocChangePlan file entry requires a non-empty 'path'")
+            if "content" in entry:
+                raise ValueError(
+                    "DocChangePlan files must not carry inline content: "
+                    "stream file bytes with start_draft/append_chunk/finalize_draft "
+                    "into the draft store instead (content lives in draft_chunks, "
+                    "never in the plan JSON)"
+                )
+        return self
 
 
 class ChangelogEntry(BaseModel):

@@ -145,7 +145,13 @@ async def test_interrupt_reason_carries_document_content(
     model, tools, tmp_sessions, comment_factory
 ) -> None:
     """The gate must attach the proposed document (writer output) to the
-    interrupt reason so reviewers can see what they are approving."""
+    interrupt reason so reviewers can see what they are approving.
+
+    The plan is metadata-only now (``files[]`` carry path/action; bytes live
+    in the draft store). The runner hydrates ``content`` from the store via
+    ``_enrich_review_reason`` before persistence — the graph gate itself stays
+    sync and structure-preserving.
+    """
     factory, _ = comment_factory
     _, result = await _run_to_interrupt(
         model, tools, tmp_sessions, "gate-5", comment_factory=factory
@@ -160,7 +166,11 @@ async def test_interrupt_reason_carries_document_content(
     files = document.get("files")
     assert isinstance(files, list) and files, "document must carry the planned files"
     assert files[0]["path"] == "docs/widgets.md"
-    assert files[0]["content"], "file content must not be empty"
+    assert files[0]["action"] == "update"
+    assert "content" not in files[0], (
+        "bytes must not ride inline in the plan; the runner hydrates them "
+        "from the draft store at persistence time"
+    )
 
 
 def test_interrupt_reason_includes_changelog() -> None:

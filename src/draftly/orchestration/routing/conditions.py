@@ -180,8 +180,21 @@ def delivery_content_ready(state: GraphState) -> bool:
     point ``_build_node_input`` folds those completed results into the deliver
     prompt, and the existing ``changelog_evaluate → deliver`` edge actually
     schedules the node.
+
+    Draft-store gate: ``update``/``create`` stream file bytes through the
+    draft store (never inline JSON), so when a docs writer completed the
+    evaluator must have confirmed a sealed generation (``has_drafts``) before
+    delivery reads the bodies. The ``answer`` path and other surfaces carry
+    inline content and are unaffected; offline fixtures (``drafts_repo=None``)
+    omit ``has_drafts`` and behave as before.
     """
-    return changelog_eval_passed(state)
+    if not changelog_eval_passed(state):
+        return False
+    if "update" in state.results or "create" in state.results:
+        evaluation = safe_node_data(state, "evaluate")
+        if isinstance(evaluation, dict) and evaluation.get("has_drafts") is False:
+            return False
+    return True
 
 
 def pull_request_opened(state: GraphState) -> bool:

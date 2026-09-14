@@ -1,44 +1,26 @@
 """DocChangePlan hardening (fix for truncated tool-input JSON).
 
-The writer previously emitted full markdown files inline in one JSON tool
-call. When the payload exceeded the streaming parser budget it was cut
-mid-string, producing `failed to parse tool input json, defaulting to
-empty dict` and an empty plan downstream.
+The writer emitted full markdown files inline in one JSON tool call. When the
+payload exceeded the streaming parser budget it was cut mid-string, producing
+`failed to parse tool input json, defaulting to empty dict` and an empty plan
+downstream. The draft store (``draftly/tools/documentation/drafts.py``) is the
+fix: file bytes stream through ``append_chunk`` and never appear in the plan.
 
-Guards:
-- `MAX_FILE_CONTENT_CHARS` / `MAX_FILES_PER_PLAN`: keep each plan small;
-  split larger edits across multiple plans.
+Plan guards:
 - `parse_plan_json_strict`: raise `ValueError` on truncated/invalid JSON
   instead of silently returning `{}`.
-- `validate_plan_dict`: reject empty `files` with a clear message.
-- `chunk_content`: split oversized content on safe boundaries.
+- `validate_plan_dict`: reject empty `files` with a clear message and require
+  each entry to name a path (metadata-only: no content caps — content no
+  longer lives in the plan at all).
+
+The old per-file/total content caps and ``chunk_content`` are gone: sizing is
+enforced at ``append_chunk`` time against ``MAX_CHUNK_BYTES`` in draft_store.
 """
 
 from __future__ import annotations
 
 import json
 from typing import Any
-
-MAX_FILE_CONTENT_CHARS = 12_000
-MAX_FILES_PER_PLAN = 2
-MAX_TOTAL_CONTENT_CHARS = 16_000
-
-
-def chunk_content(content: str, limit: int = MAX_FILE_CONTENT_CHARS) -> list[str]:
-    """Split content into <=limit chunks, preferring newline boundaries."""
-    if len(content) <= limit:
-        return [content]
-    chunks: list[str] = []
-    start = 0
-    while start < len(content):
-        end = min(start + limit, len(content))
-        if end < len(content):
-            boundary = content.rfind("\n", start, end)
-            if boundary > start:
-                end = boundary + 1
-        chunks.append(content[start:end])
-        start = end
-    return chunks
 
 
 def validate_plan_dict(plan: dict[str, Any]) -> dict[str, Any]:
@@ -47,29 +29,15 @@ def validate_plan_dict(plan: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(files, list) or len(files) == 0:
         raise ValueError(
             "DocChangePlan requires at least one file "
-            "(files: [{path, content, action: create|update}]); "
-            "got empty/missing files — accumulate edits into 1-2 files "
-            f"(<= {MAX_FILES_PER_PLAN} files, <= {MAX_TOTAL_CONTENT_CHARS} total chars)"
+            "(files: [{path, action: create|update}]); "
+            "got empty/missing files — start at least one draft with start_draft()"
         )
-    if len(files) > MAX_FILES_PER_PLAN:
-        raise ValueError(
-            f"DocChangePlan has {len(files)} files, max is {MAX_FILES_PER_PLAN}; "
-            "consolidate the edits into fewer, larger documents"
-        )
-    total = 0
     for entry in files:
-        content = entry.get("content", "") if isinstance(entry, dict) else ""
-        total += len(content)
-        if len(content) > MAX_FILE_CONTENT_CHARS:
+        if not isinstance(entry, dict) or not entry.get("path"):
             raise ValueError(
-                f"File {entry.get('path', '?')!r} content is {len(content)} chars "
-                f"(max {MAX_FILE_CONTENT_CHARS}); split with chunk_content()"
+                "DocChangePlan file entries must be {path, action: create|update} "
+                "objects with a non-empty 'path'"
             )
-    if total > MAX_TOTAL_CONTENT_CHARS:
-        raise ValueError(
-            f"DocChangePlan total content is {total} chars "
-            f"(max {MAX_TOTAL_CONTENT_CHARS}); trim the plan so it streams cleanly"
-        )
     return plan
 
 

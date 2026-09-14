@@ -8,11 +8,14 @@ __all__ = [
     "validate_fallback_chain",
 ]
 
-KNOWN_PROVIDERS = frozenset({"openrouter", "nvidia", "requesty", "orcarouter", "bedrock", "mantle"})
+KNOWN_PROVIDERS = frozenset(
+    {"openrouter", "nvidia", "requesty", "orcarouter", "bedrock", "mantle", "mantle-openai"}
+)
 
 FALLBACKS: dict[str, tuple[str, ...]] = {
     "reasoning": (
         "mantle",
+        "mantle-openai",
         "bedrock",
         "nvidia",
         "requesty",
@@ -21,6 +24,7 @@ FALLBACKS: dict[str, tuple[str, ...]] = {
     ),
     "research": (
         "mantle",
+        "mantle-openai",
         "bedrock",
         "nvidia",
         "requesty",
@@ -29,6 +33,7 @@ FALLBACKS: dict[str, tuple[str, ...]] = {
     ),
     "fast": (
         "mantle",
+        "mantle-openai",
         "bedrock",
         "nvidia",
         "requesty",
@@ -37,6 +42,7 @@ FALLBACKS: dict[str, tuple[str, ...]] = {
     ),
     "verification": (
         "mantle",
+        "mantle-openai",
         "bedrock",
         "nvidia",
         "requesty",
@@ -45,6 +51,7 @@ FALLBACKS: dict[str, tuple[str, ...]] = {
     ),
     "evaluation": (
         "mantle",
+        "mantle-openai",
         "bedrock",
         "nvidia",
         "requesty",

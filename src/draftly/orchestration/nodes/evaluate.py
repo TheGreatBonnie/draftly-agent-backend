@@ -208,6 +208,7 @@ class EvaluatorNode(MultiAgentBase):
         max_iterations: int = 3,
         *,
         rubric_grader: Any,
+        drafts_repo: Any = None,
     ) -> None:
         if rubric_grader is None:
             raise TypeError(
@@ -219,6 +220,31 @@ class EvaluatorNode(MultiAgentBase):
         self.iteration = 0
         self.max_iterations = max_iterations
         self.rubric_grader = rubric_grader
+        #: When set, the scored draft is assembled from the latest sealed
+        #: generation of the draft store instead of inline ``files[].content``
+        #: (whose bytes never enter tool-output JSON anymore). None keeps the
+        #: legacy inline path so offline fixtures stay repo-free.
+        self.drafts_repo = drafts_repo
+
+    async def _store_draft(self, run_id: str | None) -> tuple[str, bool]:
+        """Assembled content of the latest sealed generation for ``run_id``.
+
+        Returns ``(content, has_files)``; ``has_files`` is True when at least
+        one sealed revision exists. Content joins revisions in path order.
+        Store failures degrade to empty (the waiver paths below still gate on
+        evidence, not on the draft text).
+        """
+        if self.drafts_repo is None or not run_id:
+            return "", False
+        try:
+            revisions = await self.drafts_repo.get_latest(run_id=run_id)
+        except Exception:
+            logger.warning("drafts_get_latest_failed", run_id=run_id, exc_info=True)
+            return "", False
+        if not revisions:
+            return "", False
+        parts = [f"{rev.path}\n{rev.content}" for rev in revisions]
+        return "\n\n".join(parts), True
 
     async def invoke_async(
         self,
@@ -239,12 +265,27 @@ class EvaluatorNode(MultiAgentBase):
 
         draft = ""
         files_present = False
-        for dep_id in ("answer", "update", "create"):
-            if dep_id in deps:
-                payload = deps[dep_id]
-                if isinstance(payload, dict) and payload.get("files"):
-                    files_present = True
-                draft = _draft_text(payload)
+        has_drafts = False
+        if self.drafts_repo is not None:
+            store_draft, has_drafts = await self._store_draft(
+                (invocation_state or {}).get("run_id")
+            )
+            files_present = has_drafts
+            # Plans carry only metadata now; their prose (summary/commit
+            # message) still cite source ids, so score it on top of the
+            # assembled store content.
+            for dep_id in ("answer", "update", "create"):
+                if dep_id in deps:
+                    draft = _draft_text(deps[dep_id])
+            if has_drafts:
+                draft = f"{store_draft}\n\n{draft}" if draft.strip() else store_draft
+        else:
+            for dep_id in ("answer", "update", "create"):
+                if dep_id in deps:
+                    payload = deps[dep_id]
+                    if isinstance(payload, dict) and payload.get("files"):
+                        files_present = True
+                    draft = _draft_text(payload)
 
         evidence = []
         for evidence_source in ("context", "research"):
@@ -323,23 +364,28 @@ class EvaluatorNode(MultiAgentBase):
             escalated=escalated,
             evidence_count=len(evidence),
             files_present=files_present,
+            has_drafts=has_drafts,
             draft_chars=len(draft),
             reasons=reasons,
         )
+
+        result = {
+            "passed": passed,
+            "score": score,
+            "reasons": reasons,
+            "iteration": self.iteration,
+            "escalated": escalated,
+        }
+        if self.drafts_repo is not None:
+            # Delivery gate reads this (delivery_content_ready). Additive only:
+            # legacy fixtures (drafts_repo=None) keep the exact key set.
+            result["has_drafts"] = has_drafts
 
         return MultiAgentResult(
             status=Status.COMPLETED,
             results={
                 self.name: NodeResult(
-                    result=agent_result(
-                        {
-                            "passed": passed,
-                            "score": score,
-                            "reasons": reasons,
-                            "iteration": self.iteration,
-                            "escalated": escalated,
-                        }
-                    )
+                    result=agent_result(result)
                 )
             },
         )

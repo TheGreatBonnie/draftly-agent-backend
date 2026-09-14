@@ -9,6 +9,7 @@ from tests.graph.conftest import PR_TASK, RELEASE_TASK, stub_model
 from tests.stub_model import StubModel
 
 PLAN_CONTENT_MARKER = "widgets docs/widgets.md widgets"
+PLAN_PATH_MARKER = "docs/widgets.md"
 CHANGELOG_MARKER = "## [v2.0.0] - 2026-09-04"
 
 
@@ -227,6 +228,129 @@ def test_writer_tools_exclude_mutation_and_delivery(tools) -> None:
     )
     # it still keeps read + git-inspect tools it needs to author accurately
     assert {"read_file", "git_diff", "git_status"} <= names
+
+
+def test_writer_draft_tools_appended_only_to_doc_authoring_nodes(
+    model, tools, tmp_sessions
+) -> None:
+    """The three draft persistence tools (start_draft/append_chunk/
+    finalize_draft) are appended ONLY to the docs writer nodes (update/create);
+    the answer/changelog writers and the deliver agent must not author into the
+    store."""
+    graph = build_graph_for_run(
+        "draft-tools-1",
+        surface="pull_request",
+        tools_registry=tools,
+        model=model,
+        storage_dir=tmp_sessions,
+    )
+    draft_tools = {"start_draft", "append_chunk", "finalize_draft"}
+    for node_id in ("update", "create"):
+        assert draft_tools <= set(graph.nodes[node_id].executor.tool_names), (
+            f"{node_id} writer missing draft tools"
+        )
+    for node_id in ("answer", "changelog", "deliver"):
+        assert not draft_tools & set(graph.nodes[node_id].executor.tool_names), (
+            f"{node_id} must not get draft tools"
+        )
+
+
+def test_deliver_agent_gets_drafted_docs_read_tool(model, tools, tmp_sessions) -> None:
+    """The delivery (github) agent must be able to fetch store bodies via the
+    read-only get_drafted_docs tool; writer nodes never see it (they author
+    into the store, they don't read it)."""
+    graph = build_graph_for_run(
+        "deliver-tools-1",
+        surface="pull_request",
+        tools_registry=tools,
+        model=model,
+        storage_dir=tmp_sessions,
+    )
+    deliver_names = set(graph.nodes["deliver"].executor.tool_names)
+    assert "get_drafted_docs" in deliver_names
+    for node_id in ("update", "create", "answer"):
+        assert "get_drafted_docs" not in set(graph.nodes[node_id].executor.tool_names)
+
+
+def test_draft_generation_hook_registered_as_provider(
+    model, tools, tmp_sessions, monkeypatch
+) -> None:
+    """The drafts-seeding NextGenerationHook is wired into the docs graph build,
+    so the runner's seed flows into scope for every iterative writer pass."""
+    import draftly.orchestration.graphs.documentation_graph as docs_graph
+
+    constructed: list = []
+    real_hook = docs_graph.NextGenerationHook
+
+    class _SpyHook(real_hook):
+        def __init__(self, *args, **kwargs):  # noqa: D401
+            constructed.append(self)
+            super().__init__(*args, **kwargs)
+
+    monkeypatch.setattr(docs_graph, "NextGenerationHook", _SpyHook)
+    build_graph_for_run(
+        "hook-wired-1",
+        surface="pull_request",
+        tools_registry=tools,
+        model=model,
+        storage_dir=tmp_sessions,
+    )
+    assert constructed, "NextGenerationHook must be instantiated by the graph build"
+
+
+async def test_deliver_gate_blocks_delivery_without_sealed_drafts(
+    model, tools, tmp_sessions, comment_factory, empty_drafts
+) -> None:
+    """Injecting a draft store that never sealed a generation keeps the deliver
+    node from running: the changelog_evaluate → deliver edge requires
+    ``has_drafts`` from the evaluator (the sealed revision check)."""
+    factory, _ = comment_factory
+    graph = build_graph_for_run(
+        "deliver-blocked",
+        surface="pull_request",
+        tools_registry=tools,
+        model=model,
+        storage_dir=tmp_sessions,
+        comment_factory=factory,
+        drafts_repo=empty_drafts,
+    )
+
+    result = await graph.invoke_async(
+        PR_TASK,
+        invocation_state={"run_id": "deliver-blocked", "review_policy": "never"},
+    )
+
+    assert result.status == Status.COMPLETED
+    order = [n.node_id for n in result.execution_order]
+    assert "deliver" not in order, "delivery must wait for a sealed draft generation"
+    assert empty_drafts.calls, "evaluator must consult the draft store"
+
+
+async def test_deliver_gate_runs_with_sealed_drafts(
+    model, tools, tmp_sessions, comment_factory, sealed_drafts
+) -> None:
+    """A sealed store generation unblocks delivery; the changelog gate still
+    determines ordering (deliver never fires before changelog evaluation)."""
+    factory, _ = comment_factory
+    graph = build_graph_for_run(
+        "deliver-gated",
+        surface="pull_request",
+        tools_registry=tools,
+        model=model,
+        storage_dir=tmp_sessions,
+        comment_factory=factory,
+        drafts_repo=sealed_drafts,
+    )
+
+    result = await graph.invoke_async(
+        PR_TASK,
+        invocation_state={"run_id": "deliver-gated", "review_policy": "never"},
+    )
+
+    assert result.status == Status.COMPLETED
+    order = [n.node_id for n in result.execution_order]
+    assert "deliver" in order, "sealed drafts must unblock delivery"
+    assert order.index("changelog_evaluate") < order.index("deliver")
 
 
 def test_read_only_graph_agents_exclude_mutation_tools(model, tools, tmp_sessions) -> None:
@@ -579,8 +703,11 @@ async def test_deliver_prompt_contains_approved_plan_and_changelog(
     Regression: update/create/answer/changelog results are only passed to the
     deliver node as prompt input if a directed edge exists between the two.
     Without them the delivery agent only sees the bare changelog_evaluate
-    verdict, so the approved DocChangePlan body (``files[].content``) and the
-    changelog markdown never appear in the prompt.
+    verdict, so the approved DocChangePlan metadata (``files[].path``) and the
+    changelog markdown never appear in the prompt. File bodies are no longer
+    inline: the deliver agent fetches them from the draft store via
+    ``get_drafted_docs`` (Task 7), so this asserts the plan metadata reaches
+    the prompt.
     """
     factory, _ = comment_factory
     recording = RecordingStubModel(
@@ -608,8 +735,8 @@ async def test_deliver_prompt_contains_approved_plan_and_changelog(
 
     assert recording.delivery_prompts, "delivery agent never ran"
     prompt_text = "\n".join(recording.delivery_prompts)
-    assert PLAN_CONTENT_MARKER in prompt_text, (
-        "approved DocChangePlan file content missing from deliver prompt"
+    assert PLAN_PATH_MARKER in prompt_text, (
+        "approved DocChangePlan metadata (file paths) missing from deliver prompt"
     )
     assert CHANGELOG_MARKER in prompt_text, (
         "changelog markdown missing from deliver prompt"

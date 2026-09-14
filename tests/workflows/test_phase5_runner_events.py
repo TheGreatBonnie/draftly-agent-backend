@@ -121,18 +121,32 @@ class RejectingGraph(FakeGraph):
         raise RuntimeError("Rejected by reviewer: needs changes")
 
 
+@dataclass
+class FakeDraftsRepo:
+    """Mirrors DraftRepository's keyword-only draft-store contract."""
+
+    generations: dict = field(default_factory=dict)
+
+    async def next_generation(self, *, run_id: str) -> int:
+        return self.generations.get(run_id, 1)
+
+    async def get_latest(self, *, run_id: str) -> list:
+        return []
+
+
 def make_context(**overrides) -> WorkflowContext:
+    repos = dict(
+        events=FakeEventsRepo(),
+        reviews=FakeReviewsRepo(),
+        jobs=FakeJobsRepo(),
+        github_workflows=FakeGitHubWorkflowsRepo(),
+        delivery=FakeDeliveryRepo(),
+        documents=FakeDocumentsRepo(),
+    )
+    if "drafts" in overrides:
+        repos["drafts"] = overrides.pop("drafts")
     base: dict[str, Any] = dict(
-        repositories=type(
-            "Repos", (), {
-                "events": FakeEventsRepo(),
-                "reviews": FakeReviewsRepo(),
-                "jobs": FakeJobsRepo(),
-                "github_workflows": FakeGitHubWorkflowsRepo(),
-                "delivery": FakeDeliveryRepo(),
-                "documents": FakeDocumentsRepo(),
-            }
-        )(),
+        repositories=type("Repos", (), repos)(),
         config=type("Config", (), {"strands": None})(),
     )
     base.update(overrides)
@@ -274,6 +288,36 @@ class TestRunnerOutcomes:
         assert sorted(state.errors) == ["evaluate", "update"]
         assert context.events.statuses["evt-1"] == "failed"
 
+    async def test_failed_with_gate_interrupt_still_pends_review(self) -> None:
+        # SDK quirk (strands 1.52.0): when an earlier node self-reports
+        # FAILED, graph.stream_async overwrites the review gate's terminal
+        # INTERRUPTED status with FAILED. The gate pause is still real, so
+        # the workflow must route to pending_review (storing the interrupt
+        # and the review) instead of failing the whole run. Live incident:
+        # run d190a090 paused at deliver while status surfaced as failed.
+        result = GraphResult(
+            status=Status.FAILED,
+            failed_nodes=1,
+            execution_order=cast(list[GraphNode], [FailedNode("research")]),
+        )
+        result.interrupts = [
+            Interrupt(
+                id="v1:before_node_call:deliver:doc-review",
+                name="doc-review",
+                reason={"summary": "docs update"},
+            )
+        ]
+        state, context = await run_with(result)
+
+        assert state.status.value == "pending_review"
+        assert len(state.interrupts) == 1
+        assert state.interrupts[0]["interrupt_id"].endswith("doc-review")
+        stored = context.reviews.interrupts[0]
+        assert stored["run_id"] == "evt-1"
+        assert stored["workflow_type"] == "pull_request"
+        assert context.events.statuses["evt-1"] == "pending_review"
+        assert "research" in state.errors
+
     async def test_completed_github_delivery_persists_pull_request_receipt(self) -> None:
         context = make_context()
         graph_result = completed_result()
@@ -311,6 +355,47 @@ class TestRunnerOutcomes:
         document = context.repositories.documents.upserts[0]
         assert document["path"] == "docs/auth.md"
         assert document["org_id"] == "org-1"
+
+    async def test_resumed_delivery_with_degraded_node_marks_delivered(self) -> None:
+        # Same SDK overwrite as the gate-interrupt case: a degraded earlier
+        # node makes the terminal status FAILED even though the approved
+        # resume actually delivered (deliver node completed with a receipt).
+        # A real, non-blocked delivery receipt must route to delivered.
+        context = make_context()
+        result = GraphResult(
+            status=Status.FAILED,
+            failed_nodes=1,
+            execution_order=cast(
+                list[GraphNode],
+                [
+                    FailedNode("research"),
+                    SimpleNamespace(
+                        node_id="deliver",
+                        result=SimpleNamespace(
+                            structured_output={
+                                "status": "completed",
+                                "surface": "github",
+                                "delivered_to": "acme/api",
+                                "reference": "https://github.com/acme/api/pull/42",
+                            }
+                        ),
+                    ),
+                ],
+            ),
+        )
+        graph = FakeGraph(result)
+        runner = WorkflowRunner(context, graph_factory=lambda run_id, surface: graph)
+
+        state = await runner.resume_review(
+            event={**PR_EVENT, "project_id": "org-1"},
+            interrupt_id="int-1",
+            response={"approved": True, "comment": "ship it"},
+        )
+
+        assert state.status.value == "delivered"
+        assert context.events.statuses["evt-1"] == "completed"
+        assert context.repositories.jobs.statuses[-1]["status"] == "completed"
+        assert "research" in state.errors
 
     async def test_resume_approval_uses_runner_lifecycle_and_org_context(self) -> None:
         context = make_context()
@@ -371,6 +456,26 @@ class TestRunnerOutcomes:
         invocation_state = graph.calls[0]["invocation_state"]
         assert invocation_state["run_id"] == "evt-1"
         assert invocation_state["review_policy"] == "risky"
+
+    async def test_invocation_state_seeds_draft_generation_from_store(self) -> None:
+        context = make_context(drafts=FakeDraftsRepo(generations={"evt-1": 4}))
+        graph = FakeGraph(completed_result())
+        runner = WorkflowRunner(context, graph_factory=lambda r, s: graph)
+
+        await runner.run(dict(PR_EVENT))
+
+        invocation_state = graph.calls[0]["invocation_state"]
+        assert invocation_state["draft_generation_seed"] == 4
+
+    async def test_invocation_state_omits_seed_for_fresh_run(self) -> None:
+        context = make_context(drafts=FakeDraftsRepo())
+        graph = FakeGraph(completed_result())
+        runner = WorkflowRunner(context, graph_factory=lambda r, s: graph)
+
+        await runner.run(dict(PR_EVENT))
+
+        invocation_state = graph.calls[0]["invocation_state"]
+        assert "draft_generation_seed" not in invocation_state
 
     async def test_invocation_state_carries_review_revision_feedback(self) -> None:
         context = make_context()

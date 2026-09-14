@@ -4,28 +4,42 @@ The swarm follows the run's grounding: ``local`` spawns a local-repo
 researcher (default — the offline evaluation harness has a local authly
 worktree and no usable GitHub API), ``github`` spawns a GitHub researcher
 scoped to the read-only GitHub API tools for real linked PRs, and ``docs``
-uses only the documentation/slack/discord researchers.
+uses only the documentation researcher.
+
+When ``capability_aware_research`` is on, ``build_doc_research_swarm``
+receives a ``ResearchPlan`` (spec: worker-latency Task 6) and constructs
+**only** the planned researchers with the plan's budget limits. A failed
+plan (missing mandatory capability) returns a deterministic gate node so
+the graph fails fast without invoking impact.
 """
 
 from __future__ import annotations
 
 from typing import Any
 
+import structlog
 from strands import Agent
 from strands.multiagent import Swarm
+from strands.multiagent.base import (
+    MultiAgentBase,
+    MultiAgentResult,
+    NodeResult,
+    Status,
+)
 from strands.vended_plugins.skills import AgentSkills
 
 from draftly.agents.factory import build_draftly_agent
 from draftly.agents.prompts import load_skills, local_repo_note_for
 from draftly.agents.shared.research import (
-    build_discord_researcher,
     build_docs_researcher,
     build_github_researcher,
-    build_slack_researcher,
 )
+from draftly.orchestration.nodes.base import agent_result
 from draftly.steering.context import SteeringRuntime
 from draftly.steering.decisions import AgentRole
 from draftly.workflows.grounding import DOCS, GITHUB
+
+logger = structlog.get_logger(__name__)
 
 
 def _local_researcher_prompt(repo_dir: str | None) -> str:
@@ -83,6 +97,100 @@ def _local_researcher(
     )
 
 
+def _swarm_for_plan(
+    model: Any,
+    tools: Any,
+    *,
+    plan: Any,
+    local_tools: list[Any],
+    repo_dir: str | None,
+    github_tools: list[Any],
+    runtime: SteeringRuntime | None,
+    node_id: str | None,
+) -> Swarm:
+    """Construct ONLY the planned researchers with the plan's budget limits.
+
+    ``plan.failure`` (missing mandatory capability) is handled by the caller;
+    here every planned researcher is a capability the run has evidence for.
+    """
+    agents: list[Agent] = []
+    for name in plan.researchers:
+        if name == "local":
+            agents.append(
+                _local_researcher(
+                    model, local_tools, repo_dir, runtime=runtime, node_id=node_id or "doc_research"
+                )
+            )
+        elif name == "github":
+            agents.append(
+                build_github_researcher(
+                    model, github_tools or [], runtime=runtime, node_id=node_id or "doc_research"
+                )
+            )
+        elif name == "docs":
+            agents.append(
+                build_docs_researcher(
+                    model,
+                    [tools.semantic_search, tools.keyword_search, tools.hybrid_search],
+                    runtime=runtime,
+                    node_id=node_id or "doc_research",
+                )
+            )
+        else:
+            raise ValueError(f"unknown planned researcher {name!r}")
+    if not agents:
+        raise ValueError("research plan selected no researchers")
+    return Swarm(
+        agents,
+        entry_point=agents[0],
+        max_handoffs=plan.max_handoffs,
+        max_iterations=plan.max_iterations,
+        execution_timeout=plan.execution_timeout,
+        node_timeout=plan.node_timeout,
+        repetitive_handoff_detection_window=8,
+        repetitive_handoff_min_unique_agents=3,
+    )
+
+
+class ResearchCapabilityGate(MultiAgentBase):
+    """Deterministic research node for a failed capability plan.
+
+    Returns a FAILED graph result naming the missing mandatory capability so
+    the run fails fast and impact/answer/generation are never invoked with
+    evidence the run cannot gather.
+    """
+
+    def __init__(self, *, name: str = "research", failure: str) -> None:
+        self.name = name
+        self.failure = failure
+
+    async def invoke_async(
+        self,
+        task: Any,
+        invocation_state: dict[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> MultiAgentResult:
+        run_id = (invocation_state or {}).get("run_id")
+        logger.warning(
+            "research_capability_gate",
+            run_id=run_id,
+            failure=self.failure,
+        )
+        return MultiAgentResult(
+            status=Status.FAILED,
+            results={
+                self.name: NodeResult(
+                    result=agent_result(
+                        {
+                            "failure": self.failure,
+                            "documented": False,
+                        }
+                    )
+                )
+            },
+        )
+
+
 def build_doc_research_swarm(
     model: Any,
     tools: Any,
@@ -94,21 +202,30 @@ def build_doc_research_swarm(
     runtime: SteeringRuntime | None = None,
     agent_id: str | None = None,
     node_id: str | None = None,
-) -> Swarm:
-    """Build the research swarm used by the documentation graph."""
+    plan: Any | None = None,
+) -> MultiAgentBase:
+    """Build the research swarm used by the documentation graph.
 
-    slack_agent = build_slack_researcher(
-        model,
-        [tools.slack_search, tools.slack_get_thread],
-        runtime=runtime,
-        node_id=node_id or "doc_research",
-    )
-    discord_agent = build_discord_researcher(
-        model,
-        [tools.discord_search, tools.discord_get_thread],
-        runtime=runtime,
-        node_id=node_id or "doc_research",
-    )
+    With a ``ResearchPlan`` (capability-aware lane), construct only the planned
+    researchers; a plan with ``failure`` yields a deterministic
+    ``ResearchCapabilityGate`` instead of a swarm.
+    """
+    if plan is not None and plan.failure:
+        return ResearchCapabilityGate(
+            name=node_id or "research", failure=plan.failure
+        )
+    if plan is not None:
+        return _swarm_for_plan(
+            model,
+            tools,
+            plan=plan,
+            local_tools=local_tools or [],
+            repo_dir=repo_dir,
+            github_tools=github_tools or [],
+            runtime=runtime,
+            node_id=node_id or "doc_research",
+        )
+
     docs_agent = build_docs_researcher(
         model,
         [tools.semantic_search, tools.keyword_search, tools.hybrid_search],
@@ -123,16 +240,16 @@ def build_doc_research_swarm(
             runtime=runtime,
             node_id=node_id or "doc_research",
         )
-        agents = [github_agent, slack_agent, discord_agent, docs_agent]
+        agents = [github_agent, docs_agent]
         entry_point = github_agent
     elif grounding == DOCS:
-        agents = [docs_agent, slack_agent, discord_agent]
+        agents = [docs_agent]
         entry_point = docs_agent
     else:
         local_agent = _local_researcher(
             model, local_tools or [], repo_dir, runtime=runtime, node_id=node_id or "doc_research"
         )
-        agents = [local_agent, slack_agent, discord_agent, docs_agent]
+        agents = [local_agent, docs_agent]
         entry_point = local_agent
 
     return Swarm(
