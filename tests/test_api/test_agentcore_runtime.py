@@ -3,9 +3,17 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from draftly.app.agentcore.app import create_agentcore_app
+from draftly.app.agentcore.routes import (
+    InvocationInput,
+    InvocationRequest,
+    _resolve_event_id,
+    invocations,
+)
+from draftly.workflows.state import WorkflowState, WorkflowStatus
 
 
 def test_settings_expose_agentcore_port() -> None:
@@ -50,16 +58,6 @@ async def test_prepare_workflows_composes_without_worker_boot() -> None:
 
 
 # --- POST /invocations tests ---
-
-from fastapi import HTTPException
-
-from draftly.app.agentcore.routes import (
-    InvocationInput,
-    InvocationRequest,
-    _resolve_event_id,
-    invocations,
-)
-from draftly.workflows.state import WorkflowState, WorkflowStatus
 
 
 def test_resolve_event_id_prefers_existing() -> None:
