@@ -39,11 +39,11 @@ class StrandsConfig(BaseModel):
     #: Enable the isolated LLM judge to refine deterministic outcomes.
     steering_llm_enabled: bool = True
     #: Automatic tool guides permitted per single tool call.
-    steering_tool_guides_per_call: int = 2
+    steering_tool_guides_per_call: int = 4
     #: Automatic model guides permitted per model turn.
     steering_model_guides_per_turn: int = 2
     #: Total automatic guides permitted per agent invocation.
-    steering_total_guides_per_agent: int = 5
+    steering_total_guides_per_agent: int = 7
     #: Hard timeout for the optional LLM judge call.
     steering_judge_timeout_seconds: float = 10.0
     #: Maximum characters for a steering reason visible in audit/events.
@@ -179,9 +179,9 @@ class Settings(BaseSettings):
     strands_steering_enforcement_enabled: bool = True
     strands_steering_policy_version: str = "v1"
     strands_steering_llm_enabled: bool = True
-    strands_steering_tool_guides_per_call: int = 2
+    strands_steering_tool_guides_per_call: int = 4
     strands_steering_model_guides_per_turn: int = 2
-    strands_steering_total_guides_per_agent: int = 5
+    strands_steering_total_guides_per_agent: int = 7
     strands_steering_judge_timeout_seconds: float = 10.0
     strands_steering_reason_max_chars: int = 1_000
     strands_steering_payload_max_bytes: int = 4 * 1024

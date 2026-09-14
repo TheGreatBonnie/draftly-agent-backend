@@ -374,7 +374,7 @@ async def test_persistence_adapter_reserves_tool_guide_with_role_limits() -> Non
     assert reserved is True
     sql, params = client.fetched[0]
     assert params[:6] == ("run-1", "writer", "write", "tool", "write_file", 0)
-    assert params[6] == 2  # default tool_guides_per_call
+    assert params[6] == 4  # default tool_guides_per_call
 
 
 async def test_persistence_adapter_reserves_model_guide() -> None:

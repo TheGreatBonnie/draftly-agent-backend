@@ -25,9 +25,9 @@ class SteeringRuntimeConfig:
     enforcement_enabled: bool = False
     policy_version: str = "v1"
     llm_enabled: bool = False
-    tool_guides_per_call: int = 2
+    tool_guides_per_call: int = 4
     model_guides_per_turn: int = 2
-    total_guides_per_agent: int = 5
+    total_guides_per_agent: int = 7
     judge_timeout_seconds: float = 10.0
     reason_max_chars: int = 1_000
     payload_max_bytes: int = 4 * 1024
