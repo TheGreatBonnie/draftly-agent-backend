@@ -20,8 +20,8 @@ class StrandsConfig(BaseModel):
     #: restarts/instances); "file" keeps the legacy on-disk per-run sessions.
     session_storage: str = "database"  # "database" | "file"
     max_node_executions: int = 15
-    execution_timeout: int = 1800
-    node_timeout: int = 600
+    execution_timeout: int = 3600
+    node_timeout: int = 1200
     evaluator_max_iterations: int = 2
     review_policy: str = "always"  # "always" | "risky" | "never"
 
@@ -161,13 +161,13 @@ class Settings(BaseSettings):
     # "database" = shared Postgres/CRDB session store; "file" = per-run on disk.
     strands_session_storage: str = "database"
     strands_max_node_executions: int = 15
-    # A delivered PR docs run executes ~8 sequential LLM nodes; 600s killed
+    # A delivered PR docs run executes ~8 sequential LLM nodes; 1200s killed
     # those runs right before the ReviewGate could fire. Leave headroom.
-    strands_execution_timeout: int = 1800
+    strands_execution_timeout: int = 3600
     # Slow-network workers see ~50s first-byte on model calls; a 180s per-node
-    # budget failed mid-flight nodes. 600s still bounds a stuck node well
-    # under the 1800s run deadline while letting slow runs finish.
-    strands_node_timeout: int = 600
+    # budget failed mid-flight nodes. 1200s still bounds a stuck node well
+    # under the 3600s run deadline while letting slow runs finish.
+    strands_node_timeout: int = 1200
     strands_evaluator_max_iterations: int = 2
     strands_review_policy: str = "always"  # "always" | "risky" | "never"
 

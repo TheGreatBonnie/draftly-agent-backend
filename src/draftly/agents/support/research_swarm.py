@@ -34,12 +34,17 @@ def build_support_research_swarm(
     runtime: SteeringRuntime | None = None,
     agent_id: str | None = None,
     node_id: str | None = None,
+    execution_timeout: float | None = None,
+    node_timeout: float | None = None,
 ) -> Swarm:
     """Build the support research swarm whose ``research`` node grounds locally.
 
     Args:
         local_tools: repo-scoped tools (semantic_search, keyword_search,
             code_search, ...) the local researcher inspects the checkout with.
+        execution_timeout: swarm-wide budget; defaults to 1800s.
+        node_timeout: per-agent budget; defaults to 600s unless overridden by
+            the operator-configured Strands budgets.
     """
     local_agent = build_draftly_agent(
         role=AgentRole.RESEARCH,
@@ -84,8 +89,8 @@ def build_support_research_swarm(
         entry_point=local_agent,
         max_handoffs=20,
         max_iterations=20,
-        execution_timeout=900.0,
-        node_timeout=300.0,
+        execution_timeout=execution_timeout if execution_timeout is not None else 1800.0,
+        node_timeout=node_timeout if node_timeout is not None else 600.0,
         repetitive_handoff_detection_window=8,
         repetitive_handoff_min_unique_agents=3,
     )

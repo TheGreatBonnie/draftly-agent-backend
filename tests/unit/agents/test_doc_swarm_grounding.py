@@ -75,6 +75,37 @@ def test_github_researcher_has_no_mutating_github_tools() -> None:
     assert "create_comment" not in gh_tools
 
 
+def test_swarm_default_timeouts() -> None:
+    """Legacy direct calls keep the priority budgets (1800s total / 600s node)."""
+    tools = build_tools()
+    swarm = build_doc_research_swarm(
+        StubModel(),
+        tools,
+        local_tools=tools.documentation_engineer,
+    )
+
+    assert swarm.execution_timeout == 1800.0
+    assert swarm.node_timeout == 600.0
+
+
+def test_swarm_honors_configured_timeouts() -> None:
+    """Configured Strands budgets (graph node_timeout) reach the swarm so a
+    research agent is not killed by a hardcoded ceiling first."""
+    tools, github_tools = _build_github_tools()
+    swarm = build_doc_research_swarm(
+        StubModel(),
+        tools,
+        local_tools=None,
+        github_tools=github_tools,
+        grounding="github",
+        execution_timeout=3600.0,
+        node_timeout=1200.0,
+    )
+
+    assert swarm.execution_timeout == 3600.0
+    assert swarm.node_timeout == 1200.0
+
+
 def test_docs_grounding_skips_both_repo_researchers() -> None:
     tools = build_tools()
     swarm = build_doc_research_swarm(
