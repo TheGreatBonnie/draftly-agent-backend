@@ -92,7 +92,7 @@ resource "null_resource" "deploy_agentcore_runtime" {
       python3 ${path.module}/../../../scripts/deploy_agentcore.py \
         --container-uri "${var.agentcore_image_uri}" \
         --role-arn "${aws_iam_role.agentcore_runtime.arn}" \
-        --runtime-name draftly-agentcore \
+        --runtime-name draftly_agentcore \
         --region "${var.aws_region}" \
         --network-mode PUBLIC \
         --env "OTEL_EXPORTER_OTLP_ENDPOINT=${var.agentcore_otlp_endpoint}" \

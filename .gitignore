@@ -75,3 +75,7 @@ graphify-out/
 secrets/
 *.pem
 *.pem.key
+
+# Terraform tfvars (contains secrets)
+*.tfvars
+*.tfvars.json

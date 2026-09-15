@@ -35,23 +35,23 @@ The intended outcome is a reviewable documentation change with supporting projec
 
 The proposed change turns missing OAuth guidance into a reviewable update:
 
-| Before, as described by the case | Expected documentation coverage |
-| --- | --- |
+| Before, as described by the case                       | Expected documentation coverage                           |
+| ------------------------------------------------------ | --------------------------------------------------------- |
 | OAuth behavior is introduced without complete guidance | Authorization URL construction and provider configuration |
-| Callback handling and code exchange are undocumented | Callback handling and authorization-code exchange steps |
-| Developers lack guidance for the new login flow | OAuth-backed login usage |
+| Callback handling and code exchange are undocumented   | Callback handling and authorization-code exchange steps   |
+| Developers lack guidance for the new login flow        | OAuth-backed login usage                                  |
 
 Inspect the [case and its evidence references](src/draftly/evaluation/datasets/documentation.json), [GitHub event handling](src/draftly/app/api/routes/github.py), and [documentation graph](src/draftly/orchestration/graphs/documentation_graph.py).
 
 ## Core capabilities
 
-| Capability | What it does for the maintainer |
-| --- | --- |
-| Event-triggered documentation maintenance | Starts documentation work from merged PRs and release events |
-| Grounded developer support | Uses project context to answer GitHub, Slack, and Discord questions |
-| Research with evidence | Connects proposed answers and updates to repository and documentation sources |
-| Configurable human review | Holds delivery for approval under `always`, or for classified risks under `risky`; `never` bypasses the gate |
-| Feedback and project memory | Collects knowledge candidates and provides curation and retrieval workflows for later work |
+| Capability                                | What it does for the maintainer                                                                              |
+| ----------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| Event-triggered documentation maintenance | Starts documentation work from merged PRs and release events                                                 |
+| Grounded developer support                | Uses project context to answer GitHub, Slack, and Discord questions                                          |
+| Research with evidence                    | Connects proposed answers and updates to repository and documentation sources                                |
+| Configurable human review                 | Holds delivery for approval under `always`, or for classified risks under `risky`; `never` bypasses the gate |
+| Feedback and project memory               | Collects knowledge candidates and provides curation and retrieval workflows for later work                   |
 
 Memory curation can create, merge, supersede, or archive knowledge when its workflow runs. Model routing can use stored task-performance statistics. Changes to prompts and packaged skills remain developer work; this README does not claim they rewrite themselves or that every run improves future quality.
 
@@ -70,13 +70,13 @@ Agent definitions remain code-defined next to the factory registry. This surface
 
 Strands supplies agents, graph orchestration, and interrupt hooks. Draftly supplies the domain tools, routing conditions, review policy, persistence, and delivery integration.
 
-| Responsibility | Implementation | Why it matters |
-| --- | --- | --- |
-| Research project evidence | [Shared researchers](src/draftly/agents/shared/research.py) | Strands agents receive tools and source-specific research instructions |
-| Coordinate documentation work | [Documentation graph](src/draftly/orchestration/graphs/documentation_graph.py) | `GraphBuilder` connects research, impact analysis, writing, evaluation, and conditional revision |
-| Check outputs | [Runtime evaluator](src/draftly/orchestration/nodes/evaluate.py) and [evaluation framework](src/draftly/evaluation/) | Runtime quality checks and dataset-based evaluation serve different purposes |
-| Pause for a person | [Review gate](src/draftly/orchestration/hooks/review_gate.py) | A Strands `BeforeNodeCallEvent` interrupt prevents delivery until the required decision |
-| Deliver the result | [Delivery agent](src/draftly/agents/shared/delivery.py) | A separate agent receives publication tools after the graph's review boundary |
+| Responsibility                | Implementation                                                                                                       | Why it matters                                                                                   |
+| ----------------------------- | -------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| Research project evidence     | [Shared researchers](src/draftly/agents/shared/research.py)                                                          | Strands agents receive tools and source-specific research instructions                           |
+| Coordinate documentation work | [Documentation graph](src/draftly/orchestration/graphs/documentation_graph.py)                                       | `GraphBuilder` connects research, impact analysis, writing, evaluation, and conditional revision |
+| Check outputs                 | [Runtime evaluator](src/draftly/orchestration/nodes/evaluate.py) and [evaluation framework](src/draftly/evaluation/) | Runtime quality checks and dataset-based evaluation serve different purposes                     |
+| Pause for a person            | [Review gate](src/draftly/orchestration/hooks/review_gate.py)                                                        | A Strands `BeforeNodeCallEvent` interrupt prevents delivery until the required decision          |
+| Deliver the result            | [Delivery agent](src/draftly/agents/shared/delivery.py)                                                              | A separate agent receives publication tools after the graph's review boundary                    |
 
 Research and writing need to interpret changing code and incomplete context. Explicit graph conditions and review policy constrain when their output can proceed. The writer's tool restrictions keep authoring separate from repository mutation.
 
@@ -87,31 +87,128 @@ The graph supports `always`, `risky`, and `never` review policies. Unknown polic
 The diagram summarizes the documentation path. Other surfaces have their own graphs; evaluation and review behavior depend on the selected workflow and policy.
 
 ```mermaid
-flowchart TD
-    Sources["GitHub / Slack / Discord events"] --> API["FastAPI event routes"]
-    UI["Next.js workspace / Clerk authentication"] -->|authenticated requests| API
-    API --> Queue["Dispatch / Redis RQ queues"]
-    Queue --> Worker["RQ worker / workflow runner"]
-    Worker --> Graph["Strands documentation graph"]
-    Graph --> Research["Research / impact analysis"]
-    Research --> Write["Answer / update / create"]
-    Write --> Eval["Documentation evaluation"]
-    Eval -->|revise| Write
-    Eval -->|pass| Changelog["Changelog / evaluation"]
-    Research -->|release with no docs change| Changelog
-    Changelog -->|revise| Changelog
-    Changelog -->|pass| Gate{"Review policy"}
-    Gate -->|required| Review["Pause / maintainer decision"]
-    UI -.-> Review
-    Review -->|approve| Deliver["Delivery tools / PR or response"]
-    Review -->|reject| Stop["Cancel delivery"]
-    Gate -->|not required| Deliver
-    Research <--> DB[("PostgreSQL / project memory / pgvector")]
-    Graph <--> Models["Model router / configured providers"]
-    Worker -.-> Memory["Memory candidates / curation"]
-    Memory --> DB
-    API <--> Redis[("Redis / event streams / state")]
-    API -->|SSE progress and responses| UI
+flowchart TB
+    %% ═══ ① Event & Input layer ═══
+    subgraph L1["① Events & Input"]
+        GH["GitHub Webhooks<br/>PR · Issue · Release"]
+        SL["Slack Events<br/>Socket Mode"]
+        DC["Discord Gateway"]
+        CRON["Scheduled Jobs<br/>rq-scheduler"]
+    end
+
+    %% ═══ ② Ingestion & Execution layer ═══
+    subgraph L2["② Ingestion & Execution"]
+        API["FastAPI Routes<br/>auth · webhook verification"]
+        EVT["Event Composition<br/>→ normalized envelope → dispatch"]
+        RQ["Redis RQ Queues<br/>webhooks · scheduled · default"]
+        WRK["RQ Worker"]
+        RUN["WorkflowRunner<br/>claim / idempotency · session resume"]
+    end
+
+    %% ═══ ③ Strands Orchestration layer (the star) ═══
+    subgraph L3["③ Strands Orchestration &mdash; documentation graph"]
+        subgraph G["Strands Graph · GraphBuilder · conditional edges"]
+            direction TB
+            CL["classify"]
+            CX["context"]
+            RS["research<br/>(Strands Swarm)"]
+            IM["impact"]
+            UP["update"]
+            CR["create"]
+            AN["answer"]
+            EVAL["evaluate<br/>(EvaluatorNode)"]
+            CH["changelog"]
+            CE["changelog_evaluate"]
+            DE["deliver"]
+            NT["notify"]
+            NP["notify_post"]
+        end
+
+        subgraph XC["Cross-cutting Strands plugins on every agent"]
+            STEER["Steering Handler<br/>Guide · Interrupt · Proceed"]
+            SKILLS["AgentSkills<br/>17 bundled skills"]
+        end
+
+        ROUTE["Model Router<br/>RoleAwareModelResolver"]
+        SESS["Session Manager<br/>interrupt resume"]
+    end
+
+    %% ═══ ④ Persistence & Integrations layer ═══
+    subgraph L4["④ Persistence & Integrations"]
+        DB[("PostgreSQL · pgvector<br/>reviews · evaluations · memory · events")]
+        REDIS[("Redis<br/>queues · streams · cache")]
+        EXT["GitHub · Slack · Discord APIs<br/>delivery + data"]
+    end
+
+    %% ═══ ⑤ Human layer ═══
+    subgraph L5["⑤ Human layer"]
+        PUI["Review Workspace<br/>Next.js"]
+        AUTH["Clerk<br/>authentication"]
+    end
+
+    %% Flow: events → ingestion
+    GH --> API
+    SL --> API
+    DC --> API
+    CRON --> RQ
+    API --> EVT
+    EVT --> RQ
+    RQ --> WRK
+    WRK --> RUN
+
+    %% Flow: execution → graph
+    RUN --> CL
+
+    %% The documentation graph
+    CL --> CX --> RS --> IM
+    IM --> AN
+    IM --> UP
+    IM --> CR
+    AN --> EVAL
+    UP --> EVAL
+    CR --> EVAL
+    EVAL -->|passed| CH
+    CH --> CE
+    CE -->|passed + sealed drafts| DE
+    EVAL -->|"needs revision (of writer)"| AN
+    EVAL -->|"needs revision (of writer)"| UP
+    EVAL -->|"needs revision (of writer)"| CR
+    CE -->|needs revision| CH
+    IM -->|release · no docs change| CH
+    IM -->|PR opened · parallel branch| NT
+    NT --> NP
+
+    %% Plugins annotate the graph
+    STEER -. "on every tool call / model turn" .-> CL
+    SKILLS -. "bundled into each agent" .-> CL
+
+    %% Cross-cutting services feed the graph
+    ROUTE -. "role-based model selection" .-> CL
+    SESS -.-> RUN
+
+    %% Delivery + persistence + human
+    DE -. "open PR / post response" .-> EXT
+    DE == "pause: ReviewGate interrupt" ==> PUI
+    PUI == "approve / reject · resume" ==> DE
+    AUTH -. "sessions" .-> PUI
+    RUN -- "SSE live progress + states" --> PUI
+    L3 -. "memory grounding · evidence · eval results" .-> DB
+    RUN -- "persist runs · reviews · evals" --> DB
+    API -- "state + event streams" --> REDIS
+
+    %% ── classes ──
+    classDef strands fill:#ecfeff,stroke:#0891b2,color:#164e63,stroke-width:2px;
+    classDef draftly fill:#eff6ff,stroke:#2563eb,color:#1e3a8a,stroke-width:1px;
+    classDef data fill:#f5f3ff,stroke:#7c3aed,color:#4c1d95,stroke-width:1px;
+    classDef external fill:#f8fafc,stroke:#64748b,color:#334155,stroke-width:1px;
+    classDef human fill:#fffbeb,stroke:#d97706,color:#78350f,stroke-width:1px;
+    classDef note fill:#f0fdf4,stroke:#16a34a,color:#14532d,stroke-width:1px;
+
+    class API,EVT,WRK,RUN,EVAL,NT,NP draftly;
+    class CL,CX,RS,IM,UP,CR,AN,CH,CE,STEER,SKILLS,ROUTE,SESS strands;
+    class DB,REDIS data;
+    class GH,SL,DC,CRON,EXT external;
+    class PUI,AUTH human;
 ```
 
 With the default RQ configuration, long-running jobs are consumed by a separate worker. The API exposes workflow state and event streams so the frontend can display progress without holding a generation request open.
@@ -126,13 +223,13 @@ For deeper implementation detail, see [orchestration](docs/architecture/orchestr
 
 The [datasets](src/draftly/evaluation/datasets/) cover these workflow surfaces:
 
-| Dataset | Intended coverage |
-| --- | --- |
-| `documentation.json` | OAuth documentation updates from a merged PR |
-| `github_issues.json` | GitHub issue handling |
+| Dataset                       | Intended coverage                              |
+| ----------------------------- | ---------------------------------------------- |
+| `documentation.json`          | OAuth documentation updates from a merged PR   |
+| `github_issues.json`          | GitHub issue handling                          |
 | `slack.json` / `discord.json` | Support questions from different event sources |
-| `feedback.json` | Documentation gaps and prioritization |
-| `release.json` | Release authoring and review behavior |
+| `feedback.json`               | Documentation gaps and prioritization          |
+| `release.json`                | Release authoring and review behavior          |
 
 The framework distinguishes **LLM-judged quality**—groundedness, correctness, completeness, and relevance—from **deterministic checks**, including expected interruption and passthrough. Documentation quality also uses citation, coverage, and length heuristics. A score is evidence about the tested cases, not a correctness guarantee.
 
@@ -197,17 +294,17 @@ cp .env.example .env
 
 Configure `.env` using the table below. The example file does not list every integration setting; [Settings](src/draftly/app/config.py) is the source for those names.
 
-| Setting | Required for |
-| --- | --- |
-| `DATABASE_URL` | Database connectivity and migrations; use a dedicated development database |
-| `AWS_REGION` plus AWS credentials or an IAM role | The Bedrock model path; alternatively configure a supported model provider |
+| Setting                                                           | Required for                                                                                            |
+| ----------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| `DATABASE_URL`                                                    | Database connectivity and migrations; use a dedicated development database                              |
+| `AWS_REGION` plus AWS credentials or an IAM role                  | The Bedrock model path; alternatively configure a supported model provider                              |
 | `REQUESTY_API_KEY`, `ORCAROUTER_API_KEY`, or `OPENROUTER_API_KEY` | At least one embedding provider for semantic retrieval; Bedrock embeddings are not implemented directly |
-| `EMBEDDING_MODEL_ID=text-embedding-3-small` | The configured embedding provider must serve the model and return 1,536-dimensional vectors |
-| `REDIS_URL=redis://localhost:6379/0` | Queue consumption, state, and event streaming |
-| `DEBUG=false` | Boolean debug setting; an exported shell value overrides `.env` |
-| `RQ_ENABLED=true` | The recommended separate-worker execution path |
-| `VECTOR_SEARCH_BACKEND=pgvector` | Vector search for this setup, because Compose uses plain Redis |
-| `SEMANTIC_CACHE_ENABLED=false` | Avoids requiring RediSearch for the semantic cache in this setup |
+| `EMBEDDING_MODEL_ID=text-embedding-3-small`                       | The configured embedding provider must serve the model and return 1,536-dimensional vectors             |
+| `REDIS_URL=redis://localhost:6379/0`                              | Queue consumption, state, and event streaming                                                           |
+| `DEBUG=false`                                                     | Boolean debug setting; an exported shell value overrides `.env`                                         |
+| `RQ_ENABLED=true`                                                 | The recommended separate-worker execution path                                                          |
+| `VECTOR_SEARCH_BACKEND=pgvector`                                  | Vector search for this setup, because Compose uses plain Redis                                          |
+| `SEMANTIC_CACHE_ENABLED=false`                                    | Avoids requiring RediSearch for the semantic cache in this setup                                        |
 
 An embedding provider credential must have access to the configured model; its presence alone does not prove compatibility. Provider registration and defaults are defined in the [model factory](src/draftly/models/factory.py).
 
@@ -235,15 +332,15 @@ Rebuild the worker image and recreate both containers (the typical command after
 docker compose -f docker-compose.redis.yml up -d --build
 ```
 
-| Goal | Command |
-| --- | --- |
-| Rebuild just the worker image (no recreate) | `docker compose -f docker-compose.redis.yml build rq-worker` |
-| Recreate the worker from the rebuilt image | `docker compose -f docker-compose.redis.yml up -d rq-worker` |
-| Restart the worker without rebuilding | `docker compose -f docker-compose.redis.yml restart rq-worker` |
-| Force recreate even if nothing is stale | `docker compose -f docker-compose.redis.yml up -d --force-recreate` |
-| Start or restart Redis only | `docker compose -f docker-compose.redis.yml up -d redis` |
-| Follow logs for both containers | `docker compose -f docker-compose.redis.yml logs -f rq-worker redis` |
-| Stop both containers | `docker compose -f docker-compose.redis.yml down` |
+| Goal                                        | Command                                                              |
+| ------------------------------------------- | -------------------------------------------------------------------- |
+| Rebuild just the worker image (no recreate) | `docker compose -f docker-compose.redis.yml build rq-worker`         |
+| Recreate the worker from the rebuilt image  | `docker compose -f docker-compose.redis.yml up -d rq-worker`         |
+| Restart the worker without rebuilding       | `docker compose -f docker-compose.redis.yml restart rq-worker`       |
+| Force recreate even if nothing is stale     | `docker compose -f docker-compose.redis.yml up -d --force-recreate`  |
+| Start or restart Redis only                 | `docker compose -f docker-compose.redis.yml up -d redis`             |
+| Follow logs for both containers             | `docker compose -f docker-compose.redis.yml logs -f rq-worker redis` |
+| Stop both containers                        | `docker compose -f docker-compose.redis.yml down`                    |
 
 `--build` is required to pick up code changes; `restart` alone reuses the old image. The worker loads `.env` and needs `secrets/private-key.pem` at build time. Recreating Redis drops queued-but-unprocessed jobs, so drain the queues or expect to re-dispatch.
 
@@ -304,13 +401,13 @@ uv run pytest -m "not integration"
 
 Live integration tests use external services. Configure their credentials and set `DRAFTLY_LIVE=1` before running `uv run pytest -m integration`. These commands are developer entry points, not a claim that this documentation change ran the application test suite.
 
-| Area | Entry point |
-| --- | --- |
-| Agents, prompts, and skills | [Agents](src/draftly/agents/) · [packaged skills](src/draftly/skills/) |
-| Graphs and execution | [Orchestration](src/draftly/orchestration/) · [workflows](src/draftly/workflows/) |
-| API and integrations | [API routes](src/draftly/app/api/routes/) · [integrations](src/draftly/integrations/) |
-| Quality and retrieval | [Evaluation](src/draftly/evaluation/) · [memory](src/draftly/memory/) |
-| Frontend | [Next.js workspace](../draftly-agent-frontend/README.md) |
+| Area                        | Entry point                                                                           |
+| --------------------------- | ------------------------------------------------------------------------------------- |
+| Agents, prompts, and skills | [Agents](src/draftly/agents/) · [packaged skills](src/draftly/skills/)                |
+| Graphs and execution        | [Orchestration](src/draftly/orchestration/) · [workflows](src/draftly/workflows/)     |
+| API and integrations        | [API routes](src/draftly/app/api/routes/) · [integrations](src/draftly/integrations/) |
+| Quality and retrieval       | [Evaluation](src/draftly/evaluation/) · [memory](src/draftly/memory/)                 |
+| Frontend                    | [Next.js workspace](../draftly-agent-frontend/README.md)                              |
 
 Continue with the [architecture overview](docs/architecture/overview.md), [workflow guides](docs/workflows/overview.md), [API reference](docs/api/routes.md), [Redis operations](docs/deployment/redis.md), and [production deployment](docs/deployment/production.md).
 

@@ -16,7 +16,6 @@ resource "aws_lambda_function" "indexing_scheduler" {
       SECURITY_GROUP_ID   = aws_security_group.ecs_tasks.id
       CONTAINER_NAME      = "worker"
       WORKER_TYPE         = "indexing"
-      AWS_REGION          = var.aws_region
     }
   }
 }
@@ -61,7 +60,6 @@ resource "aws_lambda_function" "evaluation_scheduler" {
       SECURITY_GROUP_ID   = aws_security_group.ecs_tasks.id
       CONTAINER_NAME      = "worker"
       WORKER_TYPE         = "evaluation"
-      AWS_REGION          = var.aws_region
     }
   }
 }

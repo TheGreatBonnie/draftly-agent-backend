@@ -4,7 +4,7 @@ resource "aws_apigatewayv2_api" "main" {
   description   = "Draftly API Gateway for webhook endpoints"
 
   cors_configuration {
-    allow_credentials = true
+    allow_credentials = false
     allow_headers     = ["*"]
     allow_methods     = ["GET", "POST", "PUT", "DELETE", "OPTIONS"]
     allow_origins     = ["*"]
@@ -21,7 +21,7 @@ resource "aws_apigatewayv2_vpc_link" "main" {
 resource "aws_apigatewayv2_integration" "api" {
   api_id           = aws_apigatewayv2_api.main.id
   integration_type = "HTTP_PROXY"
-  integration_uri  = "https://${aws_lb.main.dns_name}"
+  integration_uri  = aws_lb_listener.http.arn
   integration_method = "ANY"
   payload_format_version = "2.0"
   connection_type  = "VPC_LINK"
