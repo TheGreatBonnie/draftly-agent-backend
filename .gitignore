@@ -79,3 +79,8 @@ secrets/
 # Terraform tfvars (contains secrets)
 *.tfvars
 *.tfvars.json
+
+# Terraform provider binaries and local state (never commit)
+terraform/.terraform/
+*.tfstate
+*.tfstate.*
