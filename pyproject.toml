@@ -88,14 +88,4 @@ markers = [
     "integration: requires live NeonDB and model keys (run with DRAFTLY_LIVE=1)",
 ]
 
-[dependency-groups]
-dev = [
-    "pytest>=8.0.0",
-    "pytest-asyncio>=0.24.0",
-    "pytest-xdist>=3.5.0",
-    "ruff>=0.15.22",
-    "mypy>=1.11.0",
-    "ty>=0.0.73",
-    "fakeredis>=2.23.0",
-    "sse-starlette>=2.0.0",
-]
+

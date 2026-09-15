@@ -31,7 +31,7 @@ def main() -> None:
         port=settings.port,
         log_level=settings.log_level.lower(),
         log_config=None,
-        reload=True,
+        reload=settings.environment == "development",
     )
 
 

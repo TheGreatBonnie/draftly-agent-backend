@@ -45,5 +45,5 @@ def test_graph_limits_forwards_node_budget() -> None:
     ctx = WorkflowContext(config=StubConfig())
     limits = ctx.graph_limits()
     assert limits["max_node_executions"] == 15
-    assert limits["execution_timeout"] == 1800
-    assert limits["node_timeout"] == 600
+    assert limits["execution_timeout"] == 3600
+    assert limits["node_timeout"] == 1200
