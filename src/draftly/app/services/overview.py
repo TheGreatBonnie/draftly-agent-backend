@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections import defaultdict
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -84,9 +85,7 @@ def _empty_activity(days: int, now: datetime) -> list[dict[str, Any]]:
     ]
 
 
-def _increment_activity(
-    points: dict[str, dict[str, Any]], value: Any, category: str
-) -> None:
+def _increment_activity(points: dict[str, dict[str, Any]], value: Any, category: str) -> None:
     timestamp = _utc_datetime(value)
     if timestamp is None:
         return
@@ -108,9 +107,7 @@ def _sort_key(record: Any, field: str) -> datetime:
 def _evaluation_summary(evaluations: list[Any]) -> tuple[dict[str, Any], int, str]:
     ordered = sorted(evaluations, key=lambda item: _sort_key(item, "created_at"), reverse=True)
     scores = [
-        score
-        for item in ordered
-        if (score := _normalize_score(_value(item, "score"))) is not None
+        score for item in ordered if (score := _normalize_score(_value(item, "score"))) is not None
     ]
     average = _mean(scores)
     half = len(scores) // 2
@@ -226,9 +223,7 @@ def _workflow_snapshot(
     )
 
 
-async def _integration_health(
-    repositories: Any, database: Any, org_id: str
-) -> tuple[int, int]:
+async def _integration_health(repositories: Any, database: Any, org_id: str) -> tuple[int, int]:
     connected = 0
     issues = 0
 
@@ -293,34 +288,66 @@ async def _pending_intervention_count(repositories: Any, org_id: str) -> int:
         return 0
 
 
-async def build_overview_snapshot(
-    application: Any, org_id: str, days: int
-) -> dict[str, Any]:
+async def _agent_health(application: Any, repositories: Any, org_id: str) -> tuple[int, int]:
+    agent_runs = getattr(repositories, "agent_runs", None)
+    list_summaries = getattr(agent_runs, "list_agent_summaries", None)
+    if list_summaries is not None:
+        summaries = await list_summaries(org_id=org_id, limit=200)
+        return (
+            len(summaries),
+            sum(item.get("last_run_status") != "failed" for item in summaries),
+        )
+
+    # Compatibility for reduced application compositions used by tests and
+    # consumers that do not yet expose the bulk telemetry read model.
+    from draftly.app.api.routes.agents import build_agent_summaries
+
+    summaries = await build_agent_summaries(application, org_id=org_id)
+    return (
+        len(summaries),
+        sum(item.get("status") != "failed" for item in summaries),
+    )
+
+
+async def build_overview_snapshot(application: Any, org_id: str, days: int) -> dict[str, Any]:
     """Aggregate the current organization's dashboard metrics into one snapshot."""
     repositories = application.dependencies.repositories
-    from draftly.app.api.routes.agents import build_agent_summaries
     from draftly.app.api.routes.documentation import derive_status
 
-    documents = await repositories.documents.list_by_org(org_id=org_id, limit=1000)
-    pending_reviews = await repositories.reviews.list_reviews(
-        status="pending", org_id=org_id, limit=200
-    )
-    reviews = await repositories.reviews.list_reviews(status=None, org_id=org_id, limit=1000)
-    evaluations = await repositories.evaluations.search(
-        org_id=org_id, evaluation_type=None, limit=100
-    )
     integrations = getattr(application.dependencies, "integrations", None)
     database = getattr(integrations, "database", None)
-    workflows = (
-        await list_github_workflows_record(org_id=org_id, db=database)
+    workflow_read = (
+        list_github_workflows_record(org_id=org_id, db=database)
         if database is not None
-        else []
+        else asyncio.sleep(0, result=[])
     )
-    data_sources_connected, integration_issues = await _integration_health(
-        repositories, database, org_id
+    (
+        documents,
+        pending_reviews,
+        reviews,
+        evaluations,
+        workflows,
+        integration_health,
+        scheduler_status,
+        pending_interventions,
+        agent_health,
+    ) = await asyncio.gather(
+        repositories.documents.list_by_org(org_id=org_id, limit=1000),
+        repositories.reviews.list_reviews(status="pending", org_id=org_id, limit=200),
+        repositories.reviews.list_reviews(status=None, org_id=org_id, limit=1000),
+        repositories.evaluations.search(
+            org_id=org_id,
+            evaluation_type=None,
+            limit=100,
+        ),
+        workflow_read,
+        _integration_health(repositories, database, org_id),
+        _scheduler_status(repositories, org_id),
+        _pending_intervention_count(repositories, org_id),
+        _agent_health(application, repositories, org_id),
     )
-    scheduler_status = await _scheduler_status(repositories, org_id)
-    pending_interventions = await _pending_intervention_count(repositories, org_id)
+    data_sources_connected, integration_issues = integration_health
+    agent_count, agents_online = agent_health
 
     evaluation, failed_evaluations, evaluations_status = _evaluation_summary(evaluations)
     workflow_summary, active_workflows = _workflow_snapshot(workflows)
@@ -342,9 +369,6 @@ async def build_overview_snapshot(
             "reviewed",
         )
 
-    agent_summaries = await build_agent_summaries(application, org_id=org_id)
-    agent_count = len(agent_summaries)
-    agents_online = sum(item.get("status") != "failed" for item in agent_summaries)
     return {
         "summary": {
             "documentation_total": len(documents),

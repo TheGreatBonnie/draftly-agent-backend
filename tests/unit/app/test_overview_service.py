@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any
@@ -63,6 +64,70 @@ class FakeSteeringInterventions:
     async def count_pending_for_org(self, *, org_id: str) -> int:
         self.org_ids.append(org_id)
         return self.count
+
+
+class FakeAgentRuns:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, int]] = []
+
+    async def list_agent_summaries(self, *, org_id: str, limit: int) -> list[dict[str, Any]]:
+        self.calls.append((org_id, limit))
+        return [
+            {"id": "classifier", "last_run_status": "completed"},
+            {"id": "writer", "last_run_status": "failed"},
+            {"id": "researcher", "last_run_status": "idle"},
+        ]
+
+
+class ReadBarrier:
+    def __init__(self, expected: int) -> None:
+        self.expected = expected
+        self.started = 0
+        self.ready = asyncio.Event()
+
+    async def arrive(self) -> None:
+        self.started += 1
+        if self.started == self.expected:
+            self.ready.set()
+        await self.ready.wait()
+
+
+class ConcurrentDocuments(FakeDocuments):
+    def __init__(self, barrier: ReadBarrier) -> None:
+        super().__init__([])
+        self.barrier = barrier
+
+    async def list_by_org(self, *, org_id: str, limit: int) -> list[dict[str, Any]]:
+        await self.barrier.arrive()
+        return await super().list_by_org(org_id=org_id, limit=limit)
+
+
+class ConcurrentReviews(FakeReviews):
+    def __init__(self, barrier: ReadBarrier) -> None:
+        super().__init__([])
+        self.barrier = barrier
+
+    async def list_reviews(
+        self, *, status: str | None, org_id: str, limit: int
+    ) -> list[ReviewRecord]:
+        await self.barrier.arrive()
+        return await super().list_reviews(status=status, org_id=org_id, limit=limit)
+
+
+class ConcurrentEvaluations(FakeEvaluations):
+    def __init__(self, barrier: ReadBarrier) -> None:
+        super().__init__([])
+        self.barrier = barrier
+
+    async def search(
+        self, *, org_id: str, evaluation_type: None, limit: int
+    ) -> list[dict[str, Any]]:
+        await self.barrier.arrive()
+        return await super().search(
+            org_id=org_id,
+            evaluation_type=evaluation_type,
+            limit=limit,
+        )
 
 
 class FakeGitHubInstallations:
@@ -270,9 +335,7 @@ async def test_overview_returns_only_newest_active_workflows_with_normalized_sta
     latest = datetime(2026, 9, 9, 12, tzinfo=UTC)
     earlier = latest - timedelta(hours=1)
 
-    async def workflows_for_org(
-        *, org_id: str, db: object
-    ) -> list[dict[str, Any]]:
+    async def workflows_for_org(*, org_id: str, db: object) -> list[dict[str, Any]]:
         assert org_id == "org-a"
         assert db is not None
         return [
@@ -299,9 +362,7 @@ async def test_overview_returns_only_newest_active_workflows_with_normalized_sta
             },
         ]
 
-    monkeypatch.setattr(
-        overview, "list_github_workflows_record", workflows_for_org, raising=False
-    )
+    monkeypatch.setattr(overview, "list_github_workflows_record", workflows_for_org, raising=False)
 
     snapshot = await build_overview_snapshot(_empty_application(), "org-a", 14)
 
@@ -335,6 +396,7 @@ async def test_overview_includes_org_scoped_pending_intervention_count(
     application = _empty_application()
     steering = FakeSteeringInterventions(2)
     application.dependencies.repositories.steering_interventions = steering
+
     async def no_workflows(**_: object) -> list[dict[str, str]]:
         return []
 
@@ -354,6 +416,7 @@ async def test_overview_isolates_a_failed_integration_lookup(
     application = _empty_application()
     application.dependencies.repositories.github_installations = FakeGitHubInstallations()
     application.dependencies.integrations.database = IntegrationDatabase()
+
     async def no_workflows(**_: object) -> list[dict[str, str]]:
         return []
 
@@ -387,3 +450,43 @@ async def test_overview_derives_scheduler_status_from_org_scoped_active_jobs(
 
     assert snapshot["system"]["scheduler_status"] == "Healthy"
     assert jobs.org_ids == ["org-a"]
+
+
+@pytest.mark.asyncio
+async def test_overview_reads_agent_health_with_one_bulk_org_scoped_query(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The dashboard must not rescan runs and steps once per catalog agent."""
+    application = _empty_application()
+    agent_runs = FakeAgentRuns()
+    application.dependencies.repositories.agent_runs = agent_runs
+
+    async def no_workflows(**_: object) -> list[dict[str, str]]:
+        return []
+
+    monkeypatch.setattr(overview, "list_github_workflows_record", no_workflows)
+
+    snapshot = await build_overview_snapshot(application, "org-a", 14)
+
+    assert snapshot["system"]["agents_total"] == 3
+    assert snapshot["system"]["agents_online"] == 2
+    assert agent_runs.calls == [("org-a", 200)]
+
+
+@pytest.mark.asyncio
+async def test_overview_starts_independent_source_reads_concurrently() -> None:
+    """Remote source latency must not accumulate until the proxy times out."""
+    barrier = ReadBarrier(expected=4)
+    application = _empty_application()
+    application.dependencies.integrations.database = None
+    application.dependencies.repositories.documents = ConcurrentDocuments(barrier)
+    application.dependencies.repositories.reviews = ConcurrentReviews(barrier)
+    application.dependencies.repositories.evaluations = ConcurrentEvaluations(barrier)
+
+    snapshot = await asyncio.wait_for(
+        build_overview_snapshot(application, "org-a", 14),
+        timeout=10,
+    )
+
+    assert barrier.started == 4
+    assert snapshot["summary"]["documentation_total"] == 0
