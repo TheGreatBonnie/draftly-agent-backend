@@ -273,10 +273,12 @@ For containerized queue consumption, the Compose file also defines `rq-worker`:
 docker compose -f docker-compose.redis.yml up -d
 ```
 
-Rebuild the worker after changing backend source. A restart alone reuses the existing image:
+Rebuild and start the worker after changing backend source. A restart alone reuses the existing image; `--force-recreate` forces a fresh container:
 
 ```bash
-docker compose -f docker-compose.redis.yml up -d --build
+docker compose -f docker-compose.redis.yml up -d --build rq-worker
+docker compose -f docker-compose.redis.yml up -d --force-recreate rq-worker
+docker compose -f docker-compose.redis.yml logs -f rq-worker
 ```
 
 | Goal | Command |
@@ -284,9 +286,9 @@ docker compose -f docker-compose.redis.yml up -d --build
 | Rebuild only the worker image | `docker compose -f docker-compose.redis.yml build rq-worker` |
 | Recreate the worker from the built image | `docker compose -f docker-compose.redis.yml up -d rq-worker` |
 | Restart without rebuilding | `docker compose -f docker-compose.redis.yml restart rq-worker` |
-| Force recreation | `docker compose -f docker-compose.redis.yml up -d --force-recreate` |
+| Force recreation | `docker compose -f docker-compose.redis.yml up -d --force-recreate rq-worker` |
 | Start or restart Redis only | `docker compose -f docker-compose.redis.yml up -d redis` |
-| Follow Redis and worker logs | `docker compose -f docker-compose.redis.yml logs -f rq-worker redis` |
+| Follow the worker logs | `docker compose -f docker-compose.redis.yml logs -f rq-worker` |
 | Stop both containers | `docker compose -f docker-compose.redis.yml down` |
 
 Recreating Redis drops queued but unprocessed jobs. Drain the queues first or expect to dispatch that work again.

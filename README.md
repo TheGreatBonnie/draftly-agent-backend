@@ -208,6 +208,16 @@ docker compose -f docker-compose.redis.yml exec redis redis-cli ping
 
 The Redis check should return `PONG`. The bootstrap script applies SQL migrations in filename order and checks connectivity. It handles some duplicate-object errors by skipping; it is not a version-tracking migration system.
 
+Start the worker container (builds `docker/Dockerfile.worker` and runs `workers.rq_worker` inside Docker):
+
+```bash
+docker compose -f docker-compose.redis.yml up -d --build rq-worker
+docker compose -f docker-compose.redis.yml up -d --force-recreate rq-worker
+docker compose -f docker-compose.redis.yml logs -f rq-worker
+```
+
+`up -d --build` builds and starts the worker; `--force-recreate` forces a fresh container when you need to pick up changes; `logs -f rq-worker` follows the worker's output. If you run the worker in Docker, skip the native `uv run python -m workers.rq_worker` command in step 3 — use one worker, not both.
+
 ### 3. Start both native processes
 
 In one terminal:
@@ -222,7 +232,7 @@ In a second terminal:
 uv run python main.py
 ```
 
-Both processes load the same `.env`. The RQ worker consumes the `scheduled`, `webhooks`, and `default` queues under the configured prefix. Starting only the API does not consume queued jobs.
+Both processes load the same `.env`. The RQ worker consumes the `scheduled`, `webhooks`, and `default` queues under the configured prefix. Starting only the API does not consume queued jobs. If you already started the worker container in step 2, run only `uv run python main.py` here.
 
 ### 4. Check liveness and readiness
 
