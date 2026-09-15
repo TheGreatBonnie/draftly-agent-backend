@@ -273,6 +273,24 @@ For containerized queue consumption, the Compose file also defines `rq-worker`:
 docker compose -f docker-compose.redis.yml up -d
 ```
 
+Rebuild the worker after changing backend source. A restart alone reuses the existing image:
+
+```bash
+docker compose -f docker-compose.redis.yml up -d --build
+```
+
+| Goal | Command |
+|------|---------|
+| Rebuild only the worker image | `docker compose -f docker-compose.redis.yml build rq-worker` |
+| Recreate the worker from the built image | `docker compose -f docker-compose.redis.yml up -d rq-worker` |
+| Restart without rebuilding | `docker compose -f docker-compose.redis.yml restart rq-worker` |
+| Force recreation | `docker compose -f docker-compose.redis.yml up -d --force-recreate` |
+| Start or restart Redis only | `docker compose -f docker-compose.redis.yml up -d redis` |
+| Follow Redis and worker logs | `docker compose -f docker-compose.redis.yml logs -f rq-worker redis` |
+| Stop both containers | `docker compose -f docker-compose.redis.yml down` |
+
+Recreating Redis drops queued but unprocessed jobs. Drain the queues first or expect to dispatch that work again.
+
 That worker reads `.env`, overrides `REDIS_URL` to `redis://redis:6379/0`, and waits for the Redis health check. Configure the same pgvector/cache settings for plain Redis. This command does not start the API.
 
 The current [worker Dockerfile](../../docker/Dockerfile.worker) copies the local `secrets/` directory into the image. Compose sets `GITHUB_PRIVATE_KEY_PATH=secrets/private-key.pem`; make the configured key available for GitHub App operations. A mounted key alone does not remove a key already baked into an image. Treat such an image as sensitive and do not publish it. Native workers avoid this container packaging issue.

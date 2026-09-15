@@ -1,6 +1,6 @@
 # README evidence audit
 
-Audit date: 2026-09-05. Scope: the persuasive README rewrite, inspected against the current backend checkout and its sibling frontend. This is a source and documentation audit, not a live demonstration or benchmark report.
+Audit date: 2026-09-15. Scope: the backend README, inspected against the current backend checkout and its sibling frontend. This is a source and documentation audit, not a live demonstration or benchmark report.
 
 ## Claim and artifact inventory
 
@@ -18,10 +18,10 @@ Audit date: 2026-09-05. Scope: the persuasive README rewrite, inspected against 
 | OAuth documentation scenario | [Dataset](../src/draftly/evaluation/datasets/documentation.json) | illustration | Explicit illustrative label and expected coverage table |
 | Groundedness and other evaluation dimensions | [Evaluation implementation](../src/draftly/evaluation/), [runtime evaluator](../src/draftly/orchestration/nodes/evaluate.py) | implementation | Separate LLM judgments from deterministic/heuristic checks |
 | Measured pass rates, latency, cost, or time saved | No qualifying run artifact found in searched README, docs, reports, or runtime filenames | unverified | Publish no numerical result or efficiency claim |
-| Recorded demo and delivered PR | No verified link found in searched README, docs, and Authly scenario Markdown | unverified | State absence; do not invent links |
-| UI image assets | Sibling `onboarding-flow-designs/` contains design images; frontend public assets contain a logo | illustration | Do not present design assets as execution screenshots |
-| Complete frontend experience | [Frontend README](../../draftly-agent-frontend/README.md), frontend routes and typed API client | implementation | Link setup and describe review workspace; do not claim live validation |
-| Open-source license | [LICENSE](../LICENSE) has zero bytes | unverified | Identify unresolved licensing explicitly; owner must select license |
+| Recorded demo and delivered PR | The README links a YouTube demo and includes a local thumbnail; no delivered PR artifact was verified | partially verified | Preserve the demo link without treating it as benchmark evidence |
+| UI image assets | The local demo thumbnail exists; frontend public assets contain a logo | illustration | Do not present design assets as measured execution evidence |
+| Complete frontend experience | [Frontend README](../../draftly-agent-ui/README.md), frontend routes, and typed API client | implementation | Link setup and describe the review workspace; do not claim live validation |
+| Open-source license | [LICENSE](../LICENSE) contains the MIT License text | implementation | Keep the MIT badge linked to the repository license |
 | Hackathon judging and submission expectations | [Official hackathon page](https://agentsforhumans.devpost.com/), opened during this audit | observed run | Cite event page; identify Professional Agents as intended track only |
 
 Searches included tracked files and an additional filesystem walk excluding `.git`, `.venv`, `node_modules`, and Python caches. Internal `.superpowers/sdd/` implementation reports and graph reports were found; they were not treated as live agent benchmark results. The audit does not establish that no evidence exists outside the searched workspace.
@@ -38,7 +38,7 @@ Searches included tracked files and an additional filesystem walk excluding `.gi
 | Worker topology | [RQ worker](../workers/rq_worker.py), [lifecycle](../src/draftly/app/lifecycle.py), [Settings](../src/draftly/app/config.py) | `rq_enabled` defaults true; document separate native worker rather than implying API consumes queues |
 | Authentication | [API auth](../src/draftly/app/api/auth.py), [Settings](../src/draftly/app/config.py) | Clerk configuration additional to API liveness; same application as frontend |
 | GitHub connection | [GitHub route](../src/draftly/app/api/routes/github.py), Settings | App configuration, installed repository, webhook reachability, and private-key path required |
-| Frontend | [Frontend setup](../../draftly-agent-frontend/README.md) | Sibling app, Clerk keys, backend URL, onboarding |
+| Frontend | [Frontend setup](../../draftly-agent-ui/README.md) | Sibling app, Clerk keys, backend URL, onboarding |
 | API liveness | [Health route](../src/draftly/app/api/routes/health.py), [API composition](../src/draftly/app/api/app.py) | `/api/health` returns status ok and service draftly; does not test models or delivery |
 | Integrated outcome | Dataset and route implementation | Merged PR → run → required review → approved delivery is expected, not demonstrated here |
 | Evaluation CLI | [Script](../scripts/run_evaluation.py) | `--live` and `--datasets` supported; inspect result status/errors because main returns zero after printing batch output |
@@ -48,27 +48,27 @@ Searches included tracked files and an additional filesystem walk excluding `.gi
 
 ## Editorial decisions
 
-- Keep the backend README as entry point and link the frontend; do not create a root README.
+- Keep the backend README as an entry point and link the in-repository frontend.
 - Use one product walkthrough and one architecture diagram, including no-docs release routing and review bypass.
 - Describe runtime evaluators separately from dataset-based Strands Evals; do not equate scores with factual guarantees.
 - Use existing source and scenario links in place of unavailable recorded demonstrations.
-- Keep provider and worker alternatives in engineering guides; preserve container instructions with their observed limitations.
-- Keep licensing choice with the owner. The rewrite neither selects a license nor edits the empty file.
+- Keep provider, deployment, and worker alternatives in focused engineering guides.
+- Reflect the repository's existing MIT license without making additional licensing claims.
 - Existing architecture/deployment guides contain broader historical assertions; links provide further context, not blanket verification of every statement in those guides.
 
 ## Verification record
 
-- `git -C draftly-agent-backend diff --check`: passed for the documentation diff.
-- Local-link/anchor verification: 95 links checked across the four documentation files; all targets and anchors resolved. Eleven README sections appear in the planned order; exactly one Mermaid block and balanced fences confirmed.
-- SHA-256 comparison: all 628 Python files captured before editing remained unchanged. Git status shows only the README, the two deployment guides, and this audit as backend changes.
-- `pandoc -f gfm -t html5 --standalone`: generated a local GitHub-flavored Markdown preview successfully.
-- Browser preview: inspected the opening and architecture screenshots at 1280px viewport width; tables and navigation remained within the page. Mermaid 11.17.2 rendered 18 nodes, with no page overflow. Preview styling approximates GitHub; this was not a hosted GitHub rendering check.
-- The first evaluation `--help` attempt encountered an inherited `DEBUG=release`, which Pydantic rejects as a boolean. Re-running from the backend with `DEBUG=false .venv/bin/python scripts/run_evaluation.py --help` passed and confirmed `--datasets` and `--live`. The README now explains the exported environment override.
-- The official hackathon page was opened and its stated track and submission requirements checked. No public demo or artifact URL was available to verify.
-- Commands for bootstrap, native startup, Compose, and containers were inspected against source and manifests. No migrations, service launches, image builds, live model calls, publication, or application test suite were run. Health JSON is verified from route code, not a running service.
+For the 2026-09-15 refresh:
+
+- `git diff --check` passed for the documentation changes.
+- Every local Markdown link, HTML link, and image target in the changed documents resolved on disk.
+- The README contains one quickstart, one walkthrough, one Mermaid diagram, and balanced code fences in the intended order.
+- `pandoc -f gfm -t html5 --standalone` rendered each changed Markdown document successfully.
+- Setup, health, AgentCore, and Compose commands were checked against the current source and manifests. No migrations, service launches, image builds, live model calls, publication, or application test suite were run.
+- The README links a public demo video. This local source audit did not revalidate the external video's availability or contents.
 
 ## Plan completion and remaining evidence
 
-All five documentation tasks are implemented. The README is shorter than the advisory 180–250 nonblank-line target because unsupported demonstration assets and numeric results were omitted. The scope remains documentation only; the application and dataset behavior were not changed, and no graph update is needed for code changes.
+The README refresh keeps setup and product orientation near the top, preserves the implementation-grounded architecture description, and moves detailed operations into deployment guides. The scope remains documentation only; application and dataset behavior were not changed.
 
-A recorded demo, a generated output PR, measured runs with provenance, successful fresh setup, and a selected license remain project evidence/submission work outside this rewrite. The empty license and API image packaging defects are documented rather than silently fixed. The plan's rendering check required correcting the temporary Pandoc-to-Mermaid preview adapter; the source diagram itself parsed successfully.
+A generated output PR, measured runs with provenance, and a successful fresh setup remain project evidence outside this refresh. API and worker image packaging limitations remain documented rather than silently changed.
