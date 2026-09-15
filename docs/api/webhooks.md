@@ -27,6 +27,43 @@ flowchart TD
     WR --> WF[Workflows]
 ```
 
+### 1.1 Exposing webhooks during local development
+
+All four endpoints live under `/api` on the FastAPI backend. During local development, expose them
+with a single ngrok tunnel to the **Next.js dev server** rather than to FastAPI directly — Next.js
+rewrites every `/api/*` request to the backend (`draftly-agent-ui/next.config.ts`) and passes the
+request body and signing headers (Svix `svix-*`, GitHub `X-Hub-Signature-256`, Slack
+`X-Slack-Signature`, Discord `X-Signature-Ed25519`) through unchanged, so signature verification
+works over the tunnel:
+
+```bash
+ngrok http 3000          # → https://<slug>.ngrok-free.dev
+```
+
+Register the tunnel origin (not `localhost:8000`) for each platform:
+
+| Platform | Endpoint on the tunnel |
+| --- | --- |
+| GitHub webhooks | `https://<slug>.ngrok-free.dev/api/github/webhook` |
+| GitHub App setup | `https://<slug>.ngrok-free.dev/api/github/setup-callback` |
+| Slack (HTTP mode) | `https://<slug>.ngrok-free.dev/api/slack/events` |
+| Discord | `https://<slug>.ngrok-free.dev/api/discord/interactions` |
+| Clerk | `https://<slug>.ngrok-free.dev/api/clerk/webhook` |
+
+For Slack, Socket Mode is the ngrok-free alternative for local development (see
+`integrations/slack/socket.py`).
+
+Browser-facing configuration must share the same origin as the tunnel:
+
+- Set backend `FRONTEND_URL` to the tunnel origin so GitHub's setup-callback redirects land on the
+  origin that planted the auth cookie.
+- The backend CORS middleware and Next.js `allowedDevOrigins` must accept the host. When it differs
+  from the hardcoded defaults, set `ALLOWED_ORIGINS` (draftly-agent-backend) and `ALLOWED_DEV_ORIGINS`
+  (draftly-agent-ui) to the tunnel host, comma-separated.
+
+ngrok's free tier triggers a one-time "You are about to visit" interstitial per browser session;
+click through once — subsequent top-level redirects pass through.
+
 ## 2. GitHub Webhooks
 
 **Endpoint:** `POST /api/github/webhook`
