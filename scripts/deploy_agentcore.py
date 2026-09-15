@@ -19,7 +19,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--container-uri", required=True)
     parser.add_argument("--role-arn", required=True)
-    parser.add_argument("--runtime-name", default="draftly-agentcore")
+    parser.add_argument("--runtime-name", default="draftly_agentcore")
     parser.add_argument("--region", default="us-east-1")
     parser.add_argument("--network-mode", choices=["PUBLIC", "VPC"], default="PUBLIC")
     parser.add_argument("--security-group-ids", nargs="*", default=[])

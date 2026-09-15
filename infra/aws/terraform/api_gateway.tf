@@ -4,7 +4,7 @@ resource "aws_apigatewayv2_api" "main" {
   description   = "Draftly API Gateway for webhook endpoints"
 
   cors_configuration {
-    allow_credentials = true
+    allow_credentials = false
     allow_headers     = ["*"]
     allow_methods     = ["GET", "POST", "PUT", "DELETE", "OPTIONS"]
     allow_origins     = ["*"]
@@ -21,7 +21,7 @@ resource "aws_apigatewayv2_vpc_link" "main" {
 resource "aws_apigatewayv2_integration" "api" {
   api_id           = aws_apigatewayv2_api.main.id
   integration_type = "HTTP_PROXY"
-  integration_uri  = "https://${aws_lb.main.dns_name}"
+  integration_uri  = aws_lb_listener.http.arn
   integration_method = "ANY"
   payload_format_version = "2.0"
   connection_type  = "VPC_LINK"
@@ -119,14 +119,14 @@ resource "aws_wafv2_web_acl" "api_gateway" {
 resource "aws_wafv2_web_acl_association" "api_gateway" {
   count              = var.enable_waf ? 1 : 0
   resource_arn       = aws_apigatewayv2_stage.main.arn
-  web_acl_arn        = aws_wafv2_web_acl.api_gateway.arn
+  web_acl_arn        = aws_wafv2_web_acl.api_gateway[0].arn
 }
 
 resource "aws_apigatewayv2_domain_name" "custom" {
   count = length(var.custom_domain_name) > 0 ? 1 : 0
   domain_name = var.custom_domain_name
   domain_name_configuration {
-    certificate_arn = aws_acm_certificate.custom.arn
+    certificate_arn = aws_acm_certificate.custom[0].arn
     endpoint_type   = "REGIONAL"
     security_policy = "TLS_1_2"
   }

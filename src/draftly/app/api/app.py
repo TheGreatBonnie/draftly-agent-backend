@@ -1,5 +1,7 @@
 # app/api/app.py
 
+import os
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -45,12 +47,19 @@ def create_api_app() -> FastAPI:
 
     app.add_middleware(RequestLoggingMiddleware)
 
+    allow_origins = [
+        "http://localhost:3000",
+        "https://grit-flagstone-recreate.ngrok-free.dev",
+    ]
+    allow_origins += [
+        origin.strip()
+        for origin in os.getenv("ALLOWED_ORIGINS", "").split(",")
+        if origin.strip()
+    ]
+
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=[
-            "http://localhost:3000",
-            "https://grit-flagstone-recreate.ngrok-free.dev",
-        ],
+        allow_origins=allow_origins,
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],

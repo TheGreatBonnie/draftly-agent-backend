@@ -100,10 +100,13 @@ resource "aws_lb" "main" {
   subnets            = aws_subnet.public[*].id
   enable_deletion_protection = var.environment == "prod"
 
-  access_logs {
-    bucket  = var.alb_access_logs_bucket != "" ? var.alb_access_logs_bucket : null
-    enabled = var.alb_access_logs_bucket != ""
-    prefix  = "${var.project_name}-${var.environment}"
+  dynamic "access_logs" {
+    for_each = var.alb_access_logs_bucket != "" ? [1] : []
+    content {
+      bucket  = var.alb_access_logs_bucket
+      enabled = true
+      prefix  = "${var.project_name}-${var.environment}"
+    }
   }
 
   tags = {
@@ -132,31 +135,14 @@ resource "aws_lb_target_group" "api" {
   }
 }
 
-resource "aws_lb_listener" "https" {
-  load_balancer_arn = aws_lb.main.arn
-  port              = 443
-  protocol          = "HTTPS"
-  ssl_policy        = "ELBSecurityPolicy-TLS13-1-2-2021-06"
-  certificate_arn   = aws_acm_certificate.main.arn
-
-  default_action {
-    type             = "forward"
-    target_group_arn = aws_lb_target_group.api.arn
-  }
-}
-
 resource "aws_lb_listener" "http" {
   load_balancer_arn = aws_lb.main.arn
   port              = 80
   protocol          = "HTTP"
 
   default_action {
-    type = "redirect"
-    redirect {
-      port        = "443"
-      protocol    = "HTTPS"
-      status_code = "HTTP_301"
-    }
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.api.arn
   }
 }
 
@@ -188,7 +174,7 @@ resource "aws_ecs_service" "api" {
     container_port   = 8000
   }
 
-  depends_on = [aws_lb_listener.https]
+  depends_on = [aws_lb_listener.http]
 }
 
 resource "aws_ecs_service" "workflow_worker" {
@@ -202,10 +188,6 @@ resource "aws_ecs_service" "workflow_worker" {
     subnets         = aws_subnet.private[*].id
     security_groups = [aws_security_group.ecs_tasks.id]
     assign_public_ip = false
-  }
-
-  environment = {
-    WORKER_TYPE = "workflow"
   }
 }
 
@@ -221,10 +203,6 @@ resource "aws_ecs_service" "indexing_worker" {
     security_groups = [aws_security_group.ecs_tasks.id]
     assign_public_ip = false
   }
-
-  environment = {
-    WORKER_TYPE = "indexing"
-  }
 }
 
 resource "aws_ecs_service" "evaluation_worker" {
@@ -238,10 +216,6 @@ resource "aws_ecs_service" "evaluation_worker" {
     subnets         = aws_subnet.private[*].id
     security_groups = [aws_security_group.ecs_tasks.id]
     assign_public_ip = false
-  }
-
-  environment = {
-    WORKER_TYPE = "evaluation"
   }
 }
 
@@ -435,13 +409,4 @@ resource "aws_iam_policy" "eventbridge_ecs" {
 resource "aws_iam_role_policy_attachment" "eventbridge_ecs" {
   role       = aws_iam_role.eventbridge_ecs.name
   policy_arn = aws_iam_policy.eventbridge_ecs.arn
-}
-
-resource "aws_acm_certificate" "main" {
-  domain_name       = "api.${var.project_name}.internal"
-  validation_method = "DNS"
-
-  lifecycle {
-    create_before_destroy = true
-  }
 }

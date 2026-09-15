@@ -28,6 +28,38 @@ resource "aws_kms_key" "logs" {
   enable_key_rotation     = true
 }
 
+resource "aws_kms_key_policy" "logs" {
+  key_id = aws_kms_key.logs.id
+  policy = jsonencode({
+    Version   = "2012-10-17"
+    Id        = "draftly-logs-key"
+    Statement = [
+      {
+        Sid       = "Enable IAM user permissions"
+        Effect    = "Allow"
+        Principal = { AWS = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:root" }
+        Action    = "kms:*"
+        Resource  = "*"
+      },
+      {
+        Sid       = "Allow CloudWatch Logs to use the key"
+        Effect    = "Allow"
+        Principal = { Service = "logs.amazonaws.com" }
+        Action = [
+          "kms:Encrypt",
+          "kms:Decrypt",
+          "kms:ReEncrypt*",
+          "kms:GenerateDataKey*",
+          "kms:DescribeKey",
+          "kms:CreateGrant",
+          "kms:RetireGrant",
+        ]
+        Resource = "*"
+      },
+    ]
+  })
+}
+
 resource "aws_cloudwatch_metric_alarm" "api_cpu_high" {
   alarm_name          = "${var.project_name}-${var.environment}-api-cpu-high"
   comparison_operator = "GreaterThanThreshold"
@@ -170,11 +202,13 @@ resource "aws_cloudwatch_metric_alarm" "rds_storage_low" {
 
 resource "aws_sns_topic" "alerts" {
   name = "${var.project_name}-${var.environment}-alerts"
+}
 
-  subscription {
-    protocol = "email"
-    endpoint = var.alert_email
-  }
+resource "aws_sns_topic_subscription" "alerts" {
+  count     = length(var.alert_email) > 0 ? 1 : 0
+  topic_arn = aws_sns_topic.alerts.arn
+  protocol  = "email"
+  endpoint  = var.alert_email
 }
 
 resource "aws_sns_topic_policy" "alerts" {
