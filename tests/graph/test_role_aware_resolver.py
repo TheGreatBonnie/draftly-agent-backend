@@ -30,7 +30,7 @@ def router():
     reg.register_provider(provider)
     reg.register_model(ModelConfig(
         name="writer-model", provider="openrouter", model_id="org/w",
-        capabilities=("reasoning", "tool_calling", "structured_output"),
+        capabilities=("reasoning", "research", "tool_calling", "structured_output"),
         priority=1,
     ))
     # Cheap pricing lets the FAST profile (w_cost=0.25) prefer the

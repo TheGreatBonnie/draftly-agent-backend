@@ -1,6 +1,7 @@
 from .base import ModelProvider
 from .bedrock import BedrockProvider
 from .mantle import MantleOpenAIProvider, MantleProvider
+from .nebius_token_factory import NebiusTokenFactoryProvider
 from .nvidia import NvidiaProvider
 from .openrouter import OpenRouterProvider
 from .orcarouter import OrcaRouterProvider
@@ -11,6 +12,7 @@ __all__ = [
     "BedrockProvider",
     "MantleOpenAIProvider",
     "MantleProvider",
+    "NebiusTokenFactoryProvider",
     "NvidiaProvider",
     "OpenRouterProvider",
     "OrcaRouterProvider",

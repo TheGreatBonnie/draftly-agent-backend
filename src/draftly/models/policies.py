@@ -9,7 +9,16 @@ __all__ = [
 ]
 
 KNOWN_PROVIDERS = frozenset(
-    {"openrouter", "nvidia", "requesty", "orcarouter", "bedrock", "mantle", "mantle-openai"}
+    {
+        "openrouter",
+        "nvidia",
+        "requesty",
+        "orcarouter",
+        "bedrock",
+        "mantle",
+        "mantle-openai",
+        "nebius_token_factory",
+    }
 )
 
 FALLBACKS: dict[str, tuple[str, ...]] = {

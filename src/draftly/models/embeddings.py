@@ -33,8 +33,10 @@ class OpenAICompatibleEmbedder:
         base_url: str | None,
         model_id: str,
         timeout: float = 60.0,
+        dimensions: int | None = None,
     ) -> None:
         self.model_id = model_id
+        self.dimensions = dimensions
         self._client = OpenAI(
             api_key=api_key,
             base_url=base_url,
@@ -45,18 +47,18 @@ class OpenAICompatibleEmbedder:
         self,
         text: str,
     ) -> list[float]:
-        response = self._client.embeddings.create(
-            model=self.model_id,
-            input=text,
-        )
+        kwargs = {"model": self.model_id, "input": text}
+        if self.dimensions is not None:
+            kwargs["dimensions"] = self.dimensions
+        response = self._client.embeddings.create(**kwargs)
 
         return response.data[0].embedding
 
     def embed_queries(self, texts: Sequence[str]) -> list[list[float]]:
-        response = self._client.embeddings.create(
-            model=self.model_id,
-            input=list(texts),
-        )
+        kwargs = {"model": self.model_id, "input": list(texts)}
+        if self.dimensions is not None:
+            kwargs["dimensions"] = self.dimensions
+        response = self._client.embeddings.create(**kwargs)
         return [item.embedding for item in response.data]
 
 

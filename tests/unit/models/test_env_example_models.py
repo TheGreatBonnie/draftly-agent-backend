@@ -60,6 +60,24 @@ SURVIVORS: tuple[tuple[str, str, str, str], ...] = (
         "ORCA_OPENAI_5.6_LUNA_MODEL",
         "openai/gpt-5.6-luna",
     ),
+    (
+        "nemotron-nano-fast",
+        "nebius_token_factory",
+        "NEMOTRON_NANO_MODEL_ID",
+        "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B",
+    ),
+    (
+        "nemotron-super-research",
+        "nebius_token_factory",
+        "NEMOTRON_SUPER_MODEL_ID",
+        "nvidia/nemotron-3-super-120b-a12b",
+    ),
+    (
+        "nemotron-ultra-doc",
+        "nebius_token_factory",
+        "NEMOTRON_ULTRA_MODEL_ID",
+        "nvidia/NVIDIA-Nemotron-3-Ultra-550b-a55b",
+    ),
 )
 
 #: Probe verdicts: 404/410 on every probe (EOL or never deployed).

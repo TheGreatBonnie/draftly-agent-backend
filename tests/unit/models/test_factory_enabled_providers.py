@@ -33,9 +33,7 @@ def _route_env(value: str | None):
     else:
         os.environ[ENABLED_PROVIDERS_ENV] = value
     router = build_model_router()
-    return router.route(
-        RoutingRequest(task_type=TaskType.REASONING, context_tokens=1000)
-    )
+    return router.route(RoutingRequest(task_type=TaskType.REASONING, context_tokens=1000))
 
 
 class TestEnabledProviders:
@@ -68,6 +66,7 @@ class TestEnabledProviders:
             "requesty",
             "orcarouter",
             "openrouter",
+            "nebius_token_factory",
         }
 
     def test_empty_set_routes_nowhere(self) -> None:
@@ -99,6 +98,7 @@ class TestEnvEnabledProviders:
             "requesty",
             "orcarouter",
             "openrouter",
+            "nebius_token_factory",
         }
 
     def test_env_flag_unset_means_every_provider(self) -> None:
@@ -109,6 +109,7 @@ class TestEnvEnabledProviders:
             "requesty",
             "orcarouter",
             "openrouter",
+            "nebius_token_factory",
         }
 
     def test_explicit_param_beats_env(self) -> None:

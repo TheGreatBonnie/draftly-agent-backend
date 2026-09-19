@@ -26,7 +26,8 @@ TASK_TYPE_CAPABILITIES: dict[TaskType, frozenset[str]] = {
     ),
     TaskType.DOCUMENTATION_REVIEW: frozenset({"verification"}),
     TaskType.EVALUATION: frozenset({"evaluation"}),
-    # SUPPORT/FAST/REASONING/RESEARCH: no hard capability floor beyond text
+    TaskType.RESEARCH: frozenset({"research"}),
+    # SUPPORT/FAST/REASONING: no hard capability floor beyond text
 }
 
 

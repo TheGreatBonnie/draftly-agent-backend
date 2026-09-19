@@ -17,6 +17,7 @@ from .providers import (
     BedrockProvider,
     MantleOpenAIProvider,
     MantleProvider,
+    NebiusTokenFactoryProvider,
     NvidiaProvider,
     OpenRouterProvider,
     OrcaRouterProvider,
@@ -174,6 +175,17 @@ def build_model_router(
                 api_key=os.getenv("MANTLE_API_KEY"),
                 base_url=os.getenv("MANTLE_OPENAI_ENDPOINT_URL"),
                 priority=3,  # Same account, translated frontend (grok/gemma)
+            )
+        )
+    )
+
+    registry.register_provider(
+        NebiusTokenFactoryProvider(
+            ProviderConfig(
+                name="nebius_token_factory",
+                api_key=os.getenv("NEBIUS_TOKEN_FACTORY_API_KEY"),
+                base_url=os.getenv("NEBIUS_TOKEN_FACTORY_BASE_URL"),
+                priority=15,
             )
         )
     )
@@ -712,6 +724,72 @@ def build_model_router(
         )
     )
 
+    # --- Nebius Token Factory: NVIDIA Nemotron-3 (OpenAI-compatible) ---
+    # Deterministic role mapping via capability floors + cost scoring:
+    #  FAST/SUPPORT/DELIVERY -> nano   (cheapest eligible for fast)
+    #  RESEARCH/EVALUATION   -> super  (cheapest eligible for research/eval)
+    #  DOCGEN/DOCREVIEW      -> ultra  (only eligible for reasoning/verification)
+    registry.register_model(
+        ModelConfig(
+            name="nemotron-nano-fast",
+            provider="nebius_token_factory",
+            model_id=_resolve_model_id(
+                "NEMOTRON_NANO_MODEL_ID",
+                default="nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B",
+            ),
+            capabilities=(
+                "tool_calling",
+            ),
+            priority=10,
+            context_window=262000,
+            input_cost_per_1m_tokens=0.06,
+            output_cost_per_1m_tokens=0.24,
+        )
+    )
+
+    registry.register_model(
+        ModelConfig(
+            name="nemotron-super-research",
+            provider="nebius_token_factory",
+            model_id=_resolve_model_id(
+                "NEMOTRON_SUPER_MODEL_ID",
+                default="nvidia/nemotron-3-super-120b-a12b",
+            ),
+            capabilities=(
+                "research",
+                "evaluation",
+                "tool_calling",
+            ),
+            priority=20,
+            context_window=256000,
+            input_cost_per_1m_tokens=0.30,
+            output_cost_per_1m_tokens=0.90,
+        )
+    )
+
+    registry.register_model(
+        ModelConfig(
+            name="nemotron-ultra-doc",
+            provider="nebius_token_factory",
+            model_id=_resolve_model_id(
+                "NEMOTRON_ULTRA_MODEL_ID",
+                default="nvidia/NVIDIA-Nemotron-3-Ultra-550b-a55b",
+            ),
+            capabilities=(
+                "reasoning",
+                "verification",
+                "research",
+                "evaluation",
+                "tool_calling",
+                "structured_output",
+            ),
+            priority=30,
+            context_window=1024000,
+            input_cost_per_1m_tokens=1.00,
+            output_cost_per_1m_tokens=3.00,
+        )
+    )
+
     return ModelRouter(
         registry=registry,
         health=health,
@@ -772,6 +850,7 @@ PROVIDER_CLASSES = {
     "bedrock": BedrockProvider,
     "mantle": MantleProvider,
     "mantle-openai": MantleOpenAIProvider,
+    "nebius_token_factory": NebiusTokenFactoryProvider,
 }
 
 def build_agent_policies() -> dict[str, AgentModelPolicy]:
@@ -813,6 +892,7 @@ def build_embedding_router() -> EmbeddingRouter:
         ("requesty", "REQUESTY_API_KEY", "REQUESTY_BASE_URL"),
         ("orcarouter", "ORCAROUTER_API_KEY", "ORCAROUTER_BASE_URL"),
         ("openrouter", "OPENROUTER_API_KEY", "OPENROUTER_BASE_URL"),
+        ("nebius_token_factory", "NEBIUS_TOKEN_FACTORY_API_KEY", "NEBIUS_TOKEN_FACTORY_BASE_URL"),
     ):
         api_key = os.getenv(api_key_var)
 
@@ -853,6 +933,20 @@ def build_embedding_router() -> EmbeddingRouter:
                 model_id=model_id,
                 dimensions=1536,
                 priority=priority,
+            )
+        )
+
+    if "nebius_token_factory" in registry.providers():
+        registry.register_embedding_model(
+            EmbeddingConfig(
+                name="embedding-nebius-token-factory",
+                provider="nebius_token_factory",
+                model_id=_resolve_model_id(
+                    "EMBEDDING_MODEL_ID",
+                    default="Qwen/Qwen3-Embedding-8B",
+                ),
+                dimensions=1536,
+                priority=40,
             )
         )
 

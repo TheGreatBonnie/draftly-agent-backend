@@ -8,10 +8,17 @@ class _FakeOpenAI:
     def __init__(self):
         self.calls = []
         self._embeddings = self._Embeddings()
+        self._embeddings._calls = self.calls
 
     class _Embeddings:
-        def create(self, *, model, input):
+        def create(self, *, model, input, dimensions=None):
             # record the inputs we sent; return fake vectors in order
+            outer = self
+            holder = getattr(outer, "_calls", None)
+            if holder is not None:
+                holder.append(
+                    {"model": model, "input": input, "dimensions": dimensions}
+                )
             return SimpleNamespace(data=[
                 SimpleNamespace(embedding=[float(i), float(i + 1)])
                 for i, _ in enumerate(input)
@@ -33,6 +40,29 @@ def test_embed_queries_sends_all_texts_in_one_call():
     assert len(out) == 3
     assert out[0] == [0.0, 1.0]
     assert out[2] == [2.0, 3.0]
+
+
+def test_embed_forwards_dimensions_when_configured():
+    embedder = OpenAICompatibleEmbedder(
+        api_key="k", base_url="https://x", model_id="Qwen/Qwen3-Embedding-8B",
+        dimensions=1536,
+    )
+    client = _FakeOpenAI()
+    embedder._client = client
+    out = embedder.embed_queries(["a", "b"])
+    assert len(out) == 2
+    assert client.calls[0]["dimensions"] == 1536
+    assert client.calls[0]["model"] == "Qwen/Qwen3-Embedding-8B"
+
+
+def test_embed_omits_dimensions_when_not_configured():
+    embedder = OpenAICompatibleEmbedder(
+        api_key="k", base_url="https://x", model_id="text-embedding-3-small",
+    )
+    client = _FakeOpenAI()
+    embedder._client = client
+    embedder.embed_queries(["a"])
+    assert client.calls[0]["dimensions"] is None
 
 
 def _embedder_returning(n_vecs):
