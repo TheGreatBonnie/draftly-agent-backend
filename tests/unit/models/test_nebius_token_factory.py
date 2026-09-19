@@ -132,3 +132,50 @@ class TestNebiusTokenFactoryProvider:
         assert isinstance(embedder, OpenAICompatibleEmbedder)
         assert embedder.model_id == "Qwen/Qwen3-Embedding-8B"
         assert embedder.dimensions == 1536
+
+
+class TestNebiusTokenFactoryModelFormatRequest:
+    """Token Factory rejects ``tools: []``; the override must omit it.
+
+    vLLM-backed Token Factory endpoints return HTTP 400
+    ("`tools` must not be an empty array") when strands emits the empty
+    list for a tool-less chat or structured-output request.
+    """
+
+    def _model(self):
+        provider = NebiusTokenFactoryProvider(
+            ProviderConfig(
+                name="nebius_token_factory",
+                api_key="test-key",
+                base_url=None,
+            )
+        )
+        return provider.create_model(
+            ModelConfig(
+                name="nemotron-nano-fast",
+                provider="nebius_token_factory",
+                model_id="nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B",
+            )
+        )
+
+    def test_omits_tools_when_none_supplied(self) -> None:
+        request = self._model().format_request(
+            [{"role": "user", "content": [{"text": "hi", "type": "text"}]}]
+        )
+
+        assert "tools" not in request
+        assert "tool_choice" not in request
+
+    def test_keeps_tools_when_supplied(self) -> None:
+        request = self._model().format_request(
+            [{"role": "user", "content": [{"text": "hi", "type": "text"}]}],
+            tool_specs=[
+                {
+                    "name": "roll_dice",
+                    "description": "Roll a die.",
+                    "inputSchema": {"json": {"type": "object", "properties": {}}},
+                }
+            ],
+        )
+
+        assert [t["function"]["name"] for t in request["tools"]] == ["roll_dice"]

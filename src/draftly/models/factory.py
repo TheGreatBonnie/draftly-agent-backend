@@ -773,7 +773,7 @@ def build_model_router(
             provider="nebius_token_factory",
             model_id=_resolve_model_id(
                 "NEMOTRON_ULTRA_MODEL_ID",
-                default="nvidia/NVIDIA-Nemotron-3-Ultra-550b-a55b",
+                default="nvidia/Nemotron-3-Ultra-550b-a55b",
             ),
             capabilities=(
                 "reasoning",

@@ -76,7 +76,7 @@ SURVIVORS: tuple[tuple[str, str, str, str], ...] = (
         "nemotron-ultra-doc",
         "nebius_token_factory",
         "NEMOTRON_ULTRA_MODEL_ID",
-        "nvidia/NVIDIA-Nemotron-3-Ultra-550b-a55b",
+        "nvidia/Nemotron-3-Ultra-550b-a55b",
     ),
 )
 
