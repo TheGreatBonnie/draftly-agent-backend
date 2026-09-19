@@ -285,6 +285,81 @@ Strands supplies agents, graph orchestration, and interrupt hooks. Draftly suppl
 
 The graph supports `always`, `risky`, and `never` review policies. Unknown policy values resolve to `always`. Review approval does not merge the resulting GitHub PR; maintainers still control that repository action.
 
+## Run every agent on NVIDIA Nemotron-3 (Nebius Token Factory)
+
+Draftly can serve the whole documentation graph from
+[Nebius Token Factory](https://docs.tokenfactory.nebius.com/) — three
+Nemotron-3 tiers for the agents and `Qwen/Qwen3-Embedding-8B` for retrieval —
+through the same provider abstraction used for the other six providers. No
+graph, agent, or tool code changes: the router does the selection.
+
+```bash
+NEBIUS_TOKEN_FACTORY_API_KEY=<token-factory-key>
+NEBIUS_TOKEN_FACTORY_BASE_URL=https://api.tokenfactory.nebius.com/v1
+DRAFTLY_ENABLED_PROVIDERS=nebius_token_factory
+```
+
+`DRAFTLY_ENABLED_PROVIDERS` is an allowlist. With `nebius_token_factory` and
+nothing else enabled, **every role in `ROLE_TO_TASK_TYPE` resolves to a Nemotron
+tier** — the router never leaks to another provider. Turning the flag off
+(`DRAFTLY_ENABLED_PROVIDERS=mantle`, for example) removes the provider from the
+registry entirely.
+
+### Role → model mapping and cost
+
+Routing is capability-floor first, then cost. `DOCGEN`/`DOCREVIEW` require
+`reasoning`/`verification`, which only `nemotron-ultra-doc` advertises;
+`RESEARCH`/`EVALUATION` require `research`/`evaluation`, so they land on the
+cheapest eligible model, `nemotron-super-research`; `FAST`/`SUPPORT`/`DELIVERY`
+have no floor and take the cheapest, `nemotron-nano-fast`.
+
+| Task type | Roles | Tier | Context | $/1M in | $/1M out |
+| --- | --- | --- | --- | --- | --- |
+| `DOCUMENTATION_GENERATION` | `documentation_engineer`, `knowledge_extractor`, `content_blog_writer`, `content_social_adapter` | `nemotron-ultra-doc` | 1,024,000 | $1.00 | $3.00 |
+| `DOCUMENTATION_REVIEW` | `documentation_reviewer`, `support_reviewer`, `recommender` | `nemotron-ultra-doc` | 1,024,000 | $1.00 | $3.00 |
+| `RESEARCH` | `github_intelligence`, `research`, `context`, `content_strategist` | `nemotron-super-research` | 256,000 | $0.30 | $0.90 |
+| `EVALUATION` | `deepeval`, `initial_evaluator`, `content_judge` | `nemotron-super-research` | 256,000 | $0.30 | $0.90 |
+| `SUPPORT` | `support_engineer` | `nemotron-nano-fast` | 262,000 | $0.06 | $0.24 |
+| `FAST` | `memory_curator`, `classifier`, `notify` | `nemotron-nano-fast` | 262,000 | $0.06 | $0.24 |
+| `DELIVERY` | `github_delivery` | `nemotron-nano-fast` | 262,000 | $0.06 | $0.24 |
+
+`REASONING` has no capability floor, so it also resolves to `nemotron-nano-fast`.
+Embeddings use `Qwen/Qwen3-Embedding-8B` at 1536 dimensions (priority 40).
+
+### Configuration reference
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `NEBIUS_TOKEN_FACTORY_API_KEY` | — | Token Factory key; registering the provider requires it |
+| `NEBIUS_TOKEN_FACTORY_BASE_URL` | `https://api.tokenfactory.nebius.com/v1` | OpenAI-compatible base URL (no trailing slash) |
+| `NEMOTRON_NANO_MODEL_ID` | `nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B` | FAST / SUPPORT / DELIVERY / REASONING |
+| `NEMOTRON_SUPER_MODEL_ID` | `nvidia/nemotron-3-super-120b-a12b` | RESEARCH / EVALUATION |
+| `NEMOTRON_ULTRA_MODEL_ID` | `nvidia/Nemotron-3-Ultra-550b-a55b` | DOCGEN / DOCREVIEW |
+| `EMBEDDING_MODEL_ID` | `Qwen/Qwen3-Embedding-8B` (TF), `text-embedding-3-small` (others) | Embedding model |
+| `EMBEDDING_DIMENSIONS` | `1536` | Must match the `vector(1536)` migration columns |
+| `DRAFTLY_ENABLED_PROVIDERS` | all configured | Comma-separated allowlist; include `nebius_token_factory` |
+
+The ultra model id is `nvidia/Nemotron-3-Ultra-550b-a55b`, not the
+`nvidia/NVIDIA-Nemotron-3-Ultra-...` spelling that appears on some model
+listings; the latter returns HTTP 404 from Token Factory.
+
+### Reproduce
+
+```bash
+# Live probe: streaming TTFT, tool use, structured output, context window,
+# embeddings, and per-call cost. Writes /tmp/token-factory-sweep.json.
+uv run python tests/scripts/probe_token_factory.py
+
+# Deterministic unit tests for the provider, gate, and routing floors.
+uv run pytest tests/unit/models/test_nebius_token_factory.py \
+  tests/unit/models/test_token_factory_gate.py \
+  tests/unit/models/test_env_example_models.py -q
+```
+
+The probe needs `NEBIUS_TOKEN_FACTORY_API_KEY` and reaches the real API. The
+recorded matrix and findings are in
+[hackathon/nebius-token-factory-probes.md](docs/hackathon/nebius-token-factory-probes.md).
+
 ## Development and documentation
 
 ```bash

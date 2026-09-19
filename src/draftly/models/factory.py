@@ -84,6 +84,54 @@ def _resolve_model_id(
     return default
 
 
+def _resolve_dimensions(
+    *env_names: str,
+    default: int = 1536,
+) -> int:
+    """Resolve embedding dimensions from env (spec §Configuration).
+
+    Defaults to 1536 to match the ``vector(1536)`` columns in migrations
+    003/015/028/029, so existing deployments are unaffected. A non-numeric
+    or non-positive value is ignored with a warning rather than crashing
+    router construction.
+    """
+
+    for name in env_names:
+        value = os.getenv(name)
+
+        if not value or not value.strip():
+            continue
+
+        try:
+            parsed = int(value.strip())
+        except ValueError:
+            logger.warning(
+                "embedding_dimensions_invalid var=%s value=%s",
+                name,
+                value,
+            )
+            break
+
+        if parsed <= 0:
+            logger.warning(
+                "embedding_dimensions_nonpositive var=%s value=%s",
+                name,
+                value,
+            )
+            break
+
+        logger.debug("embedding_dimensions resolved var=%s value=%s", name, parsed)
+        return parsed
+
+    logger.debug(
+        "embedding_dimensions unresolved vars=%s using default=%s",
+        env_names,
+        default,
+    )
+
+    return default
+
+
 def build_model_router(
     *,
     stats_store: EMAStatsStore | None = None,
@@ -918,6 +966,7 @@ def build_embedding_router() -> EmbeddingRouter:
         "EMBEDDING_MODEL_ID",
         default="text-embedding-3-small",
     )
+    dimensions = _resolve_dimensions("EMBEDDING_DIMENSIONS")
 
     for priority, provider_name in enumerate(
         ("openrouter", "requesty", "orcarouter"),
@@ -931,7 +980,7 @@ def build_embedding_router() -> EmbeddingRouter:
                 name=f"embedding-{provider_name}",
                 provider=provider_name,
                 model_id=model_id,
-                dimensions=1536,
+                dimensions=dimensions,
                 priority=priority,
             )
         )
@@ -945,7 +994,7 @@ def build_embedding_router() -> EmbeddingRouter:
                     "EMBEDDING_MODEL_ID",
                     default="Qwen/Qwen3-Embedding-8B",
                 ),
-                dimensions=1536,
+                dimensions=dimensions,
                 priority=40,
             )
         )

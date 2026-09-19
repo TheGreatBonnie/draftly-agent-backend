@@ -1,4 +1,4 @@
-.PHONY: help sync run run-agentcore test test-live lint fmt typecheck migrate docker-build docker-build-agentcore docker-push docker-push-agentcore clean
+.PHONY: help sync run run-agentcore test test-live lint fmt typecheck migrate docker-build docker-build-agentcore docker-push docker-push-agentcore clean probe-models probe-token-factory
 
 help:
 	@echo "Draftly - Available targets:"
@@ -13,6 +13,7 @@ help:
 	@echo "  fmt          Run ruff format"
 	@echo "  typecheck    Run mypy"
 	@echo "  migrate      Run database bootstrap/migrations"
+	@echo "  probe-token-factory  Live-probe Nebius Token Factory (TTFT, tools, embeddings)"
 	@echo "  docker-build Build API and worker images"
 	@echo "  docker-push  Push images to ECR (requires AWS auth)"
 	@echo "  clean        Remove build artifacts"
@@ -42,6 +43,9 @@ test-live:
 
 probe-models:
 	uv run python tests/scripts/probe_models.py
+
+probe-token-factory:
+	uv run python tests/scripts/probe_token_factory.py
 
 lint:
 	uv run ruff check .
