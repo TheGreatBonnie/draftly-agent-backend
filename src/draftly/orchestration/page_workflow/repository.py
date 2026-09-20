@@ -347,39 +347,67 @@ class PageWorkflowRepository:
         *,
         run_id: str,
         task_id: str,
+        owner: str,
         output_data: dict[str, Any] | None = None,
     ) -> bool:
-        """Complete a task the caller currently holds a lease on."""
+        """Complete a task whose lease ``owner`` currently holds.
+
+        Returns False when the task is not running. When the task is running
+        under a different lease owner, the completion is stale and
+        ``StaleArtifactError`` is raised.
+        """
         row = await self.database.fetch_one(
             """
             WITH done AS (
                 UPDATE documentation_workflow_tasks
                    SET status = 'completed',
-                       output_data = $3,
+                       output_data = $4,
                        error = NULL,
                        updated_at = now()
-                 WHERE run_id = $1 AND task_id = $2 AND status = 'running'
+                 WHERE run_id = $1
+                   AND task_id = $2
+                   AND status = 'running'
+                   AND lease_owner = $3
                  RETURNING task_id
             )
-            SELECT count(*) AS updated FROM done
+            SELECT
+                (SELECT count(*) FROM done) AS updated,
+                EXISTS (
+                    SELECT 1
+                      FROM documentation_workflow_tasks
+                     WHERE run_id = $1
+                       AND task_id = $2
+                       AND status = 'running'
+                       AND lease_owner IS DISTINCT FROM $3
+                ) AS owned_by_other
             """,
             run_id,
             task_id,
+            owner,
             output_data,
         )
-        return bool(row and int(row["updated"]) > 0)
+        updated = int(row["updated"]) if row else 0
+        owned_by_other = bool(row["owned_by_other"]) if row else False
+        if owned_by_other and updated == 0:
+            raise StaleArtifactError(
+                f"task {task_id!r} is leased by another worker, not {owner!r}"
+            )
+        return updated > 0
 
     async def retry_or_fail_task(
         self,
         *,
         run_id: str,
         task_id: str,
+        owner: str,
         error: str,
     ) -> str | None:
         """Recycle the first infrastructure failure, fail the second.
 
         Returns the resulting status (``"pending"`` after the first failure,
-        ``"failed"`` after the second) or ``None`` when no leased task matched.
+        ``"failed"`` after the second) or ``None`` when no task is running.
+        When the running task is owned by a different lease owner,
+        ``StaleArtifactError`` is raised.
         """
         row = await self.database.fetch_one(
             """
@@ -390,22 +418,41 @@ class PageWorkflowRepository:
                                     ELSE 'failed'
                                 END,
                        infrastructure_retries = LEAST(infrastructure_retries + 1, 1),
-                       error = $3,
+                       error = $4,
                        lease_owner = NULL,
                        lease_expires_at = NULL,
                        updated_at = now()
-                 WHERE run_id = $1 AND task_id = $2 AND status = 'running'
+                 WHERE run_id = $1
+                   AND task_id = $2
+                   AND status = 'running'
+                   AND lease_owner = $3
                  RETURNING status
             )
-            SELECT status FROM retried
+            SELECT
+                (SELECT status FROM retried) AS status,
+                EXISTS (
+                    SELECT 1
+                      FROM documentation_workflow_tasks
+                     WHERE run_id = $1
+                       AND task_id = $2
+                       AND status = 'running'
+                       AND lease_owner IS DISTINCT FROM $3
+                ) AS owned_by_other
             """,
             run_id,
             task_id,
+            owner,
             error,
         )
-        if row is None:
+        updated = row["status"] if row else None
+        owned_by_other = bool(row["owned_by_other"]) if row else False
+        if owned_by_other and not updated:
+            raise StaleArtifactError(
+                f"task {task_id!r} is leased by another worker, not {owner!r}"
+            )
+        if not updated:
             return None
-        return str(row["status"])
+        return str(updated)
 
     async def reset_expired_leases(self, *, run_id: str) -> int:
         """Return running tasks whose leases expired back to pending.

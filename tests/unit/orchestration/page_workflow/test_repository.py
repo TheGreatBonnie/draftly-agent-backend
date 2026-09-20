@@ -25,12 +25,19 @@ from draftly.persistence.repositories.drafts import DraftRepository
 AUCTION_EPOCH = datetime(2026, 9, 20, 12, 0, 0, tzinfo=UTC)
 
 
-def _evaluation(artifact_id: str, version: int, *, status: str = "passed") -> PageEvaluationResult:
+def _evaluation(
+    artifact_id: str,
+    version: int,
+    *,
+    status: str = "passed",
+    page_id: str = "docs/a.md",
+    content_hash: str | None = None,
+) -> PageEvaluationResult:
     return PageEvaluationResult(
-        page_id="docs/a.md",
+        page_id=page_id,
         artifact_id=artifact_id,
         version=version,
-        content_hash=hashlib.sha256(b"alpha").hexdigest(),
+        content_hash=content_hash or hashlib.sha256(b"alpha").hexdigest(),
         attempt=1,
         status=status,
         score=0.9,
@@ -200,10 +207,10 @@ class FakeClient:
 
         if "FROM DOCUMENTATION_PAGE_STATES" in up:
             run_id = args[0]
-            return sorted(
-                (s for s in self.page_states if s["run_id"] == run_id),
-                key=lambda s: s["page_id"],
-            )
+            states = [s for s in self.page_states if s["run_id"] == run_id]
+            if len(args) > 1 and args[1] is not None:
+                states = [s for s in states if s["page_id"] == args[1]]
+            return sorted(states, key=lambda s: s["page_id"])
 
         if up.startswith("INSERT INTO DOCUMENTATION_WORKFLOW_TASKS"):
             (
@@ -263,7 +270,7 @@ class FakeClient:
             return claimed
 
         if "WITH RETRIED AS" in up:
-            run_id, task_id, error = args
+            run_id, task_id, owner, error = args
             task = next(
                 (
                     t
@@ -277,7 +284,9 @@ class FakeClient:
                 None,
             )
             if task is None:
-                return []
+                return [{"status": None, "owned_by_other": False}]
+            if task["lease_owner"] != owner:
+                return [{"status": None, "owned_by_other": True}]
             if task["infrastructure_retries"] < 1:
                 task["status"] = "pending"
             else:
@@ -287,10 +296,10 @@ class FakeClient:
             task["lease_owner"] = None
             task["lease_expires_at"] = None
             task["updated_at"] = self.now
-            return [{"status": task["status"]}]
+            return [{"status": task["status"], "owned_by_other": False}]
 
         if "WITH DONE AS" in up:
-            run_id, task_id, output_data = args
+            run_id, task_id, owner, output_data = args
             task = next(
                 (
                     t
@@ -304,12 +313,14 @@ class FakeClient:
                 None,
             )
             if task is None:
-                return [{"updated": 0}]
+                return [{"updated": 0, "owned_by_other": False}]
+            if task["lease_owner"] != owner:
+                return [{"updated": 0, "owned_by_other": True}]
             task["status"] = "completed"
             task["output_data"] = output_data
             task["error"] = None
             task["updated_at"] = self.now
-            return [{"updated": 1}]
+            return [{"updated": 1, "owned_by_other": False}]
 
         if "LEASE_EXPIRES_AT < NOW()" in up:
             run_id = args[0]
@@ -595,6 +606,69 @@ async def test_record_evaluation_rejects_version_mismatch_of_current_artifact(
         await pages.record_evaluation(mismatch)
 
 
+async def test_record_evaluation_rejects_content_hash_mismatch(
+    client: FakeClient,
+    pages: PageWorkflowRepository,
+    drafts: DraftRepository,
+) -> None:
+    await _seed_page(pages)
+    version = await pages.reserve_next_version(run_id="run-1", page_id="docs/a.md")
+    sealed = await _seed_artifact(client, drafts, pages, generation=1, version=version)
+    await pages.record_artifact(
+        run_id="run-1",
+        page_id="docs/a.md",
+        artifact_id=sealed.id,
+        version=version,
+    )
+    tampered = _evaluation(
+        sealed.id, version, content_hash=hashlib.sha256(b"tampered").hexdigest()
+    )
+    with pytest.raises(StaleArtifactError):
+        await pages.record_evaluation(tampered)
+    assert len(client.evaluations) == 0
+
+
+async def test_record_evaluation_applies_page_filter_in_multipage_run(
+    client: FakeClient,
+    pages: PageWorkflowRepository,
+    drafts: DraftRepository,
+) -> None:
+    await pages.create_pages(
+        run_id="run-1",
+        org_id="org-1",
+        pages=[
+            NewPage(page_id="docs/a.md", path="docs/a.md", action="update"),
+            NewPage(page_id="docs/b.md", path="docs/b.md", action="create"),
+        ],
+    )
+    b_version = await pages.reserve_next_version(run_id="run-1", page_id="docs/b.md")
+    b_revision = await drafts.create_revision(
+        run_id="run-1",
+        org_id="org-1",
+        generation=1,
+        path="docs/b.md",
+        action="create",
+        version=b_version,
+    )
+    await drafts.append_chunk(b_revision.id, "beta")
+    sealed_b = await drafts.finalize(b_revision.id)
+    await pages.record_artifact(
+        run_id="run-1",
+        page_id="docs/b.md",
+        artifact_id=sealed_b.id,
+        version=b_version,
+    )
+    result = _evaluation(
+        sealed_b.id,
+        b_version,
+        page_id="docs/b.md",
+        content_hash=hashlib.sha256(b"beta").hexdigest(),
+    )
+    await pages.record_evaluation(result)
+    assert len(client.evaluations) == 1
+    assert client.evaluations[0]["page_id"] == "docs/b.md"
+
+
 async def test_record_evaluation_rejects_unknown_artifact(
     client: FakeClient,
     pages: PageWorkflowRepository,
@@ -668,11 +742,15 @@ async def test_claim_ready_tasks_respects_dependencies(
     assert [t.task_id for t in first] == ["write-a"]
     assert await pages.claim_ready_tasks(run_id="run-1", lease_owner="worker-1") == []
 
-    await pages.complete_task(run_id="run-1", task_id="write-a", output_data={"ok": True})
+    await pages.complete_task(
+        run_id="run-1", task_id="write-a", output_data={"ok": True}, owner="worker-1"
+    )
     second = await pages.claim_ready_tasks(run_id="run-1", lease_owner="worker-1")
     assert [t.task_id for t in second] == ["write-b"]
 
-    await pages.complete_task(run_id="run-1", task_id="write-b", output_data={"ok": True})
+    await pages.complete_task(
+        run_id="run-1", task_id="write-b", output_data={"ok": True}, owner="worker-1"
+    )
     third = await pages.claim_ready_tasks(run_id="run-1", lease_owner="worker-1")
     assert [t.task_id for t in third] == ["evaluate-a"]
 
@@ -699,12 +777,18 @@ async def test_complete_task_requires_running_lease(
 
     await enqueue("write-a")
     assert (
-        await pages.complete_task(run_id="run-1", task_id="write-a", output_data=None) is False
+        await pages.complete_task(
+            run_id="run-1", task_id="write-a", output_data=None, owner="worker-1"
+        )
+        is False
     )
     await pages.claim_ready_tasks(run_id="run-1", lease_owner="worker-1")
     assert (
         await pages.complete_task(
-            run_id="run-1", task_id="write-a", output_data={"ok": True}
+            run_id="run-1",
+            task_id="write-a",
+            output_data={"ok": True},
+            owner="worker-1",
         )
         is True
     )
@@ -734,20 +818,70 @@ async def test_retry_or_fail_task_retries_first_infra_failure_then_fails(
     await pages.claim_ready_tasks(run_id="run-1", lease_owner="worker-1")
 
     returned = await pages.retry_or_fail_task(
-        run_id="run-1", task_id="write-a", error="infra boom"
+        run_id="run-1", task_id="write-a", owner="worker-1", error="infra boom"
     )
     assert returned == "pending"
     claimed = await pages.claim_ready_tasks(run_id="run-1", lease_owner="worker-1")
     assert [t.task_id for t in claimed] == ["write-a"]
 
     returned = await pages.retry_or_fail_task(
-        run_id="run-1", task_id="write-a", error="infra boom again"
+        run_id="run-1", task_id="write-a", owner="worker-1", error="infra boom again"
     )
     assert returned == "failed"
     row = client.claim_for("write-a")
     assert row["status"] == "failed"
     assert row["infrastructure_retries"] == 1
     assert await pages.claim_ready_tasks(run_id="run-1", lease_owner="worker-1") == []
+
+
+async def test_stale_owner_cannot_complete_or_retry_recycled_task(
+    client: FakeClient,
+    pages: PageWorkflowRepository,
+) -> None:
+    await client.execute(
+        """INSERT INTO documentation_workflow_tasks
+             (run_id, task_id, org_id, task_type, page_id, artifact_version,
+              dependencies, input_data, status)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'pending')""",
+        "run-1",
+        "write-a",
+        "org-1",
+        "write",
+        "docs/a.md",
+        1,
+        [],
+        {},
+    )
+    await pages.claim_ready_tasks(run_id="run-1", lease_owner="worker-1")
+
+    task = client.claim_for("write-a")
+    task["lease_expires_at"] = datetime(2000, 1, 1, tzinfo=UTC)
+    await pages.reset_expired_leases(run_id="run-1")
+
+    reclaimed = await pages.claim_ready_tasks(run_id="run-1", lease_owner="worker-2")
+    assert [t.task_id for t in reclaimed] == ["write-a"]
+
+    with pytest.raises(StaleArtifactError):
+        await pages.complete_task(
+            run_id="run-1",
+            task_id="write-a",
+            output_data={"ok": True},
+            owner="worker-1",
+        )
+    with pytest.raises(StaleArtifactError):
+        await pages.retry_or_fail_task(
+            run_id="run-1", task_id="write-a", owner="worker-1", error="boom"
+        )
+
+    assert (
+        await pages.complete_task(
+            run_id="run-1",
+            task_id="write-a",
+            output_data={"ok": True},
+            owner="worker-2",
+        )
+        is True
+    )
 
 
 async def test_reset_expired_leases_recycles_only_expired_running(
