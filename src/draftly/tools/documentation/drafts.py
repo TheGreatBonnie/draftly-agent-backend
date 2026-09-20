@@ -100,6 +100,7 @@ async def start_draft(
         generation=scope.generation,
         path=clean_path,
         action=action,
+        version=getattr(scope, "version", None),
     )
     logger.info(
         "start_draft",

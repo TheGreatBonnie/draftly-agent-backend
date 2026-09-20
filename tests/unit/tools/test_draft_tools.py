@@ -8,6 +8,7 @@ from typing import Any
 import pytest
 
 from draftly.agents.documentation.draft_scope import (
+    DraftScope,
     current_draft_scope,
     reset_draft_scope,
     set_draft_scope,
@@ -47,7 +48,14 @@ class _FakeRepo:
     latest_calls: list[str] = field(default_factory=list)
 
     async def create_revision(
-        self, *, run_id: str, org_id: str, generation: int, path: str, action: str
+        self,
+        *,
+        run_id: str,
+        org_id: str,
+        generation: int,
+        path: str,
+        action: str,
+        version: int | None = None,
     ) -> _FakeRevision:
         draft_id = f"d-{len(self.revisions) + 1}"
         self.revisions[draft_id] = {
@@ -56,6 +64,7 @@ class _FakeRepo:
             "generation": generation,
             "path": path,
             "action": action,
+            "version": version,
             "sealed": False,
         }
         self.chunks[draft_id] = []
@@ -117,6 +126,22 @@ async def test_start_draft_returns_draft_id(repo: _FakeRepo, scoped_run: None) -
     assert "draft_id" in result
     assert result["draft_id"].startswith("d-")
     assert repo.revisions[result["draft_id"]]["path"] == "docs/a.md"
+
+
+async def test_start_draft_persists_page_workflow_artifact_version(
+    repo: _FakeRepo,
+) -> None:
+    token = set_draft_scope(
+        DraftScope(run_id="run-1", org_id="org-1", generation=2, version=4)
+    )
+    try:
+        result = await start_draft(
+            repository="acme/api", path="docs/a.md", action="update"
+        )
+    finally:
+        reset_draft_scope(token)
+
+    assert repo.revisions[result["draft_id"]]["version"] == 4
 
 
 async def test_start_draft_rejects_unsafe_paths(repo: _FakeRepo, scoped_run: None) -> None:

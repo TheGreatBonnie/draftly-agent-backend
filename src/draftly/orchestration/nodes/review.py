@@ -54,7 +54,7 @@ def _first_paragraph(content: str) -> str:
     return ""
 
 
-def _render_review_prompt(
+def render_review_prompt(
     tasks: list[dict[str, Any]], summaries: list[dict[str, Any]], summary: str
 ) -> str:
     lines = [
@@ -75,6 +75,10 @@ def _render_review_prompt(
         "per-page instructions keyed by task_id. Never rewrite pages."
     )
     return "\n".join(lines)
+
+
+# Backward-compatible private name for the existing graph node.
+_render_review_prompt = render_review_prompt
 
 
 class ReviewNode(MultiAgentBase):

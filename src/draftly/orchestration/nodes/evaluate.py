@@ -14,6 +14,7 @@ from strands.multiagent.base import (
 )
 
 from draftly.orchestration.nodes.base import agent_result, parse_node_input
+from draftly.orchestration.page_workflow.models import MetricResult
 
 logger = structlog.get_logger(__name__)
 
@@ -177,52 +178,110 @@ def _scoped_evidence(
     return scoped
 
 
-def compute_quality(
+def compute_page_metrics(
     evidence: list[dict],
-    draft: str,
-) -> tuple[float, list[str]]:
-    """
-    Deterministic quality scoring: citation coverage, completeness, grounding.
-    """
+    content: str,
+) -> list[MetricResult]:
+    """Return deterministic component metrics and the blocking quality gate.
 
-    reasons: list[str] = []
-    score = 0.0
+    The component scores preserve the legacy ``compute_quality`` weighting:
+    citation coverage contributes 40%, topic completeness 30%, and detail
+    30%.  Only the aggregate ``quality_score`` blocks a page.
+    """
 
     # Citation coverage: does the draft reference available evidence?
     # Case-insensitive: generated markdown capitalizes feature names the
     # code-locator evidence ids never do.
-    draft_lower = draft.lower()
+    draft_lower = content.lower()
     cited = sum(
         1
         for e in evidence
         if any(t in draft_lower for t in _evidence_match_tokens(e))
     )
     coverage = cited / max(len(evidence), 1)
-    score += coverage * 0.4
-    if coverage > 0.8:
-        reasons.append(f"Grounded in {cited}/{len(evidence)} sources")
+    coverage_reason = f"Grounded in {cited}/{len(evidence)} sources"
+    if coverage <= 0.8:
+        coverage_reason = f"References {cited}/{len(evidence)} sources"
 
     # Completeness: does the draft cover the key topics?
     topics = [t for t in (_evidence_topic(e) for e in evidence) if t]
     covered = sum(1 for t in topics if t in draft_lower)
     completeness = covered / max(len(topics), 1)
-    score += completeness * 0.3
+    completeness_reason = f"Covers {covered}/{len(topics)} key topics"
     if completeness > 0.7:
-        reasons.append(f"Covers {covered}/{len(topics)} key topics")
+        pass
     elif topics:
         # Failure-gated feedback: name the missing topics so the writer knows
         # what the revision must add. Without this the only signal on a failed
         # completeness check is the opaque score and the loop flails.
         missing = [t for t in topics if t not in draft_lower]
-        reasons.append(f"Missing topics: {', '.join(missing)}")
+        completeness_reason = f"Missing topics: {', '.join(missing)}"
+    else:
+        completeness_reason = "No evidence topics available"
 
     # Length heuristic: very short drafts are usually incomplete
-    length_score = min(len(draft) / 500, 1.0)
-    score += length_score * 0.3
-    if length_score > 0.5:
-        reasons.append("Adequate detail level")
+    length_score = min(len(content) / 500, 1.0)
+    detail_reason = (
+        "Adequate detail level"
+        if length_score > 0.5
+        else f"Insufficient detail ({len(content)}/500 characters)"
+    )
 
-    return score, reasons
+    score = coverage * 0.4 + completeness * 0.3 + length_score * 0.3
+    return [
+        MetricResult(
+            name="citation_coverage",
+            score=coverage,
+            threshold=0.8,
+            passed=coverage > 0.8,
+            blocking=False,
+            reason=coverage_reason,
+        ),
+        MetricResult(
+            name="topic_completeness",
+            score=completeness,
+            threshold=0.7,
+            passed=completeness > 0.7,
+            blocking=False,
+            reason=completeness_reason,
+        ),
+        MetricResult(
+            name="detail",
+            score=length_score,
+            threshold=0.5,
+            passed=length_score > 0.5,
+            blocking=False,
+            reason=detail_reason,
+        ),
+        MetricResult(
+            name="quality_score",
+            score=score,
+            threshold=0.70,
+            passed=score >= 0.70,
+            blocking=True,
+            reason=f"Weighted quality score {score:.2f} (threshold: 0.70)",
+        ),
+    ]
+
+
+def compute_quality(
+    evidence: list[dict],
+    draft: str,
+) -> tuple[float, list[str]]:
+    """Backward-compatible score/reasons view over ``compute_page_metrics``."""
+    metrics = compute_page_metrics(evidence, draft)
+    coverage, completeness, detail, quality = metrics
+    reasons: list[str] = []
+    if coverage.passed:
+        reasons.append(coverage.reason)
+    if completeness.passed or evidence:
+        reasons.append(completeness.reason)
+    if detail.passed:
+        reasons.append(detail.reason)
+    if not reasons:
+        reasons.append(quality.reason)
+
+    return quality.score, reasons
 
 
 class EvaluatorNode(MultiAgentBase):

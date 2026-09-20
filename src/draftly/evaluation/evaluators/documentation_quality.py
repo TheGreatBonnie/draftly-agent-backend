@@ -1,7 +1,7 @@
 """Documentation quality evaluator (plan §8.2, §8.10).
 
-Custom strands evaluator reusing ``compute_quality()`` from the in-graph
-EvaluatorNode so CI and the runtime gate measure the same thing.
+Custom strands evaluator reusing ``compute_page_metrics()`` from the runtime
+gate so CI and page evaluation measure the same thing.
 """
 
 from __future__ import annotations
@@ -11,7 +11,7 @@ from typing import Any
 from strands_evals.evaluators.evaluator import Evaluator
 from strands_evals.types import EvaluationData, EvaluationOutput
 
-from draftly.orchestration.nodes.evaluate import compute_quality
+from draftly.orchestration.nodes.evaluate import compute_page_metrics
 
 
 class DocumentationQualityEvaluator(Evaluator):
@@ -54,17 +54,21 @@ class DocumentationQualityEvaluator(Evaluator):
                 EvaluationOutput(
                     score=1.0,
                     test_pass=True,
-                    reason="n/a: feedback surface produces a gap report; doc-quality rubric not applicable",
+                    reason=(
+                        "n/a: feedback surface produces a gap report; "
+                        "doc-quality rubric not applicable"
+                    ),
                     label=self.name,
                 )
             ]
 
-        score, reasons = compute_quality(evidence, draft)
+        metrics = compute_page_metrics(evidence, draft)
+        quality = metrics[-1]
         return [
             EvaluationOutput(
-                score=round(score, 4),
-                test_pass=score >= 0.6,
-                reason="; ".join(reasons) or "quality below threshold",
+                score=round(quality.score, 4),
+                test_pass=quality.passed,
+                reason="; ".join(metric.reason for metric in metrics),
                 label=self.name,
             )
         ]

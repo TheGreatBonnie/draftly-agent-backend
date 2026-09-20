@@ -22,6 +22,8 @@ class DraftScope:
     org_id: str
     #: Generation the current writer node execution opens (see NextGenerationHook).
     generation: int
+    #: Durable page artifact version. Legacy graph writers leave this unset.
+    version: int | None = None
 
 
 _draft_scope: ContextVar[DraftScope | None] = ContextVar(
