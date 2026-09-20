@@ -30,6 +30,7 @@ from draftly.events.stream_envelope import (
     StreamEnvelope,
     filter_graph_event,
     steering_envelope,
+    task_progress_envelope,
 )
 from draftly.integrations.github.runtime import (
     reset_installation_id,
@@ -250,6 +251,42 @@ def _steering_event_sink(
     return sink
 
 
+def _progress_event_sink(
+    *,
+    publisher: Any,
+    run_id: str,
+    surface: str,
+    stream_seq: _RunStreamSeq,
+) -> Callable[..., Any]:
+    """Wire ONE redacted task-progress envelope per writer-task transition."""
+
+    async def sink(progress: dict[str, Any]) -> None:
+        envelope = task_progress_envelope(
+            run_id=run_id,
+            surface=surface,
+            node_id=progress.get("node_id"),
+            task_id=str(progress.get("task_id") or ""),
+            path=str(progress.get("path") or ""),
+            action=str(progress.get("action") or ""),
+            status=str(progress.get("status") or ""),
+            position=int(progress.get("position") or 0),
+            total=int(progress.get("total") or 0),
+        )
+        envelope.seq = stream_seq.next()
+        try:
+            await publisher.publish(envelope)
+        except Exception:
+            _metrics.increment("draftly_progress_publish_failures_total")
+            logger.warning(
+                "progress_event_publish_failed",
+                run_id=run_id,
+                seq=envelope.seq,
+                exc_info=True,
+            )
+
+    return sink
+
+
 def _build_research_plan(context: WorkflowContext, grounding: dict[str, Any]) -> Any:
     """Build the capability-bounded research plan when the lane flag is on.
 
@@ -283,6 +320,7 @@ def _default_graph_factory(context: WorkflowContext) -> GraphFactory:
         steering_scope = current_steering_scope()
         steering_runtime = None
         stream_seq = _RunStreamSeq()
+        publisher = getattr(context, "publisher", None)
         if steering_scope is not None:
             steering_runtime = context.new_steering_runtime(
                 run_id,
@@ -291,7 +329,6 @@ def _default_graph_factory(context: WorkflowContext) -> GraphFactory:
                 project_id=steering_scope.project_id,
                 workflow_key=steering_scope.workflow_key,
             )
-            publisher = getattr(context, "publisher", None)
             if steering_runtime is not None and publisher is not None:
                 steering_runtime = steering_runtime.with_sinks(
                     event_sink=_steering_event_sink(
@@ -302,6 +339,15 @@ def _default_graph_factory(context: WorkflowContext) -> GraphFactory:
                         stream_seq=stream_seq,
                     )
                 )
+
+        progress_sink = None
+        if publisher is not None:
+            progress_sink = _progress_event_sink(
+                publisher=publisher,
+                run_id=run_id,
+                surface=surface,
+                stream_seq=stream_seq,
+            )
 
         jobs_repo = getattr(getattr(context, "repositories", None), "jobs", None)
         drafts_repo = getattr(getattr(context, "repositories", None), "drafts", None)
@@ -324,6 +370,7 @@ def _default_graph_factory(context: WorkflowContext) -> GraphFactory:
             repo_dir=grounding.get("repo_dir"),
             steering_runtime=steering_runtime,
             research_plan=research_plan,
+            progress_sink=progress_sink,
             **context.graph_limits(),
         )
         graph._draftly_stream_seq = stream_seq

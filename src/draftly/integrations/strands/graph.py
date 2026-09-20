@@ -83,6 +83,7 @@ def build_graph_for_run(
     steering_runtime: Any = None,
     drafts_repo: Any = None,
     research_plan: Any = None,
+    progress_sink: Any | None = None,
     **graph_kwargs: Any,
 ):
     """Build the graph for ONE surface, with its own session manager.
@@ -108,10 +109,11 @@ def build_graph_for_run(
     if surface in ("slack", "discord"):
         graph_kwargs.setdefault("source", surface)
 
-    # The Task 6 research plan is documentation-graph-only; every other
-    # builder rejects the unknown kwarg.
+    # The Task 6 research plan and Task 13 progress sink are
+    # documentation-graph-only; every other builder rejects the unknown kwarg.
     if surface != "pull_request":
         graph_kwargs.pop("research_plan", None)
+        graph_kwargs.pop("progress_sink", None)
 
     # Grounding mode (local checkout vs GitHub API vs docs-only) is a
     # documentation-graph concern; other builders must not receive it.
@@ -123,6 +125,7 @@ def build_graph_for_run(
         graph_kwargs["repo_dir"] = repo_dir
         graph_kwargs["drafts_repo"] = drafts_repo
         graph_kwargs["research_plan"] = research_plan
+        graph_kwargs["progress_sink"] = progress_sink
 
     return builder(
         session_manager=manager,
