@@ -805,3 +805,53 @@ async def test_deliver_prompt_contains_approved_plan_and_changelog(
     assert CHANGELOG_MARKER in prompt_text, (
         "changelog markdown missing from deliver prompt"
     )
+
+
+async def test_revision_reloop_sends_only_failed_page(
+    tools, tmp_sessions, comment_factory, two_page_drafts
+) -> None:
+    """The full revise loop targets only evaluate-failed pages: page b fails
+    the deterministic gate, document re-runs, and the second execution
+    dispatches a single writer for docs/b.md (docs/a.md is untouched)."""
+    from types import SimpleNamespace
+
+    from tests.graph.conftest import _recording_writer_agent, two_page_model
+
+    recorder: list[str] = []
+    factory, _ = comment_factory
+    graph = build_graph_for_run(
+        "revise-subset",
+        surface="pull_request",
+        tools_registry=tools,
+        model=two_page_model(),
+        storage_dir=tmp_sessions,
+        comment_factory=factory,
+        drafts_repo=two_page_drafts,
+        agents=SimpleNamespace(writer_agent=_recording_writer_agent(recorder)),
+        # The pre-existing topology fires an extra evaluation on revisit (both
+        # the document -> evaluate eval_ready edge and the review -> evaluate
+        # edge fire once the prior round's review is clean) and re-generates the
+        # changelog after each escalated pass, so a failing revise loop needs
+        # more than the DEFAULT_MAX_NODE_EXECUTIONS=15 budget to reach deliver.
+        max_node_executions=30,
+    )
+
+    result = await graph.invoke_async(
+        PR_TASK,
+        invocation_state={"run_id": "revise-subset", "review_policy": "never"},
+    )
+
+    assert result.status == Status.COMPLETED
+    order = [n.node_id for n in result.execution_order]
+    assert order.count("document") == 2
+    # The revisits re-open the document/evaluate and review/evaluate eval_ready
+    # edges, so evaluation runs at least twice (a second round over the subset).
+    assert order.count("evaluate") >= 2
+
+    assert len(recorder) == 3, recorder
+    first_batch = recorder[:2]
+    assert "Path: docs/a.md" in first_batch[0]
+    assert "Path: docs/b.md" in first_batch[1]
+    second = recorder[2]
+    assert "Path: docs/b.md" in second
+    assert "Path: docs/a.md" not in second

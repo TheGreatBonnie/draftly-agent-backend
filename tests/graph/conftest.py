@@ -112,6 +112,71 @@ def stub_model() -> StubModel:
     )
 
 
+TWO_PAGE_IMPACT = {
+    "action": "update",
+    "affected_documents": ["docs/a.md", "docs/b.md"],
+    "rationale": "behavior changed in two places",
+    "tasks": [
+        {
+            "id": "docs/a.md",
+            "path": "docs/a.md",
+            "action": "update",
+            "evidence": [{"id": "docs/a.md", "topic": "alpha"}],
+        },
+        {
+            "id": "docs/b.md",
+            "path": "docs/b.md",
+            "action": "update",
+            "evidence": [{"id": "docs/b.md", "topic": "beta"}],
+        },
+    ],
+}
+
+TWO_PAGE_EVIDENCE = {
+    "items": [
+        {"id": "docs/a.md", "topic": "alpha"},
+        {"id": "docs/b.md", "topic": "beta"},
+    ],
+    "summary": "two page evidence",
+}
+
+
+def two_page_model() -> StubModel:
+    """StubModel for the two-page mutation: every other agent output matches
+    the single-page stub, impact/evidence/review carry two-page content."""
+    two_page = dict(stub_model()._structured_outputs)
+    two_page[ImpactAnalysis] = TWO_PAGE_IMPACT
+    two_page[EvidenceBundle] = TWO_PAGE_EVIDENCE
+    two_page[DocChangePlan] = {
+        "repository": "acme/api",
+        "branch": "docs/fix",
+        "commit_message": "docs: two pages",
+        "summary": "behavior changed in two places",
+        "files": [
+            {"path": "docs/a.md", "action": "update"},
+            {"path": "docs/b.md", "action": "update"},
+        ],
+    }
+    two_page[ReviewVerdict] = {"verdict": "clean", "corrections": []}
+    return StubModel(structured_outputs=two_page)
+
+
+@pytest.fixture
+def two_page_drafts():
+    """A sealed store where docs/a.md passes evaluation and docs/b.md fails
+    (missing its topic, too short): per-file verdicts differ by path."""
+    return FakeDrafts(
+        [
+            {
+                "path": "docs/a.md",
+                "action": "update",
+                "content": "alpha is implemented and documented docs/a.md " * 20,
+            },
+            {"path": "docs/b.md", "action": "update", "content": "TODO"},
+        ]
+    )
+
+
 @pytest.fixture
 def tools():
     return build_tools()
@@ -200,6 +265,34 @@ def sealed_drafts():
 def empty_drafts():
     """A draft store with no sealed generation (writer never persisted)."""
     return FakeDrafts([])
+
+
+def _recording_writer_agent(recorder: list[str]):
+    class _RecordingWriterAgent:
+        def __init__(self, recorder: list[str]) -> None:
+            self._recorder = recorder
+
+        async def invoke_async(self, prompt: str, invocation_state=None, **kwargs):
+            self._recorder.append(prompt)
+            return two_page_model_plan()
+
+    def build(model, tools, runtime=None, agent_id=None, node_id=None):
+        return _RecordingWriterAgent(recorder)
+
+    return build
+
+
+def two_page_model_plan() -> DocChangePlan:
+    return DocChangePlan(
+        repository="acme/api",
+        branch="docs/fix",
+        commit_message="docs: two pages",
+        summary="behavior changed in two places",
+        files=[
+            {"path": "docs/a.md", "action": "update"},
+            {"path": "docs/b.md", "action": "update"},
+        ],
+    )
 
 
 class _GraphBuilderCapture:
