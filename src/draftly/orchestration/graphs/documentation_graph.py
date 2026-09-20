@@ -22,9 +22,11 @@ Deviations from the plan, forced by strands-agents 1.52.0 behavior:
 - ``EvaluatorNode`` defaults to ``max_iterations=2``: with the plan's 3,
   the worst case (4 upstream + 3×(generate+evaluate) + deliver = 11)
   exceeds ``max_node_executions=10`` and delivery would never run.
-- ``document → evaluate`` is gated by ``generated`` (eval_ready only becomes
-  the writer gate once the review node lands in Task 10/11; the review verdict
-  is what an ``eval_ready`` writer gate needs, and no review node exists yet).
+- ``document → evaluate`` is gated by the ``eval_ready`` condition, whose
+  true source for the writer path is the global review verdict: the edge
+  stays False while the fan-out draft is under correction and only fires
+  once ``review`` returns a ``clean`` verdict. ``generated`` is not used
+  here because a completed document must pass review before evaluation.
 """
 
 from __future__ import annotations
@@ -56,9 +58,9 @@ from draftly.orchestration.routing.conditions import (
     delivery_content_ready,
     eval_passed,
     eval_ready,
-    generated,
     generated_changelog,
     is_valid_surface,
+    needs_correction,
     needs_revision_of,
     none_and_release,
     pull_request_opened,
@@ -149,6 +151,7 @@ def build_documentation_graph(
     from draftly.agents.documentation.changelog import build_changelog_agent
     from draftly.agents.documentation.context import build_doc_context_agent
     from draftly.agents.documentation.research_swarm import build_doc_research_swarm
+    from draftly.agents.documentation.reviewer import build_review_agent
     from draftly.agents.documentation.writer import WriterFactory, build_writer_agent
     from draftly.agents.notify import build_notify_agent
     from draftly.agents.shared.classifier import build_classifier
@@ -159,6 +162,7 @@ def build_documentation_graph(
     from draftly.orchestration.nodes.changelog_evaluate import ChangelogEvaluatorNode
     from draftly.orchestration.nodes.fan_out import FanOutWriterNode
     from draftly.orchestration.nodes.notify_post import NotifyPostNode
+    from draftly.orchestration.nodes.review import ReviewNode
 
     reg = tools_registry
 
@@ -169,6 +173,8 @@ def build_documentation_graph(
     intelligence_model = resolve_model_for_role(model, "github_intelligence")
     delivery_model = resolve_model_for_role(model, "github_delivery")
     grader_model = resolve_model_for_role(model, "documentation_reviewer")
+    # The same role feeds both rubric grading and the global review node.
+    reviewer_model = resolve_model_for_role(model, "documentation_reviewer")
 
     # Mandatory rubric graders: LLM feedback enriches the deterministic docs
     # and changelog gates on every failed draft (the future). Built eagerly
@@ -311,6 +317,21 @@ def build_documentation_graph(
         drafts_repo=drafts_repo,
         progress_sink=progress_sink,
     )
+    # Global reviewer: one isolated agent per invocation reads compact
+    # per-page summaries and returns a ReviewVerdict (clean | correct +
+    # targeted per-task corrections). Built lazily like the writer so the SDK
+    # never sees a duplicate executor.
+    reviewer_builder = getattr(registry, "review_agent", None) or build_review_agent
+
+    def _reviewer_factory() -> Any:
+        return reviewer_builder(
+            reviewer_model,
+            [],
+            runtime=steering_runtime,
+            agent_id="documentation.reviewer",
+            node_id="review",
+        )
+
     delivery_builder = getattr(registry, "delivery_agent", None) or build_delivery_agent
     delivery_agent = delivery_builder(
         delivery_model,
@@ -401,10 +422,10 @@ def build_documentation_graph(
     )
     builder.add_node(evaluator, "evaluate")
     builder.add_edge("answer", "evaluate", condition=eval_ready)
-    # Generated (not eval_ready) pending the review node (Task 10/11): the
-    # review verdict is the eval_ready source once wired; without it the
-    # document path would dead-end because eval_ready is False pre-review.
-    builder.add_edge("document", "evaluate", condition=generated)
+    # Content-supply gate for the writer path: eval_ready fires only once the
+    # review node returns a clean verdict, so evaluation never runs
+    # mid-correction (a completed document alone never opens this edge).
+    builder.add_edge("document", "evaluate", condition=eval_ready)
     # The generation edges make evaluation ready; these conditional edges also
     # supply the completed context/research payloads as evaluator dependencies.
     # They are false when context/research complete (before a writer exists),
@@ -415,6 +436,19 @@ def build_documentation_graph(
     # Revise loop — scoped to whichever generation node actually ran
     builder.add_edge("evaluate", "answer", condition=needs_revision_of("answer"))
     builder.add_edge("evaluate", "document", condition=needs_revision_of("document"))
+
+    # Global targeted review: fan-out → review → (clean → evaluate |
+    # correct → re-dispatch corrected tasks). The review node forwards the
+    # approved plan payload so evaluate/deliver still receive the fan-out
+    # document via the review edges. No changelog ingest here: evaluate still
+    # gates changelog via eval_passed.
+    review_node = ReviewNode(
+        "review", reviewer_factory=_reviewer_factory, drafts_repo=drafts_repo
+    )
+    builder.add_node(review_node, "review")
+    builder.add_edge("document", "review")
+    builder.add_edge("review", "evaluate", condition=eval_ready)
+    builder.add_edge("review", "document", condition=needs_correction)
 
     # Delivery
     builder.add_node(delivery_agent, "deliver")
@@ -448,10 +482,12 @@ def build_documentation_graph(
     # scheduling (which fires on ANY freshly-satisfied in-edge) cannot trigger
     # deliver early — each edge is False when its writer/changelog completes,
     # and only True once the changelog gate has passed, when the plain
-    # changelog_evaluate → deliver edge above schedules the node.
+    # changelog_evaluate → deliver edge above schedules the node. The review
+    # edge forwards the approved plan metadata (document keys) to the prompt.
     builder.add_edge("document", "deliver", condition=delivery_content_ready)
     builder.add_edge("answer", "deliver", condition=delivery_content_ready)
     builder.add_edge("changelog", "deliver", condition=delivery_content_ready)
+    builder.add_edge("review", "deliver", condition=delivery_content_ready)
 
     # Safety rails
     builder.set_max_node_executions(max_node_executions)

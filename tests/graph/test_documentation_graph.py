@@ -233,6 +233,33 @@ def test_graph_uses_document_fanout_node_not_update_create(model, tools, tmp_ses
     assert "create" not in graph.nodes
 
 
+async def test_graph_runs_review_between_document_and_evaluate(
+    model, tools, tmp_sessions, comment_factory
+) -> None:
+    """The docs graph wires a ``review`` node between the fan-out writer and
+    evaluation: a completed document alone never opens the evaluation gate —
+    the review verdict (``eval_ready``) does, so evaluation stays false
+    while the writer is mid-correction."""
+    factory, _ = comment_factory
+    graph = build_graph_for_run(
+        "review-wired-1",
+        surface="pull_request",
+        tools_registry=tools,
+        model=model,
+        storage_dir=tmp_sessions,
+        comment_factory=factory,
+    )
+    assert "review" in graph.nodes
+
+    result = await graph.invoke_async(
+        PR_TASK,
+        invocation_state={"run_id": "review-wired-1", "review_policy": "never"},
+    )
+    assert result.status == Status.COMPLETED
+    order = [n.node_id for n in result.execution_order]
+    assert order.index("document") < order.index("review") < order.index("evaluate")
+
+
 def test_writer_tools_exclude_mutation_and_delivery(tools) -> None:
     """The doc writer authoring node must NOT expose write/git-delivery tools;
     it produces a DocChangePlan and delivery applies it. Exposing them made the

@@ -18,6 +18,7 @@ from draftly.agents.schemas import (
     EvidenceBundle,
     ImpactAnalysis,
     NotifyReceipt,
+    ReviewVerdict,
 )
 from draftly.app.composition.tools import build_tools
 from tests.stub_model import StubModel
@@ -102,6 +103,10 @@ def stub_model() -> StubModel:
                 "should_notify": True,
                 "kind": "gap_detected",
                 "body": "Draftly will generate docs for this PR:\n- docs/widgets.md",
+            },
+            ReviewVerdict: {
+                "verdict": "clean",
+                "corrections": [],
             },
         }
     )
