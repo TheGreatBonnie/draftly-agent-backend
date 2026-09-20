@@ -243,7 +243,13 @@ class DraftRepository:
         return files
 
     async def get_latest(self, *, run_id: str) -> list[DraftFile]:
-        """Highest sealed generation for a run (the authoritative snapshot)."""
+        """Latest sealed supersession per path, across generations.
+
+        Supersession is per path, NOT per generation: a per-task retry or a
+        reviewer correction opens a newer generation for one file while its
+        siblings remain sealed in an older generation. Per-path supersession
+        keeps every page's newest bytes without dropping untouched pages.
+        """
         rows = await self.database.fetch_all(
             """
             SELECT * FROM draft_revisions
@@ -252,15 +258,44 @@ class DraftRepository:
             """,
             run_id,
         )
-        latest_generation: int | None = None
+        files: list[DraftFile] = []
+        seen: set[str] = set()
         for row in rows:
             revision = self._to_revision(row)
-            if revision.sealed:
-                latest_generation = revision.generation
-                break
-        if latest_generation is None:
-            return []
-        return await self.get_generation(run_id=run_id, generation=latest_generation)
+            if not revision.sealed or revision.path in seen:
+                continue
+            seen.add(revision.path)
+            content = await self._assembled(revision.id)
+            files.append(
+                DraftFile(
+                    path=revision.path,
+                    action=revision.action,
+                    content=content,
+                    content_size=revision.content_size,
+                )
+            )
+        return files
+
+    async def get_path_latest(self, *, run_id: str, path: str) -> DraftFile | None:
+        """Newest sealed supersession for one path, or None."""
+        rows = await self.database.fetch_all(
+            """
+            SELECT * FROM draft_revisions
+             WHERE run_id = $1
+             ORDER BY generation DESC, path
+            """,
+            run_id,
+        )
+        for row in rows:
+            revision = self._to_revision(row)
+            if revision.sealed and revision.path == path:
+                return DraftFile(
+                    path=revision.path,
+                    action=revision.action,
+                    content=await self._assembled(revision.id),
+                    content_size=revision.content_size,
+                )
+        return None
 
     async def list_revisions(
         self,

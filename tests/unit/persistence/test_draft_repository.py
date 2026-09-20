@@ -192,7 +192,9 @@ async def test_assembly_joins_chunks_in_order(repo: DraftRepository) -> None:
     assert files[0].content == "one two three"
 
 
-async def test_get_latest_returns_highest_sealed_generation(repo: DraftRepository) -> None:
+async def test_get_latest_keeps_latest_sealed_per_path_across_generations(
+    repo: DraftRepository,
+) -> None:
     rev1 = await repo.create_revision(
         run_id="run-1", org_id="org-1", generation=1, path="docs/a.md", action="update"
     )
@@ -204,9 +206,61 @@ async def test_get_latest_returns_highest_sealed_generation(repo: DraftRepositor
     await repo.append_chunk(rev2.id, "new")
     await repo.finalize(rev2.id)
 
-    files = await repo.get_latest(run_id="run-1")
-    assert [f.path for f in files] == ["docs/b.md"]
-    assert files[0].content == "new"
+    by_path = {f.path: f.content for f in await repo.get_latest(run_id="run-1")}
+    assert by_path == {"docs/a.md": "old", "docs/b.md": "new"}
+
+
+async def test_get_latest_partial_supersession_keeps_siblings(
+    repo: DraftRepository,
+) -> None:
+    a1 = await repo.create_revision(
+        run_id="run-1", org_id="org-1", generation=1, path="docs/a.md", action="update"
+    )
+    await repo.append_chunk(a1.id, "old-a")
+    await repo.finalize(a1.id)
+    b1 = await repo.create_revision(
+        run_id="run-1", org_id="org-1", generation=1, path="docs/b.md", action="create"
+    )
+    await repo.append_chunk(b1.id, "beta")
+    await repo.finalize(b1.id)
+    a2 = await repo.create_revision(
+        run_id="run-1", org_id="org-1", generation=2, path="docs/a.md", action="update"
+    )
+    await repo.append_chunk(a2.id, "new-a")
+    await repo.finalize(a2.id)
+
+    by_path = {f.path: f.content for f in await repo.get_latest(run_id="run-1")}
+    assert by_path == {"docs/a.md": "new-a", "docs/b.md": "beta"}
+
+
+async def test_get_path_latest_returns_newest_sealed_for_path(
+    repo: DraftRepository,
+) -> None:
+    rev1 = await repo.create_revision(
+        run_id="run-1", org_id="org-1", generation=1, path="docs/a.md", action="update"
+    )
+    await repo.append_chunk(rev1.id, "old-a")
+    await repo.finalize(rev1.id)
+    rev2 = await repo.create_revision(
+        run_id="run-1", org_id="org-1", generation=2, path="docs/a.md", action="update"
+    )
+    await repo.append_chunk(rev2.id, "new-a")
+    await repo.finalize(rev2.id)
+
+    latest = await repo.get_path_latest(run_id="run-1", path="docs/a.md")
+    assert latest is not None
+    assert latest.content == "new-a"
+
+
+async def test_get_path_latest_none_when_unsealed_or_missing(
+    repo: DraftRepository,
+) -> None:
+    rev = await repo.create_revision(
+        run_id="run-1", org_id="org-1", generation=1, path="docs/a.md", action="update"
+    )
+    await repo.append_chunk(rev.id, "drafting")
+    assert await repo.get_path_latest(run_id="run-1", path="docs/a.md") is None
+    assert await repo.get_path_latest(run_id="run-1", path="docs/none.md") is None
 
 
 async def test_get_latest_empty_when_no_sealed(repo: DraftRepository) -> None:
