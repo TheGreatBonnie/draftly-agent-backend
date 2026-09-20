@@ -24,7 +24,7 @@ from draftly.agents.documentation.draft_scope import DraftScope, set_draft_scope
 logger = structlog.get_logger(__name__)
 
 #: Writer nodes that stream file bytes through the draft store.
-WRITER_NODE_IDS = ("update", "create")
+WRITER_NODE_IDS = ("document",)
 
 #: Nodes whose agents read the sealed draft store via ``get_drafted_docs``.
 #: Delivery commits the writer's bodies, so it needs a scope — but opening a

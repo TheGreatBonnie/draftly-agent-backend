@@ -23,7 +23,7 @@ def _blocks(
     evidence: list[dict] | None = None,
     draft: str = "",
     *,
-    source: str = "update",
+    source: str = "document",
 ) -> list[dict]:
     blocks = [
         {"text": "Original Task: task"},
@@ -206,7 +206,7 @@ class TestEvaluatorNode:
             {"text": "\nInputs from previous nodes:"},
             {"text": "\nFrom research:"},
             {"text": f"  - ResearchAgent: {_json({'items': evidence})}"},
-            {"text": "\nFrom update:"},
+            {"text": "\nFrom document:"},
             {
                 "text": "  - WriterAgent: "
                 + _json(
@@ -288,7 +288,7 @@ class TestEvaluatorNode:
             {"text": "\nInputs from previous nodes:"},
             {"text": "\nFrom research:"},
             {"text": f"  - ResearchAgent: {_json({'items': evidence})}"},
-            {"text": "\nFrom update:"},
+            {"text": "\nFrom document:"},
             {
                 "text": (
                     "  - WriterAgent: "
@@ -342,7 +342,7 @@ class TestEvaluatorNode:
             {"text": "\nInputs from previous nodes:"},
             {"text": "\nFrom research:"},
             {"text": "  - ResearchAgent: some plain text summary"},
-            {"text": "\nFrom update:"},
+            {"text": "\nFrom document:"},
             {"text": "  - WriterAgent: " + _json({"draft": "tiny"})},
         ]
         node = EvaluatorNode(rubric_grader=_NoopRubricGrader())
@@ -363,7 +363,7 @@ class TestEvaluatorNode:
             {"text": "\nInputs from previous nodes:"},
             {"text": "\nFrom research:"},
             {"text": f"  - ResearchAgent: {_json(evidence)}"},
-            {"text": "\nFrom update:"},
+            {"text": "\nFrom document:"},
             {
                 "text": (
                     "  - WriterAgent: "
@@ -409,7 +409,7 @@ class TestEvaluatorNode:
             {"text": "  - ResearchAgent: some plain text summary"},
             {"text": "\nFrom context:"},
             {"text": "  - Agent: also plain text"},
-            {"text": "\nFrom update:"},
+            {"text": "\nFrom document:"},
             {
                 "text": (
                     "  - WriterAgent: "
@@ -445,7 +445,7 @@ class TestEvaluatorNode:
             {"text": "\nInputs from previous nodes:"},
             {"text": "\nFrom research:"},
             {"text": "  - ResearchAgent: plain text"},
-            {"text": "\nFrom update:"},
+            {"text": "\nFrom document:"},
             {
                 "text": "  - WriterAgent: "
                 + _json(
@@ -503,8 +503,8 @@ class TestEvaluatorNode:
         blocks = _blocks([{"id": "doc-1"}], "draft text")
         deps = parse_node_input(blocks)
         assert "research" in deps
-        assert "update" in deps
-        assert deps["update"]["draft"] == "draft text"
+        assert "document" in deps
+        assert deps["document"]["draft"] == "draft text"
 
 
 def test_research_evidence_coerces_evidence_item_models() -> None:
@@ -580,7 +580,7 @@ class TestEvaluatorDraftStore:
         )
         node = EvaluatorNode(drafts_repo=repo, rubric_grader=_NoopRubricGrader())
         result = await node.invoke_async(
-            _blocks(evidence, "", source="update"),
+            _blocks(evidence, "", source="document"),
             invocation_state={"run_id": "run-1"},
         )
         data = json.loads(result.results["evaluate"].result.message["content"][0]["text"])
@@ -594,7 +594,7 @@ class TestEvaluatorDraftStore:
         repo = _FakeDraftsRepo([])
         node = EvaluatorNode(drafts_repo=repo, rubric_grader=_NoopRubricGrader())
         result = await node.invoke_async(
-            _blocks([{"id": "doc-1", "topic": "neon"}], "", source="update"),
+            _blocks([{"id": "doc-1", "topic": "neon"}], "", source="document"),
             invocation_state={"run_id": "run-1"},
         )
         data = json.loads(result.results["evaluate"].result.message["content"][0]["text"])
@@ -606,7 +606,7 @@ class TestEvaluatorDraftStore:
         evidence = [{"id": "doc-1", "topic": "neon"}]
         node = EvaluatorNode(rubric_grader=_NoopRubricGrader())
         result = await node.invoke_async(
-            _blocks(evidence, ("neon serverless postgres doc-1 " * 10), source="update")
+            _blocks(evidence, ("neon serverless postgres doc-1 " * 10), source="document")
         )
         data = json.loads(result.results["evaluate"].result.message["content"][0]["text"])
         assert set(data) == {"passed", "score", "reasons", "iteration", "escalated"}

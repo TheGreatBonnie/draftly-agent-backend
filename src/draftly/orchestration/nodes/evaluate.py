@@ -257,7 +257,7 @@ class EvaluatorNode(MultiAgentBase):
         # Parse dependency outputs from the graph's ContentBlock input.
         # The graph feeds prior node results as a list[ContentBlock] with
         # "From <dep_id>:" sections — the draft comes from whichever of
-        # answer/update/create ran; evidence comes from research.
+        # answer/document ran; evidence comes from research.
         # NOTE: the research swarm's final message may be plain text, not
         # JSON; parse_node_input skips non-JSON payloads, so evidence safely
         # degrades to [] in that case.
@@ -274,13 +274,13 @@ class EvaluatorNode(MultiAgentBase):
             # Plans carry only metadata now; their prose (summary/commit
             # message) still cite source ids, so score it on top of the
             # assembled store content.
-            for dep_id in ("answer", "update", "create"):
+            for dep_id in ("answer", "document"):
                 if dep_id in deps:
                     draft = _draft_text(deps[dep_id])
             if has_drafts:
                 draft = f"{store_draft}\n\n{draft}" if draft.strip() else store_draft
         else:
-            for dep_id in ("answer", "update", "create"):
+            for dep_id in ("answer", "document"):
                 if dep_id in deps:
                     payload = deps[dep_id]
                     if isinstance(payload, dict) and payload.get("files"):

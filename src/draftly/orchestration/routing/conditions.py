@@ -81,9 +81,22 @@ route_to_update = route_to_update_of()
 route_to_create = route_to_create_of()
 
 
+def route_to_write_of(node_id: str = "impact"):
+    """Factory: route to the fan-out writer node when a write is required."""
+
+    def check(state: GraphState) -> bool:
+        data = safe_node_data(state, node_id)
+        return data is not None and data.get("action") in ("update", "create")
+
+    return check
+
+
+route_to_write = route_to_write_of()
+
+
 def generated(state: GraphState) -> bool:
-    """Any of answer/update/create has produced output."""
-    return any(nid in state.results for nid in ("answer", "update", "create"))
+    """Any of answer/update/create/document has produced output."""
+    return any(nid in state.results for nid in ("answer", "update", "create", "document"))
 
 
 def needs_revision(state: GraphState) -> bool:
@@ -112,6 +125,41 @@ def needs_revision_of(*node_ids: str):
         return any(nid in state.results for nid in node_ids)
 
     return check
+
+
+def _review_verdict(state: GraphState) -> str | None:
+    if "review" not in state.results:
+        return None
+    data = safe_node_data(state, "review")
+    if data is not None:
+        return str(data.get("verdict") or "")
+    # safe_node_data only parses payloads whose structured_output is a
+    # pydantic model (model_dump) or whose result carries a message; verdict
+    # lives on the structured output directly for test/plain-object results.
+    node_result = state.results["review"].result
+    structured = getattr(node_result, "structured_output", None)
+    if structured is None:
+        return None
+    return str(getattr(structured, "verdict", "") or "")
+
+
+def eval_ready(state: GraphState) -> bool:
+    """Evaluation may run: the answer path completed, or the review verdict
+    accepted the fan-out draft (clean). Gates docs-graph edges so evaluation
+    never runs mid-correction."""
+    if "answer" in state.results:
+        return True
+    return _review_verdict(state) == "clean"
+
+
+def needs_correction(state: GraphState) -> bool:
+    """Review found targeted corrections; re-dispatch only corrected tasks."""
+    return _review_verdict(state) == "correct"
+
+
+def review_clean(state: GraphState) -> bool:
+    """Review accepted the draft (content-supply gate for document → evaluate)."""
+    return _review_verdict(state) == "clean"
 
 
 def eval_passed(state: GraphState) -> bool:
@@ -181,16 +229,16 @@ def delivery_content_ready(state: GraphState) -> bool:
     prompt, and the existing ``changelog_evaluate → deliver`` edge actually
     schedules the node.
 
-    Draft-store gate: ``update``/``create`` stream file bytes through the
-    draft store (never inline JSON), so when a docs writer completed the
-    evaluator must have confirmed a sealed generation (``has_drafts``) before
-    delivery reads the bodies. The ``answer`` path and other surfaces carry
-    inline content and are unaffected; offline fixtures (``drafts_repo=None``)
-    omit ``has_drafts`` and behave as before.
+    Draft-store gate: ``update``/``create``/``document`` stream file bytes
+    through the draft store (never inline JSON), so when a docs writer
+    completed the evaluator must have confirmed a sealed generation
+    (``has_drafts``) before delivery reads the bodies. The ``answer`` path and
+    other surfaces carry inline content and are unaffected; offline fixtures
+    (``drafts_repo=None``) omit ``has_drafts`` and behave as before.
     """
     if not changelog_eval_passed(state):
         return False
-    if "update" in state.results or "create" in state.results:
+    if any(nid in state.results for nid in ("update", "create", "document")):
         evaluation = safe_node_data(state, "evaluate")
         if isinstance(evaluation, dict) and evaluation.get("has_drafts") is False:
             return False

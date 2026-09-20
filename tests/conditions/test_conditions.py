@@ -3,23 +3,29 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 from typing import Any, cast
 
 from strands.multiagent.base import MultiAgentResult, NodeResult, Status
 from strands.multiagent.graph import GraphState
 
+from draftly.agents.schemas import ImpactAnalysis
 from draftly.orchestration.nodes.base import agent_result
 from draftly.orchestration.routing.conditions import (
     all_dependencies_complete,
     eval_passed,
+    eval_ready,
     generated,
     is_valid_surface,
+    needs_correction,
     needs_revision,
     needs_revision_of,
     pull_request_opened,
+    review_clean,
     route_to_answer,
     route_to_create,
     route_to_update,
+    route_to_write,
 )
 
 
@@ -50,6 +56,14 @@ def _evaluate_result(passed: bool) -> MultiAgentResult:
             )
         },
     )
+
+
+def _results(state_results: dict) -> SimpleNamespace:
+    return SimpleNamespace(results=state_results, task="")
+
+
+def sentinel_result():
+    return SimpleNamespace(structured_output=object())
 
 
 class TestIsValidSurface:
@@ -119,6 +133,69 @@ class TestGenerated:
 
     def test_empty_state(self) -> None:
         assert not generated(GraphState())
+
+
+def test_route_to_write_matches_update_and_create() -> None:
+    assert route_to_write(
+        _results(
+            {
+                "impact": SimpleNamespace(
+                    result=SimpleNamespace(
+                        structured_output=ImpactAnalysis(
+                            action="update", affected_documents=["d.md"]
+                        )
+                    )
+                )
+            }
+        )
+    )
+    impact = ImpactAnalysis(action="none", affected_documents=[])
+    assert (
+        route_to_write(
+            _results({"impact": SimpleNamespace(result=SimpleNamespace(structured_output=impact))})
+        )
+        is False
+    )
+
+
+def test_generated_includes_document() -> None:
+    assert generated(_results({"document": sentinel_result()})) is True
+
+
+def test_eval_ready_true_for_answer_only() -> None:
+    assert eval_ready(_results({"answer": sentinel_result()})) is True
+
+
+def test_eval_ready_false_until_review_clean() -> None:
+    state = _results({"document": sentinel_result()})
+    assert eval_ready(state) is False
+    state.results["review"] = SimpleNamespace(
+        result=SimpleNamespace(structured_output=SimpleNamespace(verdict="correct"))
+    )
+    assert eval_ready(state) is False
+    state.results["review"] = SimpleNamespace(
+        result=SimpleNamespace(structured_output=SimpleNamespace(verdict="clean"))
+    )
+    assert eval_ready(state) is True
+
+
+def test_needs_correction_and_review_clean_are_verdict_conditions() -> None:
+    correct = _results(
+        {
+            "review": SimpleNamespace(
+                result=SimpleNamespace(structured_output=SimpleNamespace(verdict="correct"))
+            )
+        }
+    )
+    clean = _results(
+        {
+            "review": SimpleNamespace(
+                result=SimpleNamespace(structured_output=SimpleNamespace(verdict="clean"))
+            )
+        }
+    )
+    assert needs_correction(correct) is True and review_clean(correct) is False
+    assert needs_correction(clean) is False and review_clean(clean) is True
 
 
 class TestEvaluationConditions:
