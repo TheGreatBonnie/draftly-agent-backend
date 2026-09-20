@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import PurePath
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -65,6 +65,21 @@ class DocumentationTask(BaseModel):
     evidence: list[EvidenceItem] = Field(default_factory=list)
     requirements: list[str] = Field(default_factory=list)
     bundle_id: str | None = None
+
+
+class ReviewCorrection(BaseModel):
+    """One targeted page correction from the global review pass."""
+
+    task_id: str
+    path: str
+    instructions: list[str] = Field(default_factory=list)
+
+
+class ReviewVerdict(BaseModel):
+    """Global cross-page coherence verdict."""
+
+    verdict: Literal["clean", "correct"] = "clean"
+    corrections: list[ReviewCorrection] = Field(default_factory=list)
 
 
 class ImpactAnalysis(BaseModel):
