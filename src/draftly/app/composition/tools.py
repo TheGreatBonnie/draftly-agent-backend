@@ -55,6 +55,7 @@ from draftly.tools.repository.filesystem import (
 from draftly.tools.repository.git import git_diff, git_log, git_status
 from draftly.tools.search.hybrid_search import hybrid_search
 from draftly.tools.search.keyword_search import keyword_search
+from draftly.tools.search.live_docs_search import live_docs_search
 from draftly.tools.search.semantic_search import semantic_search
 from draftly.tools.slack.get_thread import get_thread as slack_get_thread
 from draftly.tools.slack.post_message import post_message as slack_post_message
@@ -75,6 +76,7 @@ _DOCUMENTATION_TOOLS = [
     semantic_search,
     keyword_search,
     hybrid_search,
+    live_docs_search,
     code_search,
     get_diff,
     get_files,
@@ -201,6 +203,7 @@ class ToolRegistry:
     semantic_search: list[Any] = field(default_factory=list)
     keyword_search: list[Any] = field(default_factory=list)
     hybrid_search: list[Any] = field(default_factory=list)
+    live_docs_search: list[Any] = field(default_factory=list)
 
     research: list[Any] = field(default_factory=list)
     evaluation: list[Any] = field(default_factory=list)
@@ -291,6 +294,7 @@ def build_tools() -> ToolRegistry:
         semantic_search=[semantic_search],
         keyword_search=[keyword_search],
         hybrid_search=[hybrid_search],
+        live_docs_search=[live_docs_search],
         research=_RESEARCH_TOOLS,
         evaluation=[],
         github_delivery=_GITHUB_DELIVERY_TOOLS,

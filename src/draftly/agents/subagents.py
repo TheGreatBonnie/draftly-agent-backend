@@ -52,7 +52,7 @@ def build_research_swarm(
     )
     docs_agent = build_docs_researcher(
         model,
-        [tools.semantic_search, tools.keyword_search, tools.hybrid_search],
+        [tools.semantic_search, tools.keyword_search, tools.hybrid_search, tools.live_docs_search],
         runtime=runtime,
         node_id=node_id or "research",
     )

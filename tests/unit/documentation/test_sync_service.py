@@ -273,3 +273,32 @@ async def test_sync_processes_files_concurrently():
     # Check that maximum concurrency was greater than 1 (overlap proved)
     assert github.max_active_requests > 1
 
+
+
+@pytest.mark.asyncio
+async def test_sync_chunk_metadata_carries_citation_fields():
+    """GitHub chunks gain genuine URL + page-type provenance (AC7)."""
+    github = FakeGitHubClient(
+        tree=[{"path": "docs/deploy.md", "type": "blob"}],
+        files={"docs/deploy.md": "# Deploy\n\nSteps here."},
+    )
+    documents = FakeDocuments()
+    memory = FakeMemory()
+
+    service = SyncService(
+        github=github, context=_context(documents, memory, {"installation_id": 42})
+    )
+    await service.sync(
+        org_id="test-org",
+        repository_full_name="owner/repo",
+        include=["docs/**"],
+        exclude=[],
+    )
+
+    assert memory.stored, "expected chunks to be stored"
+    meta = memory.stored[0].metadata
+    assert meta["source_url"].startswith(
+        "https://github.com/owner/repo/blob/main/docs/deploy.md"
+    )
+    assert meta["page_type"] == "how-to"
+    assert meta["section"] == meta["heading_path"]

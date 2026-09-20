@@ -58,6 +58,17 @@ async def keyword_search(
     resolved_namespace = scope.namespace if scope and scope.namespace else namespace
     org_id = scope.org_id if scope else None
 
+    from draftly.tools.search._rag import is_documents_namespace, rag_search_results
+
+    if is_documents_namespace(scope, namespace):
+        logger.debug(
+            "keyword_search_rag_delegate",
+            namespace=resolved_namespace,
+            org_id=org_id,
+            limit=limit,
+        )
+        return await rag_search_results(query=query, org_id=org_id, limit=limit)
+
     client = DatabaseClient()
     pattern = f"%{query}%"
     org_clause = "AND org_id = $4" if org_id else ""

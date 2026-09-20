@@ -439,8 +439,11 @@ async def run_knowledge_construction(
     *,
     org_id: str,
     publish: Callable[[str, dict[str, Any]], Awaitable[None]],
+    source_type: str = "github_repository",
 ) -> KnowledgeExtractionResult:
     """Stage 2: Extract knowledge from synced document chunks via LLM."""
+    if _research_synthesis_enabled(context) and source_type == "public_documentation":
+        return await _run_research_synthesis(context, org_id=org_id, publish=publish)
     from draftly.memory.candidates.models import MemoryCandidate
     from draftly.memory.models.knowledge import Knowledge
 
@@ -731,11 +734,422 @@ async def run_knowledge_construction(
     return result
 
 
+_RESEARCH_SHARD_QUERY = (
+    "Extract facts, relationships, and procedures "
+    "from the attached documentation files."
+)
+
+
+def _research_synthesis_enabled(context: Any) -> bool:
+    """True only when the research flag is explicitly on.
+
+    ``is True`` (not truthiness) keeps MagicMock-based contexts on the
+    legacy LLM path unless a test opts in with a real True.
+    """
+    return (
+        getattr(getattr(context, "config", None), "tavily_research_enabled", False)
+        is True
+    )
+
+
+def _tavily_client_from_config(config: Any) -> Any:
+    from draftly.integrations.tavily.client import TavilyClient
+
+    return TavilyClient(
+        getattr(config, "tavily_api_key", None) or "",
+        base_url=getattr(config, "tavily_base_url", "https://api.tavily.com"),
+        timeout_seconds=getattr(config, "tavily_request_timeout_seconds", 60),
+        max_concurrency=getattr(config, "tavily_max_concurrency", 4),
+    )
+
+
+async def _run_research_synthesis(
+    context: Any,
+    *,
+    org_id: str,
+    publish: Callable[[str, dict[str, Any]], Awaitable[None]],
+) -> KnowledgeExtractionResult:
+    """Stage 2 (research path, public sources only).
+
+    The corpus is sliced through the index into deterministic RAG shards
+    (page-type strata, file/word capped); each shard goes through one
+    ``Research(model=mini, files=encode(shard), output_schema=ExtractionOutput)``
+    call. Output validation, persistence stores, and event names match the
+    legacy per-chunk path; per-shard failures record their source IDs.
+    """
+    from pydantic import ValidationError
+
+    from draftly.documentation.tavily_source import (
+        build_research_shards,
+        files_for_shard,
+        group_chunks_into_pages,
+    )
+    from draftly.integrations.tavily.errors import (
+        TavilyError,
+        TavilyErrorCode,
+        is_retryable,
+    )
+
+    result = KnowledgeExtractionResult()
+    config = getattr(context, "config", None)
+
+    chunks = await context.memory.recall(
+        namespace="documents",
+        query="*",
+        limit=500,
+        org_id=org_id,
+    )
+    if not chunks:
+        logger.info("knowledge_construction_no_chunks org=%s", org_id)
+        return result
+
+    pages, orphans = group_chunks_into_pages(chunks)
+    result.failed_chunks.extend(orphans)
+    if not pages:
+        return result
+
+    by_type: dict[str, list] = {}
+    for page in pages:
+        page_type = (page.metadata or {}).get("page_type", "index")
+        by_type.setdefault(page_type, []).append(page)
+    shards: list = []
+    for page_type in sorted(by_type):
+        shards.extend(build_research_shards(by_type[page_type]))
+
+    client = _tavily_client_from_config(config)
+    budget = getattr(config, "tavily_credit_budget", None)
+    poll_timeout = getattr(config, "tavily_research_poll_timeout_seconds", 300)
+    credits = 0.0
+    total = len(shards)
+    emit_every = tick_interval(total)
+    try:
+        for index, shard in enumerate(shards):
+            shard_ids = [p.source_id for p in shard]
+            if budget is not None and credits >= budget:
+                raise RuntimeError(
+                    f"tavily credit budget exceeded ({credits} >= {budget})"
+                )
+            try:
+                created = await client.research(
+                    query=_RESEARCH_SHARD_QUERY,
+                    model="mini",
+                    files=files_for_shard(shard),
+                    output_schema=ExtractionOutput.model_json_schema(),
+                )
+                polled = await client.research_poll(
+                    created.request_id, poll_timeout_seconds=poll_timeout
+                )
+            except TavilyError as exc:
+                if exc.code == TavilyErrorCode.CREDIT_LIMIT or is_retryable(exc.code):
+                    raise
+                logger.warning(
+                    "knowledge_research_shard_failed shard=%d err=%s",
+                    index, exc,
+                )
+                result.failed_chunks.extend(shard_ids)
+                continue
+            usage = getattr(polled, "usage", None)
+            credits += float(getattr(usage, "credits_used", 0) or 0)
+            try:
+                extracted = ExtractionOutput.model_validate(polled.content)
+            except ValidationError as exc:
+                logger.warning(
+                    "knowledge_research_invalid_output shard=%d err=%s",
+                    index, exc,
+                )
+                result.failed_chunks.extend(shard_ids)
+                continue
+            await _store_shard_extraction(
+                context,
+                result,
+                org_id=org_id,
+                extracted=extracted,
+                shard_ids=shard_ids,
+                shard=shard,
+            )
+            processed = index + 1
+            await publish("tool_progress", {
+                "name": "knowledge_extraction",
+                "processed": processed,
+                "total": total,
+                "knowledge_count": result.knowledge_count,
+                "relationship_count": result.relationship_count,
+            })
+            if processed == total or processed % emit_every == 0:
+                pct = processed / total
+                await publish("stage_progress", {
+                    "stage": "knowledge_construction",
+                    "progress": min(int(10 + pct * 85), 95),
+                })
+    finally:
+        await client.aclose()
+
+    logger.info(
+        "knowledge_construction_done",
+        stage="knowledge_construction",
+        org_id=org_id,
+        facts=result.knowledge_count,
+        rels=result.relationship_count,
+        procs=result.candidate_count,
+        failed=len(result.failed_chunks),
+    )
+    return result
+
+
+async def _store_shard_extraction(
+    context: Any,
+    result: KnowledgeExtractionResult,
+    *,
+    org_id: str,
+    extracted: ExtractionOutput,
+    shard_ids: list[str],
+    shard: list,
+) -> None:
+    """Persist one validated shard ExtractionOutput (deduped).
+
+    Same stores and batch/per-item fallbacks as the legacy path; batch-level
+    failures attribute the whole shard, per-item failures attribute it too
+    (the shard is the smallest attributable unit for blended outputs).
+    """
+    from draftly.memory.candidates.models import MemoryCandidate
+    from draftly.memory.candidates.service import CandidateService
+    from draftly.memory.docgraph.service import DocGraphService
+    from draftly.memory.models.knowledge import Knowledge
+
+    evidence = " ".join(p.content for p in shard)[:200]
+    facts: list[Knowledge] = []
+    seen_facts: set[str] = set()
+    for fact in extracted.facts:
+        if fact in seen_facts:
+            continue
+        seen_facts.add(fact)
+        facts.append(
+            Knowledge(
+                namespace="knowledge",
+                content=fact,
+                org_id=org_id,
+                topic=None,
+                source_quality=0.7,
+            )
+        )
+
+    batch_relations: list[dict] = []
+    seen_relations: set[tuple] = set()
+    for rel in extracted.relationships:
+        key = (rel.source, rel.target, rel.type)
+        if key in seen_relations:
+            continue
+        seen_relations.add(key)
+        batch_relations.append({
+            "_chunk_id": None,
+            "source": rel.source,
+            "target": rel.target,
+            "type": rel.type,
+            "org_id": org_id,
+            "source_type": "code",
+            "target_type": "doc",
+        })
+
+    batch_candidates: list[MemoryCandidate] = []
+    seen_procedures: set[str] = set()
+    for proc in extracted.procedures:
+        key = proc.title + "\n" + "\n".join(proc.steps)
+        if key in seen_procedures:
+            continue
+        seen_procedures.add(key)
+        batch_candidates.append(
+            MemoryCandidate(
+                org_id=org_id,
+                candidate_type="procedure_pattern",
+                payload=proc.model_dump(),
+                source_type="document_chunk",
+                source_id=None,
+                evidence=[evidence],
+                confidence=0.6,
+            )
+        )
+
+    if batch_relations:
+        if isinstance(context.docgraph, DocGraphService):
+            try:
+                result.relationship_count += await context.docgraph.link_batch(
+                    batch_relations
+                )
+            except Exception as exc:
+                logger.warning(
+                    "knowledge_link_batch_failed count=%d err=%s",
+                    len(batch_relations), exc,
+                )
+                result.failed_chunks.extend(shard_ids)
+        else:
+            for rel_def in batch_relations:
+                try:
+                    await context.docgraph.link(
+                        source_key=rel_def["source"],
+                        target_key=rel_def["target"],
+                        relation_type=rel_def["type"],
+                        org_id=org_id,
+                    )
+                    result.relationship_count += 1
+                except Exception as exc:
+                    logger.warning("knowledge_link_failed err=%s", exc)
+                    result.failed_chunks.extend(shard_ids)
+
+    if batch_candidates:
+        if isinstance(context.candidates, CandidateService):
+            try:
+                result.candidate_count += await context.candidates.enqueue_batch(
+                    batch_candidates
+                )
+            except Exception as exc:
+                logger.warning(
+                    "knowledge_enqueue_batch_failed count=%d err=%s",
+                    len(batch_candidates), exc,
+                )
+                result.failed_chunks.extend(shard_ids)
+        else:
+            for cand in batch_candidates:
+                try:
+                    await context.candidates.enqueue(cand)
+                    result.candidate_count += 1
+                except Exception as exc:
+                    logger.warning("knowledge_enqueue_failed err=%s", exc)
+                    result.failed_chunks.extend(shard_ids)
+
+    if facts:
+        try:
+            if KNOWLEDGE_BATCH_TIMEOUT_SECONDS > 0:
+                await asyncio.wait_for(
+                    context.memory.store_batch(facts),
+                    timeout=KNOWLEDGE_BATCH_TIMEOUT_SECONDS,
+                )
+            else:
+                await context.memory.store_batch(facts)
+            result.knowledge_count += len(facts)
+        except Exception as exc:
+            logger.warning(
+                "knowledge_fact_store_failed count=%d err=%s", len(facts), exc
+            )
+            result.failed_chunks.extend(shard_ids)
+
+
+def _stratified_sample(
+    docs: list[dict], total: int = EVAL_LLM_SAMPLE_SIZE
+) -> list[dict]:
+    """Round-robin across page-type strata (deterministic, recall order kept)."""
+    from draftly.documentation.page_type import PAGE_TYPES, derive_page_type
+
+    groups: dict[str, list] = {}
+    for doc in docs:
+        meta = doc.get("metadata") or {}
+        page_type = meta.get("page_type") or derive_page_type(
+            meta.get("source_url") or meta.get("path") or ""
+        )
+        groups.setdefault(page_type, []).append(doc)
+    strata = [groups[page_type] for page_type in PAGE_TYPES if groups.get(page_type)]
+    strata.extend(
+        group for key, group in groups.items() if key not in PAGE_TYPES
+    )
+    out: list[dict] = []
+    while len(out) < total and any(strata):
+        for group in strata:
+            if group and len(out) < total:
+                out.append(group.pop(0))
+    return out
+
+
+_EVAL_RESEARCH_QUERY = (
+    "Score this documentation sample from 0.0 (poor) to 1.0 (excellent) "
+    "on coverage, completeness, structure, and length."
+)
+
+
+async def _research_eval_scores(
+    context: Any,
+    *,
+    org_id: str,
+    docs: list[dict],
+    publish: Callable[[str, dict[str, Any]], Awaitable[None]] | None,
+) -> dict[str, float] | None:
+    """Score a stratified sample with one Research call; None on fallback.
+
+    Research failure (non-credit) or invalid output degrades to pure
+    heuristics. Credit-limit errors halt via the stage-fail path.
+    """
+    from pydantic import ValidationError
+
+    from draftly.documentation.tavily_source import pack_sample_files
+    from draftly.integrations.tavily.errors import TavilyError, TavilyErrorCode
+
+    config = getattr(context, "config", None)
+    budget = getattr(config, "tavily_credit_budget", None)
+    if budget is not None and budget <= 0:
+        raise RuntimeError(f"tavily credit budget exceeded (0 >= {budget})")
+    sample = _stratified_sample(docs)
+    items = [
+        (
+            (doc.get("metadata") or {}).get("title") or "Untitled",
+            doc.get("content", ""),
+        )
+        for doc in sample
+        if doc.get("content", "").strip()
+    ]
+    if not items:
+        return None
+    client = _tavily_client_from_config(config)
+    try:
+        created = await client.research(
+            query=_EVAL_RESEARCH_QUERY,
+            model="mini",
+            files=pack_sample_files(items),
+            output_schema=EvaluationScores.model_json_schema(),
+        )
+        polled = await client.research_poll(
+            created.request_id,
+            poll_timeout_seconds=getattr(
+                config, "tavily_research_poll_timeout_seconds", 300
+            ),
+        )
+    except TavilyError as exc:
+        if exc.code == TavilyErrorCode.CREDIT_LIMIT:
+            raise
+        logger.warning("evaluation_research_failed err=%s", exc)
+        return None
+    finally:
+        await client.aclose()
+    try:
+        scores = EvaluationScores.model_validate(polled.content)
+    except ValidationError as exc:
+        logger.warning("evaluation_research_invalid_output err=%s", exc)
+        return None
+    if publish:
+        await publish("tool_progress", {
+            "name": "initial_evaluation",
+            "processed": 1,
+            "total": 1,
+        })
+        await publish("stage_progress", {
+            "stage": "initial_evaluation",
+            "progress": 95,
+        })
+    logger.info(
+        "initial_evaluation_researched org=%s sample=%d total=%d",
+        org_id, len(sample), len(docs),
+    )
+    return {
+        "coverage": float(scores.coverage),
+        "completeness": float(scores.completeness),
+        "structure": float(scores.structure),
+        "length": float(scores.length),
+    }
+
+
 async def run_initial_evaluation(
     context: Any,
     *,
     org_id: str,
     publish: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None,
+    source_type: str = "github_repository",
 ) -> EvaluationResult:
     """Stage 3: Score documentation corpus quality using heuristics + LLM."""
     docs = await context.memory.recall(
@@ -796,7 +1210,14 @@ async def run_initial_evaluation(
     llm_scores: dict[str, float] = {dim: 0.0 for dim in heuristic}
     llm_count = 0
 
-    if stage_model is not None:
+    if _research_synthesis_enabled(context) and source_type == "public_documentation":
+        researched = await _research_eval_scores(
+            context, org_id=org_id, docs=docs, publish=publish
+        )
+        if researched is not None:
+            llm_scores = researched
+            llm_count = 1
+    elif stage_model is not None:
         # Task 7: bounded-concurrency, timeout-guarded LLM evaluation. Same fix
         # as extraction: a shared Strands Agent can't run concurrently, so use a
         # pool of LLM_MAX_CONCURRENCY agents (one per concurrent slot).
@@ -964,8 +1385,19 @@ async def run_recommendations(
     runtime: SteeringRuntime | None = None,
     agent_id: str | None = None,
     node_id: str | None = None,
+    source_type: str = "github_repository",
+    org_id: str = "",
 ) -> list[Recommendation]:
     """Stage 5: Generate prioritized recommendations via LLM."""
+    if _research_synthesis_enabled(context) and source_type == "public_documentation":
+        return await _run_research_recommendations(
+            context,
+            eval_result=eval_result,
+            health_result=health_result,
+            document_count=document_count,
+            chunk_count=chunk_count,
+            org_id=org_id,
+        )
     prompt = RECOMMENDATION_PROMPT.format(
         health_score=health_result.score,
         document_count=document_count,
@@ -1009,3 +1441,116 @@ async def run_recommendations(
         return []
     finally:
         await recorder.flush()
+
+
+_RECOMMENDATION_RESEARCH_QUERY = (
+    "Recommend 3-5 prioritized documentation improvements based on the "
+    "attached quality metrics and documentation gaps."
+)
+
+
+async def _collect_gap_evidence(context: Any, org_id: str) -> list[str]:
+    """Probe coverage topics through the index; return low-confidence ones.
+
+    Never raises: probe failures degrade to no gap evidence rather than
+    invalidating the recommendations.
+    """
+    try:
+        from draftly.documentation.rag_retrieval import RagRetrieval
+        from draftly.integrations.database.client import DatabaseClient
+        from draftly.memory.embeddings import EmbeddingService
+
+        retrieval = RagRetrieval(
+            db=DatabaseClient(), embeddings=EmbeddingService()
+        )
+        gaps: list[str] = []
+        for topic in sorted(EXPECTED_TOPICS):
+            try:
+                probed = await retrieval.retrieve(
+                    org_id=org_id, query=topic, limit=3
+                )
+            except Exception as exc:
+                logger.warning(
+                    "recommendations_gap_probe_failed topic=%s err=%s",
+                    topic, exc,
+                )
+                continue
+            if probed.confidence < 0.60:
+                gaps.append(topic)
+        return gaps
+    except Exception as exc:
+        logger.warning("recommendations_gap_probe_failed err=%s", exc)
+        return []
+
+
+async def _run_research_recommendations(
+    context: Any,
+    *,
+    eval_result: EvaluationResult,
+    health_result: HealthResult,
+    document_count: int,
+    chunk_count: int,
+    org_id: str = "",
+) -> list[Recommendation]:
+    """Stage 5 (research path, public sources only).
+
+    Inputs plus gap evidence go through one Research call with
+    ``output_schema=RecommendationList``. Failure or invalid output
+    degrades to ``[]`` and never invalidates a completed analysis.
+    """
+    from pydantic import ValidationError
+
+    from draftly.documentation.tavily_source import pack_sample_files
+    from draftly.integrations.tavily.errors import TavilyError, TavilyErrorCode
+
+    config = getattr(context, "config", None)
+    budget = getattr(config, "tavily_credit_budget", None)
+    if budget is not None and budget <= 0:
+        raise RuntimeError(f"tavily credit budget exceeded (0 >= {budget})")
+    gaps = await _collect_gap_evidence(context, org_id)
+    summary = (
+        f"# Documentation quality inputs\n\n"
+        f"Health score: {health_result.score:.2f}\n"
+        f"Documents: {document_count}\n"
+        f"Chunks: {chunk_count}\n"
+        f"Coverage: {eval_result.dimensions.get('coverage', 0.0):.2f}\n"
+        f"Completeness: {eval_result.dimensions.get('completeness', 0.0):.2f}\n"
+        f"Structure: {eval_result.dimensions.get('structure', 0.0):.2f}\n"
+        f"Length: {eval_result.dimensions.get('length', 0.0):.2f}\n\n"
+        f"# Documentation gaps (low index-retrieval confidence)\n\n"
+        + ("\n".join(f"- {topic}" for topic in gaps) if gaps else "- none")
+        + "\n"
+    )
+    client = _tavily_client_from_config(config)
+    try:
+        created = await client.research(
+            query=_RECOMMENDATION_RESEARCH_QUERY,
+            model="mini",
+            files=pack_sample_files([("stage5-inputs", summary)]),
+            output_schema=RecommendationList.model_json_schema(),
+        )
+        polled = await client.research_poll(
+            created.request_id,
+            poll_timeout_seconds=getattr(
+                config, "tavily_research_poll_timeout_seconds", 300
+            ),
+        )
+    except TavilyError as exc:
+        if exc.code == TavilyErrorCode.CREDIT_LIMIT:
+            raise
+        logger.warning("recommendations_research_failed err=%s", exc)
+        return []
+    finally:
+        await client.aclose()
+    try:
+        parsed = RecommendationList.model_validate(polled.content)
+    except ValidationError as exc:
+        logger.warning("recommendations_research_invalid_output err=%s", exc)
+        return []
+    if not parsed.items:
+        return []
+    logger.info(
+        "recommendations_researched count=%d gaps=%d",
+        len(parsed.items), len(gaps),
+    )
+    return list(parsed.items)[:5]

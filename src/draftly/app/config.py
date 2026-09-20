@@ -1,4 +1,4 @@
-from pydantic import AliasChoices, BaseModel, Field
+from pydantic import AliasChoices, BaseModel, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -279,6 +279,51 @@ class Settings(BaseSettings):
     max_tokens_per_run: int = 50000  # soft budget per agent run
     summarization_trigger_fraction: float = 0.70  # trigger at 70% context
     recursion_limit: int = 30  # max graph steps per subagent invocation
+
+    # ------------------------------------------------------------------
+    # Tavily (spec: 2026-09-20-tavily-rag-design)
+    # ------------------------------------------------------------------
+
+    tavily_api_key: str | None = None
+    tavily_base_url: str = "https://api.tavily.com"
+    tavily_request_timeout_seconds: int = 60
+    tavily_research_poll_timeout_seconds: int = 300
+    tavily_max_concurrency: int = 4
+    tavily_credit_budget: int | None = None
+    tavily_public_ingestion_enabled: bool = False
+    tavily_live_fallback_enabled: bool = False
+    tavily_research_enabled: bool = False
+
+    _tavily_enabled: bool = False
+
+    @model_validator(mode="after")
+    def _validate_tavily(self) -> "Settings":
+        flags = (
+            ("TAVILY_PUBLIC_INGESTION_ENABLED", self.tavily_public_ingestion_enabled),
+            ("TAVILY_LIVE_FALLBACK_ENABLED", self.tavily_live_fallback_enabled),
+            ("TAVILY_RESEARCH_ENABLED", self.tavily_research_enabled),
+        )
+        enabled = [name for name, on in flags if on]
+        if enabled and not self.tavily_api_key:
+            names = ", ".join(enabled)
+            raise ValueError(f"Tavily features enabled without TAVILY_API_KEY: {names}")
+        if self.tavily_request_timeout_seconds <= 0:
+            raise ValueError("tavily_request_timeout_seconds must be > 0")
+        if self.tavily_research_poll_timeout_seconds <= 0:
+            raise ValueError("tavily_research_poll_timeout_seconds must be > 0")
+        if self.tavily_max_concurrency < 1:
+            raise ValueError("tavily_max_concurrency must be >= 1")
+        self._tavily_enabled = (
+            self.tavily_public_ingestion_enabled
+            or self.tavily_live_fallback_enabled
+            or self.tavily_research_enabled
+        )
+        return self
+
+    @property
+    def tavily_enabled(self) -> bool:
+        """True when any Tavily feature flag is on (requires an API key)."""
+        return self._tavily_enabled
 
 
 def get_settings() -> Settings:

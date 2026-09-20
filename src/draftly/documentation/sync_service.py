@@ -17,6 +17,7 @@ from draftly.memory.repository import MemoryNamespaces
 from .baseline import BaselineSnapshot, create_baseline
 from .chunker import chunk_document
 from .discovery import discover_documentation
+from .page_type import derive_page_type
 from .parser import parse_markdown
 
 logger = structlog.get_logger(__name__)
@@ -196,6 +197,15 @@ class SyncService:
                             "start_line": chunk.start_line,
                             "end_line": chunk.end_line,
                             "commit_sha": commit_sha,
+                            # Citation provenance (AC7): genuine per-chunk URLs
+                            # with line anchors, plus retrieval page-type.
+                            "source_url": (
+                                f"https://github.com/{repository_full_name}"
+                                f"/blob/{default_branch}/{path}"
+                                f"#L{chunk.start_line}-L{chunk.end_line}"
+                            ),
+                            "page_type": derive_page_type(path),
+                            "section": chunk.heading_path,
                         },
                     )
                     for chunk in chunks

@@ -7,7 +7,7 @@ from typing import Any
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from draftly.app.api.auth import get_verified_token
 from draftly.app.composition.rq_jobs import enqueue_job
@@ -53,6 +53,48 @@ def _worker(request: Request):
     return worker
 
 
+def _settings(request: Request) -> Any:
+    """App settings (Settings in production) or None in minimal harnesses."""
+    draftly = getattr(getattr(request, "app", None) and request.app.state, "draftly", None)
+    return getattr(draftly, "settings", None)
+
+
+def _public_ingestion_enabled(request: Request) -> bool:
+    settings = _settings(request)
+    return bool(
+        getattr(settings, "tavily_public_ingestion_enabled", False)
+        and getattr(settings, "tavily_api_key", None)
+    )
+
+
+def _public_config_or_422(raw: dict[str, Any] | None) -> Any:
+    from pydantic import ValidationError
+
+    from draftly.documentation.source_models import PublicDocumentationConfig
+
+    if not raw:
+        raise HTTPException(
+            status_code=422,
+            detail="documentation_config is required for public_documentation sources",
+        )
+    try:
+        return PublicDocumentationConfig.model_validate(raw)
+    except ValidationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+def _build_tavily_client(request: Request) -> Any:
+    from draftly.integrations.tavily.client import TavilyClient
+
+    settings = _settings(request)
+    return TavilyClient(
+        getattr(settings, "tavily_api_key", None) or "",
+        base_url=getattr(settings, "tavily_base_url", "https://api.tavily.com"),
+        timeout_seconds=getattr(settings, "tavily_request_timeout_seconds", 60),
+        max_concurrency=getattr(settings, "tavily_max_concurrency", 4),
+    )
+
+
 def _org_id(token: dict) -> str:
     """Extract and validate the organization ID from the verified token."""
     org_id = token.get("org_id")
@@ -86,11 +128,20 @@ class GitHubConnectRequest(BaseModel):
 class RepositoryRequest(BaseModel):
     full_name: str
     default_branch: str = "main"
+    # Source mode (spec: 2026-09-20-tavily-rag-design, Stage 0). Rows and
+    # requests missing it default to "github_repository".
+    source_type: str = "github_repository"
+    # PublicDocumentationConfig payload for source_type == "public_documentation".
+    documentation_config: dict[str, Any] | None = None
 
 
 class SourcesRequest(BaseModel):
     include: list[str] | None = None
     exclude: list[str] | None = None
+
+
+class RefreshRequest(BaseModel):
+    urls: list[str] = Field(default_factory=list)
 
 
 class IntegrationsRequest(BaseModel):
@@ -214,6 +265,8 @@ async def select_repository(
     repos = _repos(request)
     current = await repos.onboarding.get(org_id)
     _require_transition(current, "REPOSITORY_SELECTED", "select repository")
+    if body.source_type == "public_documentation":
+        return await _select_public_repository(request, repos, org_id, current, body)
     installation_id = _selected(current).get("installation_id")
     if not installation_id:
         raise HTTPException(status_code=409, detail="GitHub not connected yet")
@@ -247,6 +300,35 @@ async def select_repository(
     return {"state": "REPOSITORY_SELECTED", "repository": body.full_name}
 
 
+async def _select_public_repository(
+    request: Request,
+    repos: Any,
+    org_id: str,
+    current: dict | None,
+    body: RepositoryRequest,
+) -> dict[str, Any]:
+    """Select a public documentation root: no GitHub installation required."""
+    if not _public_ingestion_enabled(request):
+        raise HTTPException(
+            status_code=409,
+            detail="Public documentation ingestion is not enabled",
+        )
+    config = _public_config_or_422(body.documentation_config)
+    await repos.onboarding.upsert(
+        org_id,
+        state="REPOSITORY_SELECTED",
+        selected_repository={
+            **_selected(current),
+            "full_name": body.full_name,
+            "default_branch": body.default_branch,
+            "source_type": "public_documentation",
+            "documentation_config": config.model_dump(mode="json"),
+        },
+    )
+    await repos.onboarding.mark_step(org_id, "repository")
+    return {"state": "REPOSITORY_SELECTED", "repository": body.full_name}
+
+
 @router.post("/documentation/discover")
 async def discover_documentation(
     request: Request,
@@ -255,6 +337,8 @@ async def discover_documentation(
     org_id = _org_id(token)
     repos = _repos(request)
     current = await repos.onboarding.get(org_id)
+    if _selected(current).get("source_type") == "public_documentation":
+        return await _discover_public_documentation(request, current)
     repo_full = _selected(current).get("full_name", "")
     if not repo_full or "/" not in repo_full:
         raise HTTPException(status_code=409, detail="Select a valid repository before discovery")
@@ -282,6 +366,25 @@ async def discover_documentation(
     return {"candidates": candidates, "count": len(candidates), "total_files": len(paths)}
 
 
+async def _discover_public_documentation(
+    request: Request,
+    current: dict | None,
+) -> dict[str, Any]:
+    """Discovery route for public sources: Map → canonical URL candidates."""
+    if not _public_ingestion_enabled(request):
+        raise HTTPException(
+            status_code=409,
+            detail="Public documentation ingestion is not enabled",
+        )
+    from draftly.documentation.tavily_source import TavilyDocumentationSource
+
+    config = _public_config_or_422(_selected(current).get("documentation_config"))
+    async with _build_tavily_client(request) as client:
+        source = TavilyDocumentationSource(client, documents=None, memory=None)
+        result = await source.discover(config)
+    return {"candidates": result.candidates, "count": result.total}
+
+
 @router.post("/sources")
 async def confirm_sources(
     body: SourcesRequest,
@@ -292,6 +395,8 @@ async def confirm_sources(
     repos = _repos(request)
     current = await repos.onboarding.get(org_id)
     _require_transition(current, "DOCUMENTATION_DISCOVERED", "confirm sources")
+    if _selected(current).get("source_type") == "public_documentation":
+        return await _confirm_public_sources(repos, org_id, current, body)
     repo_full = _selected(current).get("full_name", "")
     if body.include or body.exclude:
         await repos.repository_config.upsert(
@@ -308,6 +413,81 @@ async def confirm_sources(
             },
         )
     await repos.onboarding.upsert(org_id, state="DOCUMENTATION_DISCOVERED")
+    await repos.onboarding.mark_step(org_id, "documentation")
+    return {"state": "DOCUMENTATION_DISCOVERED"}
+
+
+@router.post("/documentation/refresh")
+async def refresh_documentation(
+    body: RefreshRequest,
+    request: Request,
+    token: dict = Depends(get_verified_token),
+) -> dict[str, Any]:
+    """Manual "Sync documentation" action for public corpora."""
+    org_id = _org_id(token)
+    repos = _repos(request)
+    current = await repos.onboarding.get(org_id)
+    if _selected(current).get("source_type") != "public_documentation":
+        raise HTTPException(
+            status_code=409, detail="No public documentation corpus selected"
+        )
+    if not _public_ingestion_enabled(request):
+        raise HTTPException(
+            status_code=409,
+            detail="Public documentation ingestion is not enabled",
+        )
+    if not body.urls:
+        raise HTTPException(status_code=422, detail="urls must not be empty")
+    from draftly.memory.service import MemoryService
+    from draftly.workflows.documentation.refresh import (
+        refresh_public_documentation,
+    )
+
+    config = _public_config_or_422(_selected(current).get("documentation_config"))
+    result = await refresh_public_documentation(
+        documents=repos.documents,
+        memory=MemoryService(),
+        config=config,
+        settings=_settings(request),
+        org_id=org_id,
+        urls=body.urls,
+    )
+    return {
+        "skipped": result.skipped,
+        "replaced": result.replaced,
+        "failed": result.failed,
+        "deleted": result.deleted,
+    }
+
+
+async def _confirm_public_sources(
+    repos: Any,
+    org_id: str,
+    current: dict | None,
+    body: SourcesRequest,
+) -> dict[str, Any]:
+    """Persist confirmed include/exclude path patterns into the public config.
+
+    No repositories-table row for public sources (no migration): everything
+    the initialize workflow needs lives in the onboarding selected dict.
+    """
+    selected = _selected(current)
+    raw_config = dict(selected.get("documentation_config") or {})
+    if body.include:
+        raw_config["include_paths"] = body.include
+    if body.exclude:
+        raw_config["exclude_paths"] = body.exclude
+    config = _public_config_or_422(raw_config)
+    await repos.onboarding.upsert(
+        org_id,
+        state="DOCUMENTATION_DISCOVERED",
+        selected_repository={
+            **selected,
+            "documentation_config": config.model_dump(mode="json"),
+            "doc_include": body.include,
+            "doc_exclude": body.exclude,
+        },
+    )
     await repos.onboarding.mark_step(org_id, "documentation")
     return {"state": "DOCUMENTATION_DISCOVERED"}
 

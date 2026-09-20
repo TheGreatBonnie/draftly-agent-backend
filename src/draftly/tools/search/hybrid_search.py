@@ -17,6 +17,20 @@ async def hybrid_search(
     limit: int = 10,
 ) -> list[dict]:
     """Combine semantic and keyword search, merging results by id."""
+    from draftly.memory.scope import current_memory_scope
+    from draftly.tools.search._rag import is_documents_namespace, rag_search_results
+
+    scope = current_memory_scope()
+    if is_documents_namespace(scope, namespace):
+        # Docs namespace: a single RAG retrieve already returns the
+        # pre-blended ranking; the 0.7/0.3 merge below is only for the
+        # legacy per-namespace corpus path.
+        return await rag_search_results(
+            query=query,
+            org_id=scope.org_id if scope else None,
+            limit=limit,
+        )
+
     semantic = await semantic_search(
         query=query,
         namespace=namespace,

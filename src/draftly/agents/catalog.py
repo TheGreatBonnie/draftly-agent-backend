@@ -39,7 +39,13 @@ AGENT_CATALOG: tuple[AgentDescriptor, ...] = (
         description="Collects evidence about the event from GitHub, search, and docs.",
         surface="shared",
         node_ids=("context",),
-        tool_keys=("github_intelligence", "semantic_search", "keyword_search", "hybrid_search"),
+        tool_keys=(
+            "github_intelligence",
+            "semantic_search",
+            "keyword_search",
+            "hybrid_search",
+            "live_docs_search",
+        ),
         factory_attr="context_agent",
     ),
     AgentDescriptor(

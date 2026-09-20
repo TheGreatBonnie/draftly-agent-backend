@@ -9,6 +9,17 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from tests.fakes.tavily import FakeTavilyClient
+
+__all__ = [
+    "FakeDiscordClient",
+    "FakeGitHubClient",
+    "FakeMemoryStore",
+    "FakeSlackClient",
+    "FakeTavilyClient",
+    "FakeDatabase",
+]
+
 
 @dataclass
 class FakeGitHubClient:

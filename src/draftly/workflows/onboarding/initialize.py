@@ -43,6 +43,30 @@ STAGE_WEIGHTS: dict[str, float] = {
     "recommendations": 0.075,
 }
 
+
+def _public_ingestion_enabled(context: Any) -> bool:
+    """True only when the flag is explicitly on (spec: Stage 1 source branch).
+
+    ``is True`` (not truthiness) keeps MagicMock-based contexts on the GitHub
+    path unless a test opts in with a real True.
+    """
+    return (
+        getattr(getattr(context, "config", None), "tavily_public_ingestion_enabled", False)
+        is True
+    )
+
+
+def _build_tavily_client(context: Any) -> Any:
+    from draftly.integrations.tavily.client import TavilyClient
+
+    config = getattr(context, "config", None)
+    return TavilyClient(
+        getattr(config, "tavily_api_key", None) or "",
+        base_url=getattr(config, "tavily_base_url", "https://api.tavily.com"),
+        timeout_seconds=getattr(config, "tavily_request_timeout_seconds", 60),
+        max_concurrency=getattr(config, "tavily_max_concurrency", 4),
+    )
+
 async def run_onboarding_initialize(
     context: WorkflowContext,
     *,
@@ -220,29 +244,66 @@ async def run_onboarding_initialize(
     onboarding_repo = getattr(context.repositories, "onboarding", None)
 
     async def _run_stages() -> WorkflowState:
-        installation = await context.repositories.github_installations.first_for_org(org_id)
-        if installation is None:
-            raise RuntimeError(f"No GitHub installation found for org {org_id}")
-        from draftly.integrations.github.app_auth import build_installation_client
+        async def _run_public_sync() -> Any:
+            from draftly.documentation.source_models import PublicDocumentationConfig
+            from draftly.documentation.tavily_source import TavilyDocumentationSource
 
-        github = await build_installation_client(installation["installation_id"])
+            public_config = PublicDocumentationConfig.model_validate(
+                (selected_repository or {}).get("documentation_config") or {}
+            )
+            tavily = _build_tavily_client(context)
+            try:
+                source = TavilyDocumentationSource(
+                    tavily,
+                    documents=context.repositories.documents,
+                    memory=context.memory,
+                )
+                return await source.sync(
+                    org_id=org_id,
+                    config=public_config,
+                    on_progress=_on_sync_progress,
+                )
+            finally:
+                await tavily.aclose()
+
+        source_type = (selected_repository or {}).get("source_type", "github_repository")
+        use_public = (
+            source_type == "public_documentation" and _public_ingestion_enabled(context)
+        )
+        if use_public:
+            # Public mode: no GitHub installation required, no repo token.
+            github = None
+        else:
+            installation = await context.repositories.github_installations.first_for_org(org_id)
+            if installation is None:
+                raise RuntimeError(f"No GitHub installation found for org {org_id}")
+            from draftly.integrations.github.app_auth import build_installation_client
+
+            github = await build_installation_client(installation["installation_id"])
         await _update_stage(onboarding_repo, org_id, "repository_ingestion")
         await _stage_start("repository_ingestion")
-        from draftly.documentation.sync_service import SyncService
-
-        sync_service = SyncService(github=github, context=context)
-        include = selected_repository.get("doc_include", ["README.md", "docs/**", "*.md", "*.mdx"])
-        exclude = selected_repository.get("doc_exclude", ["node_modules/**", "dist/**"])
         nonlocal _flush_task
         _flush_task = asyncio.create_task(_progress_loop())
         try:
-            sync_result = await sync_service.sync(
-                org_id=org_id,
-                repository_full_name=repo_full,
-                include=include,
-                exclude=exclude,
-                on_progress=_on_sync_progress,
-            )
+            if use_public:
+                sync_result = await _run_public_sync()
+            else:
+                from draftly.documentation.sync_service import SyncService
+
+                sync_service = SyncService(github=github, context=context)
+                include = selected_repository.get(
+                    "doc_include", ["README.md", "docs/**", "*.md", "*.mdx"]
+                )
+                exclude = selected_repository.get(
+                    "doc_exclude", ["node_modules/**", "dist/**"]
+                )
+                sync_result = await sync_service.sync(
+                    org_id=org_id,
+                    repository_full_name=repo_full,
+                    include=include,
+                    exclude=exclude,
+                    on_progress=_on_sync_progress,
+                )
         except BaseException:
             await _cancel_flusher()
             raise
@@ -281,6 +342,9 @@ async def run_onboarding_initialize(
         await _emit_stage_progress("knowledge_construction", 10)
         extraction = await run_knowledge_construction(
             context, org_id=org_id, publish=_publish,
+            source_type=(selected_repository or {}).get(
+                "source_type", "github_repository"
+            ),
         )
         await _emit_stage_progress("knowledge_construction", 100)
         await _stage_complete("knowledge_construction", {
@@ -293,7 +357,12 @@ async def run_onboarding_initialize(
         await _update_stage(onboarding_repo, org_id, "initial_evaluation")
         await _stage_start("initial_evaluation")
         await _emit_stage_progress("initial_evaluation", 20)
-        eval_result = await run_initial_evaluation(context, org_id=org_id, publish=_publish)
+        eval_result = await run_initial_evaluation(
+            context, org_id=org_id, publish=_publish,
+            source_type=(selected_repository or {}).get(
+                "source_type", "github_repository"
+            ),
+        )
         await _emit_stage_progress("initial_evaluation", 100)
         await _stage_complete("initial_evaluation", {"score": eval_result.score})
 
@@ -320,6 +389,10 @@ async def run_onboarding_initialize(
             health_result=health_result,
             document_count=sync_result.document_count,
             chunk_count=sync_result.chunk_count,
+            org_id=org_id,
+            source_type=(selected_repository or {}).get(
+                "source_type", "github_repository"
+            ),
         )
         await _emit_stage_progress("recommendations", 100)
         await _stage_complete("recommendations", {"count": len(recs)})
