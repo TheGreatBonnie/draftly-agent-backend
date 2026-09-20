@@ -100,6 +100,41 @@ def steering_envelope(
     )
 
 
+def task_progress_envelope(
+    *,
+    run_id: str = "",
+    surface: str = "",
+    node_id: str | None = None,
+    task_id: str = "",
+    path: str = "",
+    action: str = "",
+    status: str = "",
+    position: int = 0,
+    total: int = 0,
+) -> StreamEnvelope:
+    """Shape one per-task progress envelope from the fan-out writer node.
+
+    Safe fields only (task/path/action/status/position/total); never carries
+    draft content or model messages. Consumed by `filter_graph_event`-free
+    out-of-band publishing (see runner progress sink).
+    """
+    return StreamEnvelope(
+        type="task_progress",
+        run_id=run_id,
+        surface=surface,
+        node_id=node_id,
+        payload={
+            "schema_version": "1",
+            "task_id": task_id,
+            "path": path,
+            "action": action,
+            "status": status,
+            "position": position,
+            "total": total,
+        },
+    )
+
+
 def _status_name(result: Any) -> str:
     status = getattr(result, "status", None)
     name = getattr(status, "name", None)
