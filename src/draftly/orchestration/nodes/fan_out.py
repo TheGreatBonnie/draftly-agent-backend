@@ -107,13 +107,20 @@ class FanOutWriterNode(MultiAgentBase):
         evidence = _evidence_bundle(deps.get("research"))
         tasks = plan_tasks(impact, evidence)
         corrections = deps.get("review") or {}
+        correction_ids: set[str] = set()
         if corrections.get("corrections"):
-            ids = {
+            correction_ids = {
                 c["task_id"]
                 for c in corrections["corrections"]
                 if isinstance(c, dict) and c.get("task_id")
             }
-            tasks = [t for t in tasks if t.id in ids]
+        failed_paths = set((deps.get("evaluate") or {}).get("failed_files") or [])
+        if correction_ids or failed_paths:
+            tasks = [
+                t
+                for t in tasks
+                if t.id in correction_ids or t.path in failed_paths
+            ]
 
         total = len(tasks)
         if total == 0:

@@ -266,3 +266,69 @@ async def test_node_corrections_restrict_to_corrected_tasks() -> None:
     )
 
     assert len(factory.agents) == 1  # only the corrected page was re-dispatched
+
+
+def _evaluated_input(impact: dict, evaluate: dict) -> list[dict]:
+    lines = [
+        "Original Task: {}",
+        "Inputs from previous nodes:",
+        "From impact:",
+        f"  - Agent: {json.dumps(impact)}",
+        "From evaluate:",
+        f"  - Agent: {json.dumps(evaluate)}",
+    ]
+    return [{"text": "\n".join(lines)}]
+
+
+async def test_node_evaluate_failed_files_restrict_to_failed_paths() -> None:
+    """A failed evaluation names only docs/b.md → only that page is re-dispatched."""
+    factory = _FakeFactory([_plan("docs/b.md")])
+    node = FanOutWriterNode(writer_factory=factory, drafts_repo=None)
+    evaluate = {
+        "passed": False,
+        "files": ["docs/a.md", "docs/b.md"],
+        "failed_files": ["docs/b.md"],
+    }
+    await node.invoke_async(
+        _evaluated_input(_impact(["docs/a.md", "docs/b.md"]), evaluate),
+        {"run_id": "run-1"},
+    )
+    assert len(factory.agents) == 1
+    assert "Path: docs/b.md" in factory.agents[0].invoked[0]
+    assert "Path: docs/a.md" not in factory.agents[0].invoked[0]
+
+
+async def test_node_no_evaluate_targets_dispatches_all_tasks() -> None:
+    """First pass (no evaluate result yet, no review) dispatches every task."""
+    factory = _FakeFactory([_plan("docs/a.md"), _plan("docs/b.md")])
+    node = FanOutWriterNode(writer_factory=factory, drafts_repo=None)
+    await node.invoke_async(_input(_impact(["docs/a.md", "docs/b.md"])), {"run_id": "run-1"})
+    assert len(factory.agents) == 2
+
+
+async def test_node_corrections_and_failed_files_union() -> None:
+    """Review corrections and evaluate failures both target pages; the union
+    is dispatched once each (a task id is unique in the rebuilt plan)."""
+    factory = _FakeFactory([_plan("docs/b.md"), _plan("docs/c.md")])
+    node = FanOutWriterNode(writer_factory=factory, drafts_repo=None)
+    review = {
+        "verdict": "correct",
+        "corrections": [
+            {"task_id": "docs/b.md", "path": "docs/b.md", "instructions": ["tighten"]}
+        ],
+    }
+    evaluate = {"passed": False, "failed_files": ["docs/b.md", "docs/c.md"]}
+    lines = [
+        "Original Task: {}",
+        "Inputs from previous nodes:",
+        "From impact:",
+        f"  - Agent: {json.dumps(_impact(['docs/a.md', 'docs/b.md', 'docs/c.md']))}",
+        "From review:",
+        f"  - Agent: {json.dumps(review)}",
+        "From evaluate:",
+        f"  - Agent: {json.dumps(evaluate)}",
+    ]
+    await node.invoke_async([{"text": "\n".join(lines)}], {"run_id": "run-1"})
+    assert len(factory.agents) == 2
+    dispatched = {a.invoked[0].splitlines()[1] for a in factory.agents}
+    assert dispatched == {"Path: docs/b.md", "Path: docs/c.md"}
