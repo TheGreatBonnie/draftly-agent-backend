@@ -57,36 +57,6 @@ class FakeVectorSearch:
         ][:limit]
 
 
-class RecordingVectorSearch(FakeVectorSearch):
-    """Records calls without asserting namespace, for scoped-run assertions."""
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.calls: list[dict] = []
-
-    async def search(self, **kwargs):
-        self.calls.append(kwargs)
-        return [
-            {
-                "id": "v1",
-                "org_id": kwargs.get("org_id"),
-                "namespace": kwargs["namespace"],
-                "memory_type": "knowledge",
-                "content": "semantic hit",
-                "summary": "summary",
-                "status": "active",
-                "importance": 0.8,
-                "confidence": 0.9,
-                "version": 1,
-                "access_count": 2,
-                "last_accessed_at": None,
-                "created_at": None,
-                "updated_at": None,
-                "similarity": 0.93,
-            }
-        ][: kwargs.get("limit", 10)]
-
-
 class FakeDatabaseClient:
     def __init__(self) -> None:
         self.calls: list[dict] = []
@@ -116,32 +86,6 @@ class FakeDatabaseClient:
         ][: args[2]]
 
 
-class ScopedFakeDatabaseClient:
-    def __init__(self) -> None:
-        self.calls: list[dict] = []
-
-    async def fetch_all(self, query, *args, **kwargs):
-        self.calls.append({"query": query, "args": list(args)})
-        return [
-            {
-                "id": "k1",
-                "org_id": args[3] if len(args) > 3 else None,
-                "namespace": args[0],
-                "memory_type": "knowledge",
-                "content": "connection pool docs",
-                "summary": "pool summary",
-                "status": "active",
-                "importance": 0.7,
-                "confidence": 0.8,
-                "version": 1,
-                "access_count": 3,
-                "last_accessed_at": None,
-                "created_at": None,
-                "updated_at": None,
-            }
-        ][: args[2]]
-
-
 @pytest.fixture
 def fake_search(monkeypatch) -> RecordingEmbedder:
     monkeypatch.setattr(
@@ -155,24 +99,6 @@ def fake_search(monkeypatch) -> RecordingEmbedder:
     recording = RecordingEmbedder()
     monkeypatch.setattr(semantic_search_mod, "_embedding_service", recording, raising=False)
     return recording
-
-
-@pytest.fixture
-def scoped_search(monkeypatch) -> dict[str, RecordingEmbedder]:
-    """Installs recording fakes so scoped runs can assert org/namespace wiring."""
-    vector = RecordingVectorSearch()
-    db = ScopedFakeDatabaseClient()
-    monkeypatch.setattr(
-        "draftly.integrations.database.vector_search.VectorSearch",
-        lambda *a, **kw: vector,
-    )
-    monkeypatch.setattr(
-        "draftly.integrations.database.client.DatabaseClient",
-        lambda *a, **kw: db,
-    )
-    recording = RecordingEmbedder()
-    monkeypatch.setattr(semantic_search_mod, "_embedding_service", recording, raising=False)
-    return {"vector": vector, "db": db}
 
 
 @pytest.mark.asyncio
@@ -246,9 +172,14 @@ class TestSearchEmptyInputGuards:
 
 
 class TestSearchRunMemoryScope:
-    """With an active run memory scope, search tools must resolve the org's
-    canonical documents namespace and constrain results to the org even when
-    the LLM guesses a wrong namespace for the run."""
+    """With an active run memory scope, the docs-namespace search tools must
+    resolve the org's canonical documents namespace and constrain retrieval to
+    the org even when the LLM guesses a wrong namespace for the run.
+
+    Docs-namespace searches delegate to the RAG pipeline (see
+    tests/unit/tools/test_search_repoint.py); these tests pin the scope-to-org
+    propagation at that delegation boundary.
+    """
 
     @pytest.fixture(autouse=True)
     def _scope(self, request):
@@ -258,30 +189,34 @@ class TestSearchRunMemoryScope:
         token = set_memory_scope(MemoryScope(org_id="org-1", namespace="documents"))
         request.addfinalizer(lambda: reset_memory_scope(token))
 
+    @pytest.fixture
+    def rag_delegate(self, monkeypatch) -> list[dict]:
+        calls: list[dict] = []
+
+        async def _fake_rag_search_results(*, query, org_id, limit):
+            calls.append({"query": query, "org_id": org_id, "limit": limit})
+            return [{"id": "r1", "content": "connection pool docs"}]
+
+        monkeypatch.setattr(
+            "draftly.tools.search._rag.rag_search_results",
+            _fake_rag_search_results,
+        )
+        return calls
+
     @pytest.mark.asyncio
-    async def test_semantic_search_uses_scope_namespace_and_org(self, scoped_search) -> None:
+    async def test_semantic_search_delegates_docs_to_rag_with_scope_org(self, rag_delegate) -> None:
         rows = await semantic_search(query="pool", namespace="authly", limit=5)
-        assert [r["id"] for r in rows] == ["v1"]
-        call = scoped_search["vector"].calls[0]
-        assert call["namespace"] == "documents"
-        assert call["org_id"] == "org-1"
+        assert [r["id"] for r in rows] == ["r1"]
+        assert rag_delegate == [{"query": "pool", "org_id": "org-1", "limit": 5}]
 
     @pytest.mark.asyncio
-    async def test_keyword_search_scopes_namespace_and_org(self, scoped_search) -> None:
+    async def test_keyword_search_delegates_docs_to_rag_with_scope_org(self, rag_delegate) -> None:
         rows = await keyword_search(query="pool", namespace="authly", limit=5)
-        assert [r["id"] for r in rows] == ["k1"]
-        call = scoped_search["db"].calls[0]
-        assert call["args"][0] == "documents"
-        assert "org_id" in call["query"]
-        assert "org-1" in call["args"]
+        assert [r["id"] for r in rows] == ["r1"]
+        assert rag_delegate == [{"query": "pool", "org_id": "org-1", "limit": 5}]
 
     @pytest.mark.asyncio
-    async def test_hybrid_search_scopes_namespace_and_org(self, scoped_search) -> None:
+    async def test_hybrid_search_delegates_docs_to_rag_with_scope_org(self, rag_delegate) -> None:
         rows = await hybrid_search(query="pool", namespace="authly", limit=10)
-        assert [r["id"] for r in rows] == ["v1", "k1"]
-        call = scoped_search["vector"].calls[0]
-        assert call["namespace"] == "documents"
-        assert call["org_id"] == "org-1"
-        kw_call = scoped_search["db"].calls[0]
-        assert kw_call["args"][0] == "documents"
-        assert "org-1" in kw_call["args"]
+        assert [r["id"] for r in rows] == ["r1"]
+        assert rag_delegate == [{"query": "pool", "org_id": "org-1", "limit": 10}]
