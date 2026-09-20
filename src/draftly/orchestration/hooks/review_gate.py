@@ -38,8 +38,7 @@ INTERRUPT_NAME = "doc-review"
 # Writer nodes whose structured output is the document under review,
 # in delivery order (first match wins — the winning plan).
 WRITER_NODE_IDS = (
-    "update",
-    "create",
+    "document",
     "answer",
     "content_blog",
     "content_linkedin",

@@ -86,23 +86,26 @@ class TestNeedsRevisionOf:
         return state
 
     def test_routes_only_to_the_node_that_ran(self) -> None:
-        to_update = needs_revision_of("update")
-        to_create = needs_revision_of("create")
+        to_answer = needs_revision_of("answer")
+        to_document = needs_revision_of("document")
 
-        failed_update_state = self._state(False, "update")
-        assert to_update(failed_update_state) is True
-        assert to_create(failed_update_state) is False
+        failed_answer_state = self._state(False, "answer")
+        assert to_answer(failed_answer_state) is True
+        assert to_document(failed_answer_state) is False
+
+        failed_document_state = self._state(False, "document")
+        assert to_document(failed_document_state) is True
+        assert to_answer(failed_document_state) is False
 
     def test_answer_revision_routes_only_when_answer_ran(self) -> None:
-        """A failed answer must be routed back to answer (not update/create),
+        """A failed answer must be routed back to answer (not document),
         so answer-type runs revise instead of dead-ending before delivery."""
         to_answer = needs_revision_of("answer")
 
         failed_answer_state = self._state(False, "answer")
         assert to_answer(failed_answer_state) is True
-        # The scoped factory must not route to update/create for an answer run.
-        assert needs_revision_of("update")(failed_answer_state) is False
-        assert needs_revision_of("create")(failed_answer_state) is False
+        # The scoped factory must not route to document for an answer run.
+        assert needs_revision_of("document")(failed_answer_state) is False
 
     def test_answer_revision_not_triggered_when_evaluation_passed(self) -> None:
         check = needs_revision_of("answer")
@@ -111,7 +114,7 @@ class TestNeedsRevisionOf:
     def test_defensive_when_evaluate_absent(self) -> None:
         state = GraphState()
         state.task = "task"
-        assert needs_revision_of("update")(state) is False
+        assert needs_revision_of("document")(state) is False
 
 
 class TestHookRegistration:

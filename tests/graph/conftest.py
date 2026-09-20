@@ -67,6 +67,13 @@ def stub_model() -> StubModel:
                 "action": "update",
                 "affected_documents": ["docs/widgets.md"],
                 "rationale": "behavior changed",
+                "tasks": [
+                    {
+                        "id": "docs/widgets.md",
+                        "path": "docs/widgets.md",
+                        "action": "update",
+                    }
+                ],
             },
             DocChangePlan: {
                 "repository": "acme/api",
@@ -158,6 +165,12 @@ class FakeDrafts:
             SimpleNamespace(path=r["path"], action=r["action"], content=r["content"])
             for r in self.revisions
         ]
+
+    async def get_path_latest(self, *, run_id: str, path: str) -> SimpleNamespace | None:
+        for r in self.revisions:
+            if r["path"] == path:
+                return SimpleNamespace(path=r["path"], action=r["action"], content=r["content"])
+        return None
 
     async def next_generation(self, *, run_id: str) -> int:
         return 1

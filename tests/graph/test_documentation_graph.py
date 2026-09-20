@@ -37,7 +37,17 @@ class RecordingStubModel(StubModel):
         super().__init__(*args, **kwargs)
         self.delivery_prompts: list[str] = []
 
-    async def stream(self, messages, tool_specs=None, system_prompt=None, *, tool_choice=None, system_prompt_content=None, invocation_state=None, **kwargs):
+    async def stream(
+        self,
+        messages,
+        tool_specs=None,
+        system_prompt=None,
+        *,
+        tool_choice=None,
+        system_prompt_content=None,
+        invocation_state=None,
+        **kwargs,
+    ):
         if any(spec.get("name") == "DeliveryReceipt" for spec in (tool_specs or [])):
             self.delivery_prompts.append(_flatten_messages(messages))
         async for event in super().stream(
@@ -76,12 +86,12 @@ async def test_full_pipeline_with_quality_gate(
     order = [n.node_id for n in result.execution_order]
     assert order[0] == "classify"
     assert order[-1] == "deliver"
-    assert order.count("update") == 1
+    assert order.count("document") == 1
     assert order.count("evaluate") == 1
     # generate → evaluate → changelog → changelog gate → deliver keep their
     # relative order (the strict list prefix/order changed because notify runs
     # in parallel from impact, so assert membership + relative order instead)
-    assert order.index("impact") < order.index("update") < order.index("evaluate")
+    assert order.index("impact") < order.index("document") < order.index("evaluate")
     assert order.index("evaluate") < order.index("changelog")
     assert order.index("changelog") < order.index("changelog_evaluate")
     assert order.index("changelog_evaluate") < order.index("deliver")
@@ -94,9 +104,8 @@ async def test_full_pipeline_with_quality_gate(
             "Draftly will generate docs for this PR:\n- docs/widgets.md",
         )
     ]
-    # the wrong generation paths never ran
+    # the wrong generation path never ran
     assert "answer" not in order
-    assert "create" not in order
 
 
 def test_graph_uses_injected_agent_factory_registry(model, tools, tmp_sessions) -> None:
@@ -185,12 +194,17 @@ async def test_impact_none_skips_generation_and_delivery(
             "Draftly will generate docs for this PR:\n- docs/widgets.md",
         )
     ]
-    for node in ("answer", "update", "create", "evaluate", "deliver"):
+    for node in ("answer", "document", "evaluate", "deliver"):
         assert node not in order
 
 
-async def test_graph_builds_with_distinct_writer_instances(model, tools, tmp_sessions) -> None:
-    """Duplicate executors are rejected by the SDK — writers must differ."""
+async def test_graph_builds_single_document_fanout_writer_node(
+    model, tools, tmp_sessions
+) -> None:
+    """The write path is a single ``document`` fan-out node; the update/create
+    node split is gone."""
+    from draftly.orchestration.nodes.fan_out import FanOutWriterNode
+
     graph = build_graph_for_run(
         "e2e-4",
         surface="pull_request",
@@ -198,7 +212,25 @@ async def test_graph_builds_with_distinct_writer_instances(model, tools, tmp_ses
         model=model,
         storage_dir=tmp_sessions,
     )
-    assert graph.nodes["update"].executor is not graph.nodes["create"].executor
+    assert isinstance(graph.nodes["document"].executor, FanOutWriterNode)
+    assert "update" not in graph.nodes
+    assert "create" not in graph.nodes
+
+
+def test_graph_uses_document_fanout_node_not_update_create(model, tools, tmp_sessions) -> None:
+    """The docs graph wires the document fan-out node and never builds the
+    legacy update/create writer nodes."""
+    graph = build_graph_for_run(
+        "fanout-node-1",
+        surface="pull_request",
+        tools_registry=tools,
+        model=model,
+        storage_dir=tmp_sessions,
+    )
+
+    assert "document" in graph.nodes
+    assert "update" not in graph.nodes
+    assert "create" not in graph.nodes
 
 
 def test_writer_tools_exclude_mutation_and_delivery(tools) -> None:
@@ -230,13 +262,13 @@ def test_writer_tools_exclude_mutation_and_delivery(tools) -> None:
     assert {"read_file", "git_diff", "git_status"} <= names
 
 
-def test_writer_draft_tools_appended_only_to_doc_authoring_nodes(
+async def test_writer_draft_tools_appended_only_to_doc_authoring_node(
     model, tools, tmp_sessions
 ) -> None:
     """The three draft persistence tools (start_draft/append_chunk/
-    finalize_draft) are appended ONLY to the docs writer nodes (update/create);
-    the answer/changelog writers and the deliver agent must not author into the
-    store."""
+    finalize_draft) are appended ONLY to the docs writer factory behind the
+    document fan-out node; the answer/changelog writers and the deliver agent
+    must not author into the store."""
     graph = build_graph_for_run(
         "draft-tools-1",
         surface="pull_request",
@@ -245,10 +277,10 @@ def test_writer_draft_tools_appended_only_to_doc_authoring_nodes(
         storage_dir=tmp_sessions,
     )
     draft_tools = {"start_draft", "append_chunk", "finalize_draft"}
-    for node_id in ("update", "create"):
-        assert draft_tools <= set(graph.nodes[node_id].executor.tool_names), (
-            f"{node_id} writer missing draft tools"
-        )
+    doc_node = graph.nodes["document"].executor
+    assert draft_tools <= _tool_names(doc_node._factory.tools), (
+        "document writer factory missing draft tools"
+    )
     for node_id in ("answer", "changelog", "deliver"):
         assert not draft_tools & set(graph.nodes[node_id].executor.tool_names), (
             f"{node_id} must not get draft tools"
@@ -268,8 +300,9 @@ def test_deliver_agent_gets_drafted_docs_read_tool(model, tools, tmp_sessions) -
     )
     deliver_names = set(graph.nodes["deliver"].executor.tool_names)
     assert "get_drafted_docs" in deliver_names
-    for node_id in ("update", "create", "answer"):
-        assert "get_drafted_docs" not in set(graph.nodes[node_id].executor.tool_names)
+    doc_node = graph.nodes["document"].executor
+    assert "get_drafted_docs" not in _tool_names(doc_node._factory.tools)
+    assert "get_drafted_docs" not in set(graph.nodes["answer"].executor.tool_names)
 
 
 def test_draft_generation_hook_registered_as_provider(
@@ -384,8 +417,8 @@ def test_read_only_graph_agents_exclude_mutation_tools(model, tools, tmp_session
 
 
 async def test_release_event_includes_changelog_in_order(model, tools, tmp_sessions) -> None:
-    """Release event: classify → context → research → impact → update → evaluate
-    → changelog → changelog_evaluate → deliver."""
+    """Release event: classify → context → research → impact → document
+    → evaluate → changelog → changelog_evaluate → deliver."""
     graph = build_graph_for_run(
         "e2e-release-1",
         surface="pull_request",  # releases route to pull_request surface
@@ -441,7 +474,7 @@ async def test_none_action_release_routes_to_changelog(model, tools, tmp_session
     order = [n.node_id for n in result.execution_order]
     assert "impact" in order
     # No writer nodes
-    for node in ("answer", "update", "create", "evaluate"):
+    for node in ("answer", "document", "evaluate"):
         assert node not in order
     # Changelog still runs
     assert "changelog" in order
@@ -676,7 +709,7 @@ async def test_memory_grounded_context_reaches_delivery(
     assert result.status == Status.COMPLETED
     order = [n.node_id for n in result.execution_order]
     assert order[-1] == "deliver"
-    assert order.count("update") == 1
+    assert order.count("document") == 1
     assert order.count("evaluate") == 1
     assert "notify_post" in order
 

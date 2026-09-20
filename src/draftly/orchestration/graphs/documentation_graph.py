@@ -4,16 +4,17 @@ Layout (plan §6.1)::
 
     classify → context → research(Swarm) → impact
       ├─(answer)─► answer ─┐
-      ├─(update)─► update ─┤
-      └─(create)─► create ─┴─► evaluate ─(passed)──► deliver
-                                  │▲
-                                  └─(needs_revision_of)─┘
+      └─(write)──► document ─┴─► evaluate ─(passed)──► deliver
+                                   │▲
+                                   └─(needs_revision_of)─┘
     impact ─(pull_request_opened)─► notify ─► notify_post   (parallel branch)
 
 Deviations from the plan, forced by strands-agents 1.52.0 behavior:
 
 - Agent instances must be unique per node (``_validate_graph`` raises on
-  duplicates), so the writer agent is built twice for ``update``/``create``.
+  duplicates), so the writer agent is never pre-built: ``document`` is a
+  ``FanOutWriterNode`` holding a ``WriterFactory`` that yields a fresh agent
+  per task.
 - Hook providers attach via ``GraphBuilder.set_hook_providers`` before
   ``build()``; ``Graph.add_hook`` only accepts bare callbacks.
 - Revise edges use ``needs_revision_of(node_id)`` — a shared
@@ -21,6 +22,9 @@ Deviations from the plan, forced by strands-agents 1.52.0 behavior:
 - ``EvaluatorNode`` defaults to ``max_iterations=2``: with the plan's 3,
   the worst case (4 upstream + 3×(generate+evaluate) + deliver = 11)
   exceeds ``max_node_executions=10`` and delivery would never run.
+- ``document → evaluate`` is gated by ``generated`` (eval_ready only becomes
+  the writer gate once the review node lands in Task 10/11; the review verdict
+  is what an ``eval_ready`` writer gate needs, and no review node exists yet).
 """
 
 from __future__ import annotations
@@ -51,6 +55,7 @@ from draftly.orchestration.routing.conditions import (
     changelog_needs_revision,
     delivery_content_ready,
     eval_passed,
+    eval_ready,
     generated,
     generated_changelog,
     is_valid_surface,
@@ -58,8 +63,7 @@ from draftly.orchestration.routing.conditions import (
     none_and_release,
     pull_request_opened,
     route_to_answer,
-    route_to_create,
-    route_to_update,
+    route_to_write,
 )
 from draftly.tools.documentation.drafts import (
     append_chunk,
@@ -121,6 +125,8 @@ def build_documentation_graph(
     steering_runtime: Any = None,
     drafts_repo: Any = None,
     research_plan: Any = None,
+    write_concurrency: int = 3,
+    progress_sink: Any | None = None,
 ):
     """Build the unified Draftly Graph for documentation workflows.
 
@@ -143,7 +149,7 @@ def build_documentation_graph(
     from draftly.agents.documentation.changelog import build_changelog_agent
     from draftly.agents.documentation.context import build_doc_context_agent
     from draftly.agents.documentation.research_swarm import build_doc_research_swarm
-    from draftly.agents.documentation.writer import build_writer_agent
+    from draftly.agents.documentation.writer import WriterFactory, build_writer_agent
     from draftly.agents.notify import build_notify_agent
     from draftly.agents.shared.classifier import build_classifier
     from draftly.agents.shared.delivery import build_delivery_agent
@@ -151,6 +157,7 @@ def build_documentation_graph(
     from draftly.app.composition.tools import filter_grounded_tools
     from draftly.integrations.strands.models import resolve_model_for_role
     from draftly.orchestration.nodes.changelog_evaluate import ChangelogEvaluatorNode
+    from draftly.orchestration.nodes.fan_out import FanOutWriterNode
     from draftly.orchestration.nodes.notify_post import NotifyPostNode
 
     reg = tools_registry
@@ -289,19 +296,20 @@ def build_documentation_graph(
         [start_draft, append_chunk, finalize_draft],
     )
     writer_builder = getattr(registry, "writer_agent", None) or build_writer_agent
-    update_writer = writer_builder(
-        writer_model,
-        writer_tools,
+    writer_factory = WriterFactory(
+        model=writer_model,
+        tools=writer_tools,
         runtime=steering_runtime,
-        agent_id="documentation.writer",
-        node_id="update",
+        builder=writer_builder,
     )
-    create_writer = writer_builder(
-        writer_model,
-        writer_tools,
-        runtime=steering_runtime,
-        agent_id="documentation.writer",
-        node_id="create",
+    # Single write path: the fan-out node yields a fresh writer Agent per task
+    # (the SDK rejects duplicate executors, so writers are never pre-built).
+    document_node = FanOutWriterNode(
+        "document",
+        writer_factory=writer_factory,
+        write_concurrency=write_concurrency,
+        drafts_repo=drafts_repo,
+        progress_sink=progress_sink,
     )
     delivery_builder = getattr(registry, "delivery_agent", None) or build_delivery_agent
     delivery_agent = delivery_builder(
@@ -367,11 +375,9 @@ def build_documentation_graph(
 
     # Generation fan-out (mutually exclusive conditions)
     builder.add_node(answer_agent, "answer")
-    builder.add_node(update_writer, "update")
-    builder.add_node(create_writer, "create")
+    builder.add_node(document_node, "document")
     builder.add_edge("impact", "answer", condition=route_to_answer)
-    builder.add_edge("impact", "update", condition=route_to_update)
-    builder.add_edge("impact", "create", condition=route_to_create)
+    builder.add_edge("impact", "document", condition=route_to_write)
 
     # PR notify: a parallel branch off impact. The notify LLM composes the
     # comment (draft-only, no tools); the deterministic notify_post node posts
@@ -394,20 +400,21 @@ def build_documentation_graph(
         drafts_repo=drafts_repo,
     )
     builder.add_node(evaluator, "evaluate")
-    builder.add_edge("answer", "evaluate", condition=generated)
-    builder.add_edge("update", "evaluate", condition=generated)
-    builder.add_edge("create", "evaluate", condition=generated)
-    # The writer edge makes evaluation ready; this conditional edge also
-    # supplies the completed research payload as an evaluator dependency.
-    # It is false when research completes (before a writer exists), so it
-    # cannot trigger evaluation prematurely.
-    builder.add_edge("context", "evaluate", condition=generated)
-    builder.add_edge("research", "evaluate", condition=generated)
+    builder.add_edge("answer", "evaluate", condition=eval_ready)
+    # Generated (not eval_ready) pending the review node (Task 10/11): the
+    # review verdict is the eval_ready source once wired; without it the
+    # document path would dead-end because eval_ready is False pre-review.
+    builder.add_edge("document", "evaluate", condition=generated)
+    # The generation edges make evaluation ready; these conditional edges also
+    # supply the completed context/research payloads as evaluator dependencies.
+    # They are false when context/research complete (before a writer exists),
+    # so they cannot trigger evaluation prematurely.
+    builder.add_edge("context", "evaluate", condition=eval_ready)
+    builder.add_edge("research", "evaluate", condition=eval_ready)
 
     # Revise loop — scoped to whichever generation node actually ran
     builder.add_edge("evaluate", "answer", condition=needs_revision_of("answer"))
-    builder.add_edge("evaluate", "update", condition=needs_revision_of("update"))
-    builder.add_edge("evaluate", "create", condition=needs_revision_of("create"))
+    builder.add_edge("evaluate", "document", condition=needs_revision_of("document"))
 
     # Delivery
     builder.add_node(delivery_agent, "deliver")
@@ -442,8 +449,7 @@ def build_documentation_graph(
     # deliver early — each edge is False when its writer/changelog completes,
     # and only True once the changelog gate has passed, when the plain
     # changelog_evaluate → deliver edge above schedules the node.
-    builder.add_edge("update", "deliver", condition=delivery_content_ready)
-    builder.add_edge("create", "deliver", condition=delivery_content_ready)
+    builder.add_edge("document", "deliver", condition=delivery_content_ready)
     builder.add_edge("answer", "deliver", condition=delivery_content_ready)
     builder.add_edge("changelog", "deliver", condition=delivery_content_ready)
 

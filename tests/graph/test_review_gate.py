@@ -183,7 +183,7 @@ def test_interrupt_reason_includes_changelog() -> None:
         source=SimpleNamespace(
             state=SimpleNamespace(
                 results={
-                    "create": SimpleNamespace(
+                    "document": SimpleNamespace(
                         result=agent_result(
                             {
                                 "files": [{"path": "docs/x.md", "content": "x"}],
@@ -266,7 +266,7 @@ def test_interrupt_reason_summary_uses_writer_summary() -> None:
         source=SimpleNamespace(
             state=SimpleNamespace(
                 results={
-                    "create": SimpleNamespace(
+                    "document": SimpleNamespace(
                         result=agent_result(
                             {
                                 "files": [{"path": "docs/x.md", "content": "x"}],
