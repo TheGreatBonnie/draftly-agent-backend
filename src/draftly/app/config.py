@@ -325,6 +325,24 @@ class Settings(BaseSettings):
         """True when any Tavily feature flag is on (requires an API key)."""
         return self._tavily_enabled
 
+    # ------------------------------------------------------------------
+    # Documentation workflow (spec: 2026-09-20-documentation-workflow-replacement)
+    # ------------------------------------------------------------------
+
+    documentation_write_concurrency: int = 3
+    documentation_evaluation_concurrency: int = 3
+    documentation_task_lease_seconds: int = 300
+
+    @model_validator(mode="after")
+    def _validate_documentation_workflow(self) -> "Settings":
+        if self.documentation_write_concurrency < 1:
+            raise ValueError("documentation_write_concurrency must be >= 1")
+        if self.documentation_evaluation_concurrency < 1:
+            raise ValueError("documentation_evaluation_concurrency must be >= 1")
+        if self.documentation_task_lease_seconds < 1:
+            raise ValueError("documentation_task_lease_seconds must be >= 1")
+        return self
+
 
 def get_settings() -> Settings:
     """

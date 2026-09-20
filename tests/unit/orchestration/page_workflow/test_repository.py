@@ -246,6 +246,11 @@ class FakeClient:
                 )
             return []
 
+        if up.startswith("SELECT * FROM DOCUMENTATION_WORKFLOW_TASKS"):
+            run_id = args[0]
+            tasks = [t for t in self.tasks if t["run_id"] == run_id]
+            return sorted(tasks, key=lambda t: (t["created_at"], t["task_id"]))
+
         if "FOR UPDATE SKIP LOCKED" in up:
             run_id, limit, lease_owner, lease_seconds = args
             completed = {
@@ -921,6 +926,48 @@ async def test_reset_expired_leases_recycles_only_expired_running(
     claimed = await pages.claim_ready_tasks(run_id="run-1", lease_owner="worker-2")
     assert [t.task_id for t in claimed] == ["write-a"]
     assert claimed[0].lease_owner == "worker-2"
+
+
+async def test_get_tasks_returns_read_models_in_enqueue_order(
+    client: FakeClient,
+    pages: PageWorkflowRepository,
+) -> None:
+    async def enqueue(task_id: str) -> None:
+        await client.execute(
+            """INSERT INTO documentation_workflow_tasks
+                 (run_id, task_id, org_id, task_type, page_id, artifact_version,
+                  dependencies, input_data, status)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'pending')""",
+            "run-1",
+            task_id,
+            "org-1",
+            "write",
+            "docs/a.md",
+            1,
+            [],
+            {},
+        )
+
+    await enqueue("write-a")
+    await enqueue("write-b")
+    client.claim_for("write-b")["created_at"] = AUCTION_EPOCH - timedelta(minutes=1)
+
+    tasks = await pages.get_tasks(run_id="run-1")
+
+    assert [t.task_id for t in tasks] == ["write-b", "write-a"]
+    task = tasks[0]
+    assert task.run_id == "run-1"
+    assert task.org_id == "org-1"
+    assert task.task_type == "write"
+    assert task.page_id == "docs/a.md"
+    assert task.artifact_version == 1
+    assert task.dependencies == []
+    assert task.status == "pending"
+    assert task.infrastructure_retries == 0
+    assert task.lease_owner is None
+    assert task.lease_expires_at is None
+    assert task.input_data == {}
+    assert task.output_data is None
 
 
 async def test_get_page_states_returns_read_models(

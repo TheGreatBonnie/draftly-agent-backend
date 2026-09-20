@@ -480,6 +480,23 @@ class PageWorkflowRepository:
         )
         return int(row["updated"]) if row else 0
 
+    async def get_tasks(self, *, run_id: str) -> list[WorkflowTask]:
+        """Return every workflow task of a run in enqueue order.
+
+        Read-only snapshot the executor consults when nothing is claimable to
+        distinguish a working in-flight batch (running tasks still on lease)
+        from a true deadlock (pending tasks that can never claim).
+        """
+        rows = await self.database.fetch_all(
+            """
+            SELECT * FROM documentation_workflow_tasks
+             WHERE run_id = $1
+             ORDER BY created_at, task_id
+            """,
+            run_id,
+        )
+        return [self._to_task(row) for row in rows]
+
     # -- row mapping ---------------------------------------------------------
 
     @staticmethod
