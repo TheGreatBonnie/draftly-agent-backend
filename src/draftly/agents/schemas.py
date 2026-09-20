@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import PurePath
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -53,6 +54,19 @@ class EvidenceBundle(BaseModel):
     summary: str = ""
 
 
+class DocumentationTask(BaseModel):
+    """One page/bundle to write or update (a single isolated writer unit)."""
+
+    id: str
+    path: str
+    action: str = "update"  # only "update" | "create" (validated by plan_tasks/downstream)
+    reason: str = ""
+    related_symbols: list[str] = Field(default_factory=list)
+    evidence: list[EvidenceItem] = Field(default_factory=list)
+    requirements: list[str] = Field(default_factory=list)
+    bundle_id: str | None = None
+
+
 class ImpactAnalysis(BaseModel):
     """Documentation impact analysis for a surface event."""
 
@@ -60,6 +74,24 @@ class ImpactAnalysis(BaseModel):
     affected_documents: list[str] = Field(default_factory=list)
     rationale: str = ""
     evidence: list[str] = Field(default_factory=list)
+    tasks: list[DocumentationTask] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _validate_task_paths(self) -> ImpactAnalysis:
+        seen: set[str] = set()
+        for task in self.tasks:
+            path = task.path.strip()
+            if not path:
+                raise ValueError(f"task {task.id!r} has an empty path")
+            candidate = PurePath(path)
+            if candidate.is_absolute() or ".." in candidate.parts:
+                raise ValueError(
+                    f"task {task.id!r} path must be relative and within the repo: {path!r}"
+                )
+            if path in seen:
+                raise ValueError(f"duplicate task path: {path}")
+            seen.add(path)
+        return self
 
 
 class DocChangePlan(BaseModel):
