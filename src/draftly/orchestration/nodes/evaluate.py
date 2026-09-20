@@ -151,6 +151,32 @@ def _evidence_has_signals(entry: dict) -> bool:
     )
 
 
+def _scoped_evidence(
+    tasks: list[dict[str, Any]], evidence: list[dict]
+) -> dict[str, list[dict]] | None:
+    """Map planned task paths to their path-scoped evidence, else None.
+
+    Per-file scoring is only sound when every planned task carries at least
+    one ``evidence_ref`` that resolves to a usable evidence item; otherwise a
+    page would be scored without citation/completeness signals and the gate
+    would loop on a verdict it cannot justify. ``None`` falls back to the
+    legacy single-blob verdict.
+    """
+    if not tasks:
+        return None
+    scoped: dict[str, list[dict]] = {}
+    for row in tasks:
+        path = row.get("path")
+        refs = row.get("evidence_refs") or []
+        if not isinstance(path, str) or not path or not refs:
+            return None
+        matched = [e for e in evidence if e.get("id") in refs]
+        if not matched or not all(_evidence_has_signals(e) for e in matched):
+            return None
+        scoped[path] = matched
+    return scoped
+
+
 def compute_quality(
     evidence: list[dict],
     draft: str,
@@ -226,25 +252,26 @@ class EvaluatorNode(MultiAgentBase):
         #: legacy inline path so offline fixtures stay repo-free.
         self.drafts_repo = drafts_repo
 
-    async def _store_draft(self, run_id: str | None) -> tuple[str, bool]:
+    async def _store_draft(self, run_id: str | None) -> tuple[str, bool, list[Any]]:
         """Assembled content of the latest sealed generation for ``run_id``.
 
-        Returns ``(content, has_files)``; ``has_files`` is True when at least
-        one sealed revision exists. Content joins revisions in path order.
-        Store failures degrade to empty (the waiver paths below still gate on
-        evidence, not on the draft text).
+        Returns ``(content, has_files, revisions)``; ``has_files`` is True when
+        at least one sealed revision exists. Content joins revisions in path
+        order (revisions remain available for per-file scoring). Store failures
+        degrade to empty (the waiver paths below still gate on evidence, not
+        on the draft text).
         """
         if self.drafts_repo is None or not run_id:
-            return "", False
+            return "", False, []
         try:
             revisions = await self.drafts_repo.get_latest(run_id=run_id)
         except Exception:
             logger.warning("drafts_get_latest_failed", run_id=run_id, exc_info=True)
-            return "", False
+            return "", False, []
         if not revisions:
-            return "", False
+            return "", False, []
         parts = [f"{rev.path}\n{rev.content}" for rev in revisions]
-        return "\n\n".join(parts), True
+        return "\n\n".join(parts), True, list(revisions)
 
     async def invoke_async(
         self,
@@ -266,8 +293,9 @@ class EvaluatorNode(MultiAgentBase):
         draft = ""
         files_present = False
         has_drafts = False
+        revisions: list[Any] = []
         if self.drafts_repo is not None:
-            store_draft, has_drafts = await self._store_draft(
+            store_draft, has_drafts, revisions = await self._store_draft(
                 (invocation_state or {}).get("run_id")
             )
             files_present = has_drafts
@@ -294,7 +322,37 @@ class EvaluatorNode(MultiAgentBase):
                 break
 
         score, reasons = compute_quality(evidence, draft)
-        passed = score >= 0.7
+
+        files: list[str] = []
+        failed_files: list[str] = []
+        per_file: dict[str, tuple[float, list[str]]] | None = None
+        if has_drafts and isinstance(deps.get("document"), dict):
+            scoped = _scoped_evidence(deps["document"].get("tasks") or [], evidence)
+            rev_map = {getattr(rev, "path", None): rev for rev in revisions}
+            if scoped is not None and all(
+                path in rev_map and (rev_map[path].content or "").strip()
+                for path in scoped
+            ):
+                per_file = {
+                    path: compute_quality(ev, f"{path}\n{rev_map[path].content}")
+                    for path, ev in scoped.items()
+                }
+
+        if per_file is not None:
+            files = sorted(per_file)
+            score = min((s for s, _ in per_file.values()), default=0.0)
+            reasons = []
+            for path in files:
+                sub_score, sub_reasons = per_file[path]
+                if sub_score < 0.7:
+                    failed_files.append(path)
+                    reasons.extend(
+                        [f"{path}: {r}" for r in sub_reasons]
+                        or [f"{path}: score {sub_score:.2f} (threshold: 0.70)"]
+                    )
+            passed = not failed_files
+        else:
+            passed = score >= 0.7
         waived = False
         escalated = False
 
@@ -350,6 +408,7 @@ class EvaluatorNode(MultiAgentBase):
             # an impossible gate. The prompts' failure policy requires this.
             passed = True
             escalated = True
+            failed_files = []
             reasons.append(
                 f"Quality threshold not met after {self.iteration} evaluations; "
                 "escalated to human review"
@@ -365,6 +424,7 @@ class EvaluatorNode(MultiAgentBase):
             evidence_count=len(evidence),
             files_present=files_present,
             has_drafts=has_drafts,
+            failed_files=failed_files,
             draft_chars=len(draft),
             reasons=reasons,
         )
@@ -380,6 +440,11 @@ class EvaluatorNode(MultiAgentBase):
             # Delivery gate reads this (delivery_content_ready). Additive only:
             # legacy fixtures (drafts_repo=None) keep the exact key set.
             result["has_drafts"] = has_drafts
+            if per_file is not None:
+                # Revision targeting: only paths that failed evaluation are
+                # re-dispatched to the writer. Empty when the run passes.
+                result["files"] = files
+                result["failed_files"] = failed_files
 
         return MultiAgentResult(
             status=Status.COMPLETED,

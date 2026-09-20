@@ -613,6 +613,186 @@ class TestEvaluatorDraftStore:
         assert data["passed"] is True
 
 
+_TWO_PAGE_EVIDENCE = [
+    {"id": "docs/a.md", "topic": "alpha"},
+    {"id": "docs/b.md", "topic": "beta"},
+]
+
+
+def _document_payload() -> dict:
+    """A two-page fan-out payload whose tasks scope evidence per path."""
+    return {
+        "repository": "acme/api",
+        "branch": "docs/fix",
+        "summary": "behavior changed",
+        "files": [
+            {"path": "docs/a.md", "action": "update"},
+            {"path": "docs/b.md", "action": "update"},
+        ],
+        "tasks": [
+            {
+                "task_id": "docs/a.md",
+                "path": "docs/a.md",
+                "action": "update",
+                "ok": True,
+                "reasons": [],
+                "evidence_refs": ["docs/a.md"],
+            },
+            {
+                "task_id": "docs/b.md",
+                "path": "docs/b.md",
+                "action": "update",
+                "ok": True,
+                "reasons": [],
+                "evidence_refs": ["docs/b.md"],
+            },
+        ],
+        "task_count": 2,
+        "failed_tasks": [],
+    }
+
+
+def _store_blocks(payload: dict, evidence: list[dict]) -> list[dict]:
+    return [
+        {"text": "Original Task: task"},
+        {"text": "\nInputs from previous nodes:"},
+        {"text": "\nFrom research:"},
+        {"text": f"  - ResearchAgent: {json.dumps({'items': evidence})}"},
+        {"text": "\nFrom document:"},
+        {"text": "  - WriterAgent: " + json.dumps(payload)},
+    ]
+
+
+class TestEvaluatorPerFileVerdicts:
+    @pytest.mark.asyncio
+    async def test_failed_page_is_named_and_passing_page_excluded(self) -> None:
+        """Per-file verdicts: the page whose sealed revision misses its topic
+        is listed in failed_files; the passing page is not."""
+        repo = _FakeDraftsRepo(
+            [
+                {
+                    "path": "docs/a.md",
+                    "action": "update",
+                    "content": "alpha is implemented and documented docs/a.md " * 20,
+                },
+                {"path": "docs/b.md", "action": "update", "content": "TODO"},
+            ]
+        )
+        node = EvaluatorNode(drafts_repo=repo, rubric_grader=_NoopRubricGrader())
+        result = await node.invoke_async(
+            _store_blocks(_document_payload(), _TWO_PAGE_EVIDENCE),
+            invocation_state={"run_id": "run-1"},
+        )
+        data = json.loads(result.results["evaluate"].result.message["content"][0]["text"])
+        assert data["passed"] is False
+        assert set(data["files"]) == {"docs/a.md", "docs/b.md"}
+        assert data["failed_files"] == ["docs/b.md"]
+        assert any("docs/b.md" in r for r in data["reasons"])
+        assert any("beta" in r for r in data["reasons"])  # missing-topic feedback
+
+    @pytest.mark.asyncio
+    async def test_all_pages_pass_emits_empty_failed_files(self) -> None:
+        repo = _FakeDraftsRepo(
+            [
+                {
+                    "path": "docs/a.md",
+                    "action": "update",
+                    "content": "alpha is implemented and documented docs/a.md " * 20,
+                },
+                {
+                    "path": "docs/b.md",
+                    "action": "update",
+                    "content": "beta is implemented and documented docs/b.md " * 20,
+                },
+            ]
+        )
+        node = EvaluatorNode(drafts_repo=repo, rubric_grader=_NoopRubricGrader())
+        result = await node.invoke_async(
+            _store_blocks(_document_payload(), _TWO_PAGE_EVIDENCE),
+            invocation_state={"run_id": "run-1"},
+        )
+        data = json.loads(result.results["evaluate"].result.message["content"][0]["text"])
+        assert data["passed"] is True
+        assert data["files"] == ["docs/a.md", "docs/b.md"]
+        assert data["failed_files"] == []
+
+    @pytest.mark.asyncio
+    async def test_without_scoped_tasks_falls_back_and_omits_files(self) -> None:
+        """No document tasks → legacy single-blob verdict; the payload gains
+        only has_drafts, never files/failed_files."""
+        evidence = [{"id": "docs/a.md", "topic": "alpha"}]
+        repo = _FakeDraftsRepo(
+            [{"path": "docs/a.md", "action": "update", "content": ("alpha a.md " * 40)}]
+        )
+        node = EvaluatorNode(drafts_repo=repo, rubric_grader=_NoopRubricGrader())
+        result = await node.invoke_async(
+            _store_blocks({"draft": ""}, evidence),
+            invocation_state={"run_id": "run-1"},
+        )
+        data = json.loads(result.results["evaluate"].result.message["content"][0]["text"])
+        assert set(data) == {
+            "passed",
+            "score",
+            "reasons",
+            "iteration",
+            "escalated",
+            "has_drafts",
+        }
+        assert "files" not in data
+        assert "failed_files" not in data
+
+    @pytest.mark.asyncio
+    async def test_partial_evidence_scoping_falls_back_to_blob(self) -> None:
+        """A single task row without evidence_refs makes per-file verdicts
+        unsound; the evaluator must fall back and NOT emit failed_files."""
+        payload = _document_payload()
+        payload["tasks"][1]["evidence_refs"] = []
+        repo = _FakeDraftsRepo(
+            [
+                {
+                    "path": "docs/a.md",
+                    "action": "update",
+                    "content": "alpha is implemented and documented docs/a.md " * 20,
+                },
+                {"path": "docs/b.md", "action": "update", "content": "TODO"},
+            ]
+        )
+        node = EvaluatorNode(drafts_repo=repo, rubric_grader=_NoopRubricGrader())
+        result = await node.invoke_async(
+            _store_blocks(payload, _TWO_PAGE_EVIDENCE),
+            invocation_state={"run_id": "run-1"},
+        )
+        data = json.loads(result.results["evaluate"].result.message["content"][0]["text"])
+        assert "failed_files" not in data
+        assert "files" not in data
+
+    @pytest.mark.asyncio
+    async def test_escalation_clears_failed_files(self) -> None:
+        """When the revision budget is exhausted the run escalates (passed
+        True); failed_files must empty so nothing targets a stale page."""
+        repo = _FakeDraftsRepo(
+            [
+                {
+                    "path": "docs/a.md",
+                    "action": "update",
+                    "content": "alpha is implemented and documented docs/a.md " * 20,
+                },
+                {"path": "docs/b.md", "action": "update", "content": "TODO"},
+            ]
+        )
+        node = EvaluatorNode(
+            max_iterations=1, drafts_repo=repo, rubric_grader=_NoopRubricGrader()
+        )
+        result = await node.invoke_async(
+            _store_blocks(_document_payload(), _TWO_PAGE_EVIDENCE),
+            invocation_state={"run_id": "run-1"},
+        )
+        data = json.loads(result.results["evaluate"].result.message["content"][0]["text"])
+        assert data["passed"] is True
+        assert data["escalated"] is True
+        assert data["failed_files"] == []
+
+
 class TestRubricGraderRequired:
     def test_constructor_requires_a_grader(self) -> None:
         """The rubric grader is a mandatory part of the evaluator contract:
