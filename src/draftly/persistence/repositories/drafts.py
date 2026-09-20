@@ -18,6 +18,7 @@ bounds how many sealed generations are retained on ``gc`` (default 3).
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -42,6 +43,8 @@ class DraftRevision:
     content_size: int = 0
     created_at: datetime | None = None
     sealed_at: datetime | None = None
+    version: int | None = None
+    content_hash: str | None = None
 
     @property
     def content(self) -> str:
@@ -56,6 +59,9 @@ class DraftFile:
     action: str
     content: str
     content_size: int
+    artifact_id: str
+    version: int | None = None
+    content_hash: str | None = None
 
 
 class DraftRepository:
@@ -77,14 +83,16 @@ class DraftRepository:
         generation: int,
         path: str,
         action: str,
+        version: int | None = None,
     ) -> DraftRevision:
         draft_id = str(uuid4())
         now = datetime.now(UTC)
         await self.database.execute(
             """
             INSERT INTO draft_revisions (
-                id, run_id, org_id, generation, path, action, created_at
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+                id, run_id, org_id, generation, path, action, version, content_hash,
+                created_at
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
             """,
             draft_id,
             run_id,
@@ -92,6 +100,8 @@ class DraftRepository:
             generation,
             path,
             action,
+            version,
+            None,
             now,
         )
         return DraftRevision(
@@ -104,6 +114,8 @@ class DraftRepository:
             sealed=False,
             content_size=0,
             created_at=now,
+            version=version,
+            content_hash=None,
         )
 
     async def _get_revision(self, draft_id: str) -> DraftRevision | None:
@@ -130,6 +142,8 @@ class DraftRepository:
             content_size=int(row["content_size"] or 0),
             created_at=row.get("created_at"),
             sealed_at=row.get("sealed_at"),
+            version=row.get("version"),
+            content_hash=row.get("content_hash"),
         )
 
     async def append_chunk(self, draft_id: str, content: str) -> int:
@@ -170,15 +184,17 @@ class DraftRepository:
             raise ValueError(f"draft {draft_id!r} is already sealed")
         content = await self._assembled(draft_id)
         size = len(content)
+        digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
         now = datetime.now(UTC)
         await self.database.execute(
             """
             UPDATE draft_revisions
-               SET sealed = TRUE, content_size = $2
+               SET sealed = TRUE, content_size = $2, content_hash = $3
              WHERE id = $1
             """,
             draft_id,
             size,
+            digest,
         )
         await self.database.execute(
             """
@@ -198,6 +214,8 @@ class DraftRepository:
             content_size=size,
             created_at=revision.created_at,
             sealed_at=now,
+            version=revision.version,
+            content_hash=digest,
         )
 
     async def _assembled(self, draft_id: str) -> str:
@@ -238,6 +256,9 @@ class DraftRepository:
                     action=revision.action,
                     content=content,
                     content_size=revision.content_size,
+                    artifact_id=revision.id,
+                    version=revision.version,
+                    content_hash=revision.content_hash,
                 )
             )
         return files
@@ -249,12 +270,14 @@ class DraftRepository:
         reviewer correction opens a newer generation for one file while its
         siblings remain sealed in an older generation. Per-path supersession
         keeps every page's newest bytes without dropping untouched pages.
+        Newest is decided by artifact ``version`` (NULL legacy rows sort last
+        so historical generations stay readable).
         """
         rows = await self.database.fetch_all(
             """
             SELECT * FROM draft_revisions
              WHERE run_id = $1
-             ORDER BY generation DESC, path
+             ORDER BY version DESC NULLS LAST, generation DESC, path
             """,
             run_id,
         )
@@ -272,6 +295,9 @@ class DraftRepository:
                     action=revision.action,
                     content=content,
                     content_size=revision.content_size,
+                    artifact_id=revision.id,
+                    version=revision.version,
+                    content_hash=revision.content_hash,
                 )
             )
         return files
@@ -282,7 +308,7 @@ class DraftRepository:
             """
             SELECT * FROM draft_revisions
              WHERE run_id = $1
-             ORDER BY generation DESC, path
+             ORDER BY version DESC NULLS LAST, generation DESC, path
             """,
             run_id,
         )
@@ -294,6 +320,9 @@ class DraftRepository:
                     action=revision.action,
                     content=await self._assembled(revision.id),
                     content_size=revision.content_size,
+                    artifact_id=revision.id,
+                    version=revision.version,
+                    content_hash=revision.content_hash,
                 )
         return None
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from typing import Any
 
 import pytest
@@ -42,9 +43,11 @@ class FakeClient:
                     "generation": args[3],
                     "path": args[4],
                     "action": args[5],
+                    "version": args[6],
+                    "content_hash": args[7],
                     "sealed": False,
                     "content_size": 0,
-                    "created_at": "2026-09-13T00:00:00Z",
+                    "created_at": args[8],
                     "sealed_at": None,
                 }
             )
@@ -64,6 +67,8 @@ class FakeClient:
                     if "SEALED = TRUE" in up.upper() and "CONTENT_SIZE" in up.upper():
                         row["sealed"] = True
                         row["content_size"] = args[1]
+                        if "CONTENT_HASH" in up.upper():
+                            row["content_hash"] = args[2]
                     if "SEALED_AT" in up.upper() and row["sealed"]:
                         row["sealed_at"] = args[1]
         elif up.startswith("DELETE FROM DRAFT_CHUNKS"):
@@ -97,6 +102,17 @@ class FakeClient:
 
         if "FROM DRAFT_REVISIONS" in q.upper():
             rows = [r for r in self.revisions if not r.get("deleted_at")]
+            if "ORDER BY VERSION DESC" in q.upper():
+                rows.sort(
+                    key=lambda r: (
+                        0 if r["version"] is None else 1,
+                        r["version"] if r["version"] is not None else 0,
+                        r["generation"],
+                        r["path"],
+                    ),
+                    reverse=True,
+                )
+                return rows
             if "ORDER BY GENERATION DESC" in q.upper():
                 rows = sorted(rows, key=lambda r: (r["generation"], r["path"]), reverse=True)
                 return rows
@@ -330,3 +346,118 @@ async def test_gc_keeps_latest_generations_and_never_unsealed(repo: DraftReposit
     kept_gen = [f"docs/{g}.md" for g in range(4, KEEP_GENERATIONS + 3)]
     assert set(kept_gen) <= paths
     assert "docs/open.md" in paths
+
+
+async def test_create_revision_persists_version_and_no_hash(repo: DraftRepository) -> None:
+    revision = await repo.create_revision(
+        run_id="run-1",
+        org_id="org-1",
+        generation=1,
+        path="docs/guide.md",
+        action="update",
+        version=3,
+    )
+    assert revision.version == 3
+    assert revision.content_hash is None
+
+
+async def test_finalize_hashes_assembled_content(repo: DraftRepository) -> None:
+    revision = await repo.create_revision(
+        run_id="run-1",
+        org_id="org-1",
+        generation=1,
+        path="docs/a.md",
+        action="update",
+        version=1,
+    )
+    await repo.append_chunk(revision.id, "alpha")
+    sealed = await repo.finalize(revision.id)
+    assert sealed.version == 1
+    assert sealed.content_hash == hashlib.sha256(b"alpha").hexdigest()
+
+
+async def test_finalize_hash_stable_across_chunk_boundaries(repo: DraftRepository) -> None:
+    revision = await repo.create_revision(
+        run_id="run-1",
+        org_id="org-1",
+        generation=1,
+        path="docs/a.md",
+        action="update",
+        version=1,
+    )
+    await repo.append_chunk(revision.id, "alpha")
+    await repo.append_chunk(revision.id, "beta")
+    sealed = await repo.finalize(revision.id)
+    assert sealed.content_hash == hashlib.sha256(b"alphabeta").hexdigest()
+
+
+async def test_get_latest_prefers_version_over_newer_legacy_generation(
+    repo: DraftRepository,
+) -> None:
+    legacy = await repo.create_revision(
+        run_id="run-1", org_id="org-1", generation=3, path="docs/a.md", action="update"
+    )
+    await repo.append_chunk(legacy.id, "legacy-newer-generation")
+    await repo.finalize(legacy.id)
+    versioned = await repo.create_revision(
+        run_id="run-1",
+        org_id="org-1",
+        generation=1,
+        path="docs/a.md",
+        action="update",
+        version=1,
+    )
+    await repo.append_chunk(versioned.id, "versioned")
+    await repo.finalize(versioned.id)
+
+    latest = await repo.get_path_latest(run_id="run-1", path="docs/a.md")
+    assert latest is not None
+    assert latest.content == "versioned"
+    assert latest.version == 1
+    assert latest.artifact_id == versioned.id
+    assert latest.content_hash == hashlib.sha256(b"versioned").hexdigest()
+
+
+async def test_get_path_latest_returns_newest_version(repo: DraftRepository) -> None:
+    v1 = await repo.create_revision(
+        run_id="run-1",
+        org_id="org-1",
+        generation=1,
+        path="docs/a.md",
+        action="update",
+        version=1,
+    )
+    await repo.append_chunk(v1.id, "old-a")
+    await repo.finalize(v1.id)
+    v2 = await repo.create_revision(
+        run_id="run-1",
+        org_id="org-1",
+        generation=2,
+        path="docs/a.md",
+        action="update",
+        version=2,
+    )
+    await repo.append_chunk(v2.id, "new-a")
+    await repo.finalize(v2.id)
+
+    latest = await repo.get_path_latest(run_id="run-1", path="docs/a.md")
+    assert latest is not None
+    assert latest.content == "new-a"
+    assert latest.version == 2
+
+    by_path = {f.path: f.content for f in await repo.get_latest(run_id="run-1")}
+    assert by_path == {"docs/a.md": "new-a"}
+
+
+async def test_get_latest_keeps_null_version_rows_readable(repo: DraftRepository) -> None:
+    legacy = await repo.create_revision(
+        run_id="run-1", org_id="org-1", generation=1, path="docs/a.md", action="update"
+    )
+    await repo.append_chunk(legacy.id, "legacy")
+    await repo.finalize(legacy.id)
+
+    latest = await repo.get_path_latest(run_id="run-1", path="docs/a.md")
+    assert latest is not None
+    assert latest.content == "legacy"
+    assert latest.version is None
+    assert latest.content_hash == hashlib.sha256(b"legacy").hexdigest()

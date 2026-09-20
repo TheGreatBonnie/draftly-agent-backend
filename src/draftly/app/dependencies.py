@@ -28,6 +28,7 @@ from draftly.memory.embeddings import EmbeddingService
 
 # from draftly.memory.embeddings import build_memory_embedder
 # from draftly.memory.manager import MemoryManager
+from draftly.orchestration.page_workflow.repository import PageWorkflowRepository
 from draftly.persistence.repositories.agent_runs import AgentRunsRepository
 from draftly.persistence.repositories.content import ContentRepository
 from draftly.persistence.repositories.delivery import DeliveryRepository
@@ -249,6 +250,7 @@ class RepositoryDependencies:
     documents: DocumentRepository
     revisions: DocumentRevisionRepository
     drafts: DraftRepository
+    page_workflow: PageWorkflowRepository
     github_installations: GitHubInstallationsRepository
     evaluations: EvaluationRepository
     support: SupportRepository
@@ -316,6 +318,8 @@ def build_repositories(
     revisions = DocumentRevisionRepository(database=database)
 
     drafts = DraftRepository(database=database)
+
+    page_workflow = PageWorkflowRepository(database=database)
 
     github_installations = GitHubInstallationsRepository(db=database)
 
@@ -392,6 +396,7 @@ def build_repositories(
         documents=documents,
         revisions=revisions,
         drafts=drafts,
+        page_workflow=page_workflow,
         github_installations=github_installations,
         evaluations=evaluations,
         support=support,
