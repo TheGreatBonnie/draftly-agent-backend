@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections.abc import Callable
 from typing import Any
 
@@ -26,8 +27,6 @@ from draftly.orchestration.nodes.evaluate import (
     _evidence_has_signals,
     compute_page_metrics,
 )
-from draftly.orchestration.nodes.fan_out import render_task_prompt
-from draftly.orchestration.nodes.review import page_summaries, render_review_prompt
 from draftly.orchestration.nodes.rubric_grader import RubricGrader
 from draftly.orchestration.page_workflow.models import (
     DocumentArtifact,
@@ -48,6 +47,95 @@ logger = structlog.get_logger(__name__)
 
 MAX_PAGE_EVALUATION_ATTEMPTS = MAX_AUTOMATIC_EVALUATION_ATTEMPTS
 CROSS_PAGE_REVIEW_TASK_ID = "cross-page-review"
+
+_FIRST_HEADING = re.compile(r"^#(?!#)\s+(.+)$", re.MULTILINE)
+_LINKS = re.compile(r"\[[^\]]*\]\(([^)]+)\)")
+_REFERENCES_HEADER = re.compile(r"(?m)^##+ *References\b")
+_REFERENCE_NUMBER = re.compile(r"(?m)^\s*\d+\.\s")
+
+
+def render_task_prompt(task: DocumentationTask) -> str:
+    """One isolated writer prompt for a single page/bundle.
+
+    Scoped to this task's path, action, reason, symbols, requirements, and
+    path-matched evidence — other pages' evidence deliberately absent so
+    attention never competes across pages.
+    """
+    lines = [
+        f"Documentation task: {task.id}",
+        f"Path: {task.path}",
+        f"Action: {task.action}",
+        f"Reason: {task.reason or 'see evidence'}",
+    ]
+    if task.related_symbols:
+        lines.append("Related symbols: " + ", ".join(task.related_symbols))
+    if task.requirements:
+        lines.append("Requirements (do not document anything else):")
+        lines += [f"- {req}" for req in task.requirements]
+    if task.evidence:
+        lines.append("Evidence scoped to this page:")
+        lines += [
+            f"- {item.id}: {item.model_dump(exclude={'id'}, exclude_none=True)}"
+            for item in task.evidence
+        ]
+    return "\n".join(lines)
+
+
+async def page_summaries(
+    drafts_repo: Any | None, run_id: str | None, tasks: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Deterministic, LLM-free page summaries from sealed store content."""
+    if drafts_repo is None:
+        return []
+    by_path = {f.path: f.content for f in await drafts_repo.get_latest(run_id=run_id) or []}
+    summaries: list[dict[str, Any]] = []
+    for task in tasks:
+        path = str(task.get("path") or "")
+        content = by_path.get(path, "")
+        if not content:
+            continue
+        summaries.append(
+            {
+                "path": path,
+                "headings": _FIRST_HEADING.findall(content)[:8],
+                "links": _LINKS.findall(_REFERENCES_HEADER.split(content)[0])[:10],
+                "first_paragraph": _first_paragraph(content),
+                "references": len(_REFERENCE_NUMBER.findall(content)),
+                "char_length": len(content),
+            }
+        )
+    return summaries
+
+
+def _first_paragraph(content: str) -> str:
+    body = _FIRST_HEADING.sub("", content, count=1).strip()
+    for para in body.split("\n\n"):
+        if para.strip():
+            return " ".join(para.split())[:400]
+    return ""
+
+
+def render_review_prompt(
+    tasks: list[dict[str, Any]], summaries: list[dict[str, Any]], summary: str
+) -> str:
+    lines = [
+        "Review the documentation change set for cross-page coherence.",
+        f"Change-set summary: {summary or '(none)'}",
+        "",
+        "Generated pages:",
+    ]
+    for task in tasks:
+        lines.append(f"- {task['path']} ({task['action']}, ok={task['ok']})")
+    lines.append("")
+    lines.append("Compact per-page summaries:")
+    for blob in summaries:
+        lines.append("- " + json.dumps(blob, sort_keys=True))
+    lines.append("")
+    lines.append(
+        "Return verdict 'clean' when coherent, or 'correct' with targeted "
+        "per-page instructions keyed by task_id. Never rewrite pages."
+    )
+    return "\n".join(lines)
 
 
 def render_revision_prompt(
