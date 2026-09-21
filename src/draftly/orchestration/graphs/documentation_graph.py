@@ -3,30 +3,39 @@
 Layout (plan §6.1)::
 
     classify → context → research(Swarm) → impact
-      ├─(answer)─► answer ─┐
-      └─(write)──► document ─┴─► evaluate ─(passed)──► deliver
-                                   │▲
-                                   └─(needs_revision_of)─┘
-    impact ─(pull_request_opened)─► notify ─► notify_post   (parallel branch)
+      ├─(answer)─► answer ─► answer_evaluate ─(passed)────► changelog
+      │                        ▲                        │
+      │                        └─(answer_needs_revision)┘
+      │                                                   ▼
+      └─(write)──► document ──┬─(documentation_passed)─► changelog ─► changelog_evaluate ──► deliver
+                             │                              │ ▲
+                             └─(escalated)──► deliver         └─(changelog_needs_revision)─┘
+    impact ─(none + release)─► changelog ─────────────────────┘
+    impact ─(pull_request_opened)─► notify ─► notify_post                 (parallel branch)
 
-Deviations from the plan, forced by strands-agents 1.52.0 behavior:
+Deviations from the plan, forced by strands-agents behavior and the durable
+page workflow:
 
-- Agent instances must be unique per node (``_validate_graph`` raises on
-  duplicates), so the writer agent is never pre-built: ``document`` is a
-  ``FanOutWriterNode`` holding a ``WriterFactory`` that yields a fresh agent
-  per task.
-- Hook providers attach via ``GraphBuilder.set_hook_providers`` before
-  ``build()``; ``Graph.add_hook`` only accepts bare callbacks.
-- Revise edges use ``needs_revision_of(node_id)`` — a shared
-  ``needs_revision`` condition would fire BOTH revise edges at once.
-- ``EvaluatorNode`` defaults to ``max_iterations=2``: with the plan's 3,
-  the worst case (4 upstream + 3×(generate+evaluate) + deliver = 11)
-  exceeds ``max_node_executions=10`` and delivery would never run.
-- ``document → evaluate`` is gated by the ``eval_ready`` condition, whose
-  true source for the writer path is the global review verdict: the edge
-  stays False while the fan-out draft is under correction and only fires
-  once ``review`` returns a ``clean`` verdict. ``generated`` is not used
-  here because a completed document must pass review before evaluation.
+- The legacy ``document → review → evaluate`` loop is replaced by one
+  ``DocumentationWorkflowNode``: it seeds a durable page workflow (one
+  write/evaluate pair per task, page revisions bounded at 3 attempts, a
+  cross-page reviewer inside the workflow) and reports a compact
+  :class:`DocumentationWorkflowResult`. Offline fixtures (``page_workflow``
+  omitted) fail fast instead of fabricating unsealed bytes.
+- ``answer_evaluate`` is the answer-quality gate (deterministic score +
+  rubric feedback + bounded revision loop). It replaces the shared
+  ``evaluate`` node; the page workflow owns all document-path evaluation.
+- Escalated pages (quality budget exhausted) settle the workflow with
+  ``passed=False, ready_for_review=True``; the ``document → deliver`` edge
+  then routes the change to the graph-level human ReviewGate, which
+  intercepts delivery until approved. The changelog is skipped on escalation
+  (there is no passable changelog gate for a settled-but-failed page).
+- The docs branch never runs ``deliver`` unless the page workflow settled the
+  pages (``documentation_delivery_ready``); the plain changelog path supplies
+  inline content and is unaffected.
+- Revise edges are scoped so each loop routes back to exactly its own
+  generator (``answer_needs_revision`` → answer only; the page workflow owns
+  document revisions internally).
 """
 
 from __future__ import annotations
@@ -48,20 +57,19 @@ from draftly.orchestration.graphs.tool_scoping import (
 from draftly.orchestration.hooks.audit import RunAuditLogger
 from draftly.orchestration.hooks.draft_generation import NextGenerationHook
 from draftly.orchestration.hooks.review_gate import ReviewGate
-from draftly.orchestration.nodes.evaluate import EvaluatorNode
 from draftly.orchestration.nodes.rubric_grader import (
     build_changelog_rubric_grader,
     build_docs_rubric_grader,
 )
 from draftly.orchestration.routing.conditions import (
+    answer_eval_passed,
+    answer_needs_revision,
     changelog_needs_revision,
     delivery_content_ready,
-    eval_passed,
-    eval_ready,
+    documentation_delivery_ready,
+    documentation_passed,
     generated_changelog,
     is_valid_surface,
-    needs_correction,
-    needs_revision_of,
     none_and_release,
     pull_request_opened,
     route_to_answer,
@@ -129,6 +137,7 @@ def build_documentation_graph(
     research_plan: Any = None,
     write_concurrency: int = 3,
     progress_sink: Any | None = None,
+    page_workflow: Any = None,
 ):
     """Build the unified Draftly Graph for documentation workflows.
 
@@ -140,6 +149,11 @@ def build_documentation_graph(
     creator of ``create_comment(repository, pull_request_number, body)``);
     when omitted the node lazily builds a ``GitHubClient`` at invoke time so
     the runner's installation context applies.
+
+    ``page_workflow`` (a ``PageWorkflowRepository``) enables the durable
+    page-scoped documentation workflow. When omitted the graph runs its nodes
+    offline — the ``document`` node reports a failed state rather than
+    fabricating unsealed bytes.
     """
     # Lazy imports break the import cycle content_graph ↔ documentation_graph
     # (surface graphs are directly importable regardless of whether the
@@ -159,10 +173,15 @@ def build_documentation_graph(
     from draftly.agents.support.answer_writer import build_answer_writer
     from draftly.app.composition.tools import filter_grounded_tools
     from draftly.integrations.strands.models import resolve_model_for_role
+    from draftly.orchestration.nodes.answer_quality import AnswerQualityNode
     from draftly.orchestration.nodes.changelog_evaluate import ChangelogEvaluatorNode
-    from draftly.orchestration.nodes.fan_out import FanOutWriterNode
     from draftly.orchestration.nodes.notify_post import NotifyPostNode
-    from draftly.orchestration.nodes.review import ReviewNode
+    from draftly.orchestration.page_workflow.handlers import (
+        CrossPageReviewHandler,
+        PageEvaluatorHandler,
+        PageWriterHandler,
+    )
+    from draftly.orchestration.page_workflow.node import DocumentationWorkflowNode
 
     reg = tools_registry
 
@@ -173,7 +192,7 @@ def build_documentation_graph(
     intelligence_model = resolve_model_for_role(model, "github_intelligence")
     delivery_model = resolve_model_for_role(model, "github_delivery")
     grader_model = resolve_model_for_role(model, "documentation_reviewer")
-    # The same role feeds both rubric grading and the global review node.
+    # The same role feeds both rubric grading and the cross-page reviewer.
     reviewer_model = resolve_model_for_role(model, "documentation_reviewer")
 
     # Mandatory rubric graders: LLM feedback enriches the deterministic docs
@@ -308,17 +327,10 @@ def build_documentation_graph(
         runtime=steering_runtime,
         builder=writer_builder,
     )
-    # Single write path: the fan-out node yields a fresh writer Agent per task
+    # Single write path: the page workflow yields a fresh writer Agent per task
     # (the SDK rejects duplicate executors, so writers are never pre-built).
-    document_node = FanOutWriterNode(
-        "document",
-        writer_factory=writer_factory,
-        write_concurrency=write_concurrency,
-        drafts_repo=drafts_repo,
-        progress_sink=progress_sink,
-    )
-    # Global reviewer: one isolated agent per invocation reads compact
-    # per-page summaries and returns a ReviewVerdict (clean | correct +
+    # Reviewer: one isolated agent per cross-page review invocation reads
+    # compact per-page summaries and returns a ReviewVerdict (clean | correct +
     # targeted per-task corrections). Built lazily like the writer so the SDK
     # never sees a duplicate executor.
     reviewer_builder = getattr(registry, "review_agent", None) or build_review_agent
@@ -330,6 +342,37 @@ def build_documentation_graph(
             runtime=steering_runtime,
             agent_id="documentation.reviewer",
             node_id="review",
+        )
+
+    if page_workflow is not None:
+        document_node = DocumentationWorkflowNode(
+            "document",
+            repository=page_workflow,
+            handlers={
+                "write": PageWriterHandler(
+                    writer_factory=writer_factory,
+                    drafts_repo=drafts_repo,
+                    page_repository=page_workflow,
+                ),
+                "evaluate": PageEvaluatorHandler(
+                    rubric_grader=docs_rubric_grader,
+                    drafts_repo=drafts_repo,
+                    page_repository=page_workflow,
+                ),
+                "cross_page_review": CrossPageReviewHandler(
+                    reviewer_factory=_reviewer_factory,
+                    drafts_repo=drafts_repo,
+                    page_repository=page_workflow,
+                ),
+            },
+            write_concurrency=write_concurrency,
+            progress_sink=progress_sink,
+        )
+    else:
+        # Offline fixtures: no durable workflow. The node fails fast rather
+        # than reporting phantom sealed pages.
+        document_node = DocumentationWorkflowNode(
+            "document", repository=None, handlers=None
         )
 
     delivery_builder = getattr(registry, "delivery_agent", None) or build_delivery_agent
@@ -360,6 +403,11 @@ def build_documentation_graph(
         "changelog_evaluate",
         max_iterations=evaluator_max_iterations,
         rubric_grader=changelog_rubric_grader,
+    )
+    answer_quality = AnswerQualityNode(
+        "answer_evaluate",
+        max_iterations=evaluator_max_iterations,
+        rubric_grader=docs_rubric_grader,
     )
 
     builder = GraphBuilder()
@@ -394,11 +442,15 @@ def build_documentation_graph(
     if not research_failed:
         builder.add_edge("research", "impact")
 
-    # Generation fan-out (mutually exclusive conditions)
+    # Generation (mutually exclusive conditions)
     builder.add_node(answer_agent, "answer")
     builder.add_node(document_node, "document")
     builder.add_edge("impact", "answer", condition=route_to_answer)
     builder.add_edge("impact", "document", condition=route_to_write)
+    # The research evidence feeds the page workflow's deterministic planner
+    # (scoped evidence per task path). Gated like the impact edge so the work
+    # is only ever scheduled on a write.
+    builder.add_edge("research", "document", condition=route_to_write)
 
     # PR notify: a parallel branch off impact. The notify LLM composes the
     # comment (draft-only, no tools); the deterministic notify_post node posts
@@ -413,81 +465,54 @@ def build_documentation_graph(
     builder.add_edge("impact", "notify", condition=pull_request_opened)
     builder.add_edge("notify", "notify_post")
 
-    # Evaluation
-    evaluator = EvaluatorNode(
-        "evaluate",
-        max_iterations=evaluator_max_iterations,
-        rubric_grader=docs_rubric_grader,
-        drafts_repo=drafts_repo,
-    )
-    builder.add_node(evaluator, "evaluate")
-    builder.add_edge("answer", "evaluate", condition=eval_ready)
-    # Content-supply gate for the writer path: eval_ready fires only once the
-    # review node returns a clean verdict, so evaluation never runs
-    # mid-correction (a completed document alone never opens this edge).
-    builder.add_edge("document", "evaluate", condition=eval_ready)
-    # The generation edges make evaluation ready; these conditional edges also
-    # supply the completed context/research payloads as evaluator dependencies.
-    # They are false when context/research complete (before a writer exists),
-    # so they cannot trigger evaluation prematurely.
-    builder.add_edge("context", "evaluate", condition=eval_ready)
-    builder.add_edge("research", "evaluate", condition=eval_ready)
+    # Answer quality gate with a bounded revision loop. The unconditional
+    # answer edge schedules the gate; research supplies the evidence the
+    # deterministic score needs (gated so it cannot fire before a write routes).
+    builder.add_node(answer_quality, "answer_evaluate")
+    builder.add_edge("answer", "answer_evaluate")
+    builder.add_edge("research", "answer_evaluate", condition=route_to_answer)
+    builder.add_edge("answer_evaluate", "answer", condition=answer_needs_revision)
 
-    # Revise loop — scoped to whichever generation node actually ran
-    builder.add_edge("evaluate", "answer", condition=needs_revision_of("answer"))
-    builder.add_edge("evaluate", "document", condition=needs_revision_of("document"))
-
-    # Global targeted review: fan-out → review → (clean → evaluate |
-    # correct → re-dispatch corrected tasks). The review node forwards the
-    # approved plan payload so evaluate/deliver still receive the fan-out
-    # document via the review edges. No changelog ingest here: evaluate still
-    # gates changelog via eval_passed.
-    review_node = ReviewNode(
-        "review", reviewer_factory=_reviewer_factory, drafts_repo=drafts_repo
-    )
-    builder.add_node(review_node, "review")
-    builder.add_edge("document", "review")
-    builder.add_edge("review", "evaluate", condition=eval_ready)
-    builder.add_edge("review", "document", condition=needs_correction)
-
-    # Delivery
+    # Delivery (the graph-level ReviewGate intercepts before invocation)
     builder.add_node(delivery_agent, "deliver")
 
     # Changelog generation (runs for every release event)
     builder.add_node(changelog_agent, "changelog")
     builder.add_node(changelog_evaluator, "changelog_evaluate")
 
-    # Normal path: docs evaluated → changelog → changelog evaluated → deliver
-    builder.add_edge("evaluate", "changelog", condition=eval_passed)
-    builder.add_edge("changelog", "changelog_evaluate", condition=generated_changelog)
+    # Normal paths: docs/answer evaluated → changelog → changelog evaluated →
+    # deliver. The answer path generates the changelog via its own quality
+    # gate (matching the legacy ``evaluate → changelog`` behavior); the docs
+    # path only releases a changelog when every page passed (escalated runs
+    # skip the changelog and route the change to the human gate directly).
+    builder.add_edge("document", "changelog", condition=documentation_passed)
+    builder.add_edge("answer_evaluate", "changelog", condition=answer_eval_passed)
 
     # No-docs release path: impact none + release → changelog (skips writer/evaluate)
     builder.add_edge("impact", "changelog", condition=none_and_release)
 
     # Changelog revision loop
+    builder.add_edge("changelog", "changelog_evaluate", condition=generated_changelog)
     builder.add_edge("changelog_evaluate", "changelog", condition=changelog_needs_revision)
 
-    # Changelog passes → deliver. Delivery content edges (update/create/... →
-    # deliver below) only feed the prompt; this edge schedules the node and is
-    # therefore also the drafts gate: when a docs writer ran, delivery waits
-    # for a sealed draft generation (has_drafts) so the deliver agent never
-    # opens a PR for bytes that were never persisted. Offline fixtures
-    # (drafts_repo=None) omit has_drafts and schedule as before.
+    # Changelog passes → deliver. Delivery content edges (document/answer/
+    # changelog → deliver below) only feed the prompt; this edge schedules the
+    # node and is therefore also the docs gate: when the page workflow ran,
+    # delivery waits for a settled pass (documentation_passed) so the deliver
+    # agent never opens a PR for pages that never sealed.
     builder.add_edge("changelog_evaluate", "deliver", condition=delivery_content_ready)
 
     # Delivery content edges: the deliver prompt is built from the outputs of
     # nodes with a directed edge into it (see Graph._build_node_input). Without
-    # these edges the approved DocChangePlan body and changelog markdown never
-    # reach the delivery agent. They are gated by delivery_content_ready so
-    # scheduling (which fires on ANY freshly-satisfied in-edge) cannot trigger
-    # deliver early — each edge is False when its writer/changelog completes,
-    # and only True once the changelog gate has passed, when the plain
-    # changelog_evaluate → deliver edge above schedules the node. The review
-    # edge forwards the approved plan metadata (document keys) to the prompt.
-    builder.add_edge("document", "deliver", condition=delivery_content_ready)
+    # these edges the approved page workflow result and changelog markdown
+    # never reach the delivery agent. They are gated so scheduling (which fires
+    # on ANY freshly-satisfied in-edge) cannot trigger deliver early — each
+    # edge is False when its writer/changelog completes, and only True once the
+    # changelog gate has passed or the page workflow escalated to human
+    # review, when the real scheduling edges run the node.
+    builder.add_edge("document", "deliver", condition=documentation_delivery_ready)
     builder.add_edge("answer", "deliver", condition=delivery_content_ready)
     builder.add_edge("changelog", "deliver", condition=delivery_content_ready)
-    builder.add_edge("review", "deliver", condition=delivery_content_ready)
 
     # Safety rails
     builder.set_max_node_executions(max_node_executions)

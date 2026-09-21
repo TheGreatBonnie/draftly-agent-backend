@@ -1,14 +1,28 @@
-"""Documentation graph end-to-end with StubModel (plan §6.9 #1)."""
+"""Documentation graph end-to-end with StubModel (plan §6.9 #1).
+
+The docs branch is one durable ``DocumentationWorkflowNode`` (page-scoped
+write/evaluate/review inside the workflow) feeding ``changelog`` /
+``changelog_evaluate`` / ``deliver``. The former ``document → review →
+evaluate`` loop nodes are gone; the deterministic quality gate lives inside
+the page workflow via ``PageEvaluatorHandler``.
+"""
 
 from __future__ import annotations
+
+from types import SimpleNamespace
 
 from strands.multiagent.base import Status
 
 from draftly.integrations.strands.graph import build_graph_for_run
-from tests.graph.conftest import PR_TASK, RELEASE_TASK, stub_model
+from tests.graph.conftest import (
+    PR_TASK,
+    RELEASE_TASK,
+    docs_model,
+    docs_workflow_wiring,
+    two_page_model,
+)
 from tests.stub_model import StubModel
 
-PLAN_CONTENT_MARKER = "widgets docs/widgets.md widgets"
 PLAN_PATH_MARKER = "docs/widgets.md"
 CHANGELOG_MARKER = "## [v2.0.0] - 2026-09-04"
 
@@ -65,16 +79,20 @@ class RecordingStubModel(StubModel):
 async def test_full_pipeline_with_quality_gate(
     model, tools, tmp_sessions, comment_factory
 ) -> None:
-    """A grounded change plan passes evaluation before delivery; a PR notify
-    comment (draft-then-post) runs in parallel off impact."""
+    """A grounded change plan passes the page workflow, gets a changelog, and
+    is delivered; the PR notify branch (draft-then-post) runs in parallel."""
     factory, commenter = comment_factory
+    wiring = docs_workflow_wiring()
     graph = build_graph_for_run(
         "e2e-1",
         surface="pull_request",
         tools_registry=tools,
-        model=model,
+        model=docs_model(),
         storage_dir=tmp_sessions,
         comment_factory=factory,
+        page_workflow=wiring["page_workflow"],
+        drafts_repo=wiring["drafts_repo"],
+        agents=wiring["agents"],
     )
 
     result = await graph.invoke_async(
@@ -87,15 +105,13 @@ async def test_full_pipeline_with_quality_gate(
     assert order[0] == "classify"
     assert order[-1] == "deliver"
     assert order.count("document") == 1
-    assert order.count("evaluate") == 1
-    # generate → evaluate → changelog → changelog gate → deliver keep their
-    # relative order (the strict list prefix/order changed because notify runs
-    # in parallel from impact, so assert membership + relative order instead)
-    assert order.index("impact") < order.index("document") < order.index("evaluate")
-    assert order.index("evaluate") < order.index("changelog")
+    # document → changelog → changelog gate → deliver keep their relative
+    # order (the strict list prefix shifted because notify runs in parallel
+    # from impact, so assert membership + relative order instead)
+    assert order.index("impact") < order.index("document") < order.index("changelog")
     assert order.index("changelog") < order.index("changelog_evaluate")
     assert order.index("changelog_evaluate") < order.index("deliver")
-    # the notify branch run in parallel and posted the scripted comment once
+    # the notify branch ran in parallel and posted the scripted comment once
     assert order.index("impact") < order.index("notify") < order.index("notify_post")
     assert commenter.calls == [
         (
@@ -106,11 +122,63 @@ async def test_full_pipeline_with_quality_gate(
     ]
     # the wrong generation path never ran
     assert "answer" not in order
+    assert "answer_evaluate" not in order
+
+
+async def test_graph_runs_document_workflow_node_not_legacy_loop(
+    model, tools, tmp_sessions, comment_factory
+) -> None:
+    """The docs graph wires one durable DocumentationWorkflowNode; the legacy
+    update/create writer split, the shared evaluate node, and the review node
+    are gone (evaluation + cross-page review run inside the workflow)."""
+    from draftly.orchestration.page_workflow.node import DocumentationWorkflowNode
+
+    factory, _ = comment_factory
+    wiring = docs_workflow_wiring()
+    graph = build_graph_for_run(
+        "loop-gone-1",
+        surface="pull_request",
+        tools_registry=tools,
+        model=docs_model(),
+        storage_dir=tmp_sessions,
+        comment_factory=factory,
+        page_workflow=wiring["page_workflow"],
+        drafts_repo=wiring["drafts_repo"],
+        agents=wiring["agents"],
+    )
+
+    assert isinstance(graph.nodes["document"].executor, DocumentationWorkflowNode)
+    for node in ("update", "create", "review", "evaluate"):
+        assert node not in graph.nodes
+
+    result = await graph.invoke_async(
+        PR_TASK,
+        invocation_state={"run_id": "loop-gone-1", "review_policy": "never"},
+    )
+    assert result.status == Status.COMPLETED
+    order = [n.node_id for n in result.execution_order]
+    assert order.count("document") == 1
+    assert "changelog_evaluate" in order
+    assert order.index("changelog_evaluate") < order.index("deliver")
+
+
+def test_graph_builds_single_document_workflow_node(model, tools, tmp_sessions) -> None:
+    """The write path is the single ``document`` node; update/create are gone."""
+    from draftly.orchestration.page_workflow.node import DocumentationWorkflowNode
+
+    graph = build_graph_for_run(
+        "e2e-4",
+        surface="pull_request",
+        tools_registry=tools,
+        model=model,
+        storage_dir=tmp_sessions,
+    )
+    assert isinstance(graph.nodes["document"].executor, DocumentationWorkflowNode)
+    assert "update" not in graph.nodes
+    assert "create" not in graph.nodes
 
 
 def test_graph_uses_injected_agent_factory_registry(model, tools, tmp_sessions) -> None:
-    from types import SimpleNamespace
-
     from draftly.agents.shared.classifier import build_classifier
 
     calls: list[object] = []
@@ -194,70 +262,68 @@ async def test_impact_none_skips_generation_and_delivery(
             "Draftly will generate docs for this PR:\n- docs/widgets.md",
         )
     ]
-    for node in ("answer", "document", "evaluate", "deliver"):
+    for node in ("answer", "answer_evaluate", "document", "changelog", "deliver"):
         assert node not in order
 
 
-async def test_graph_builds_single_document_fanout_writer_node(
-    model, tools, tmp_sessions
-) -> None:
-    """The write path is a single ``document`` fan-out node; the update/create
-    node split is gone."""
-    from draftly.orchestration.nodes.fan_out import FanOutWriterNode
-
-    graph = build_graph_for_run(
-        "e2e-4",
-        surface="pull_request",
-        tools_registry=tools,
-        model=model,
-        storage_dir=tmp_sessions,
-    )
-    assert isinstance(graph.nodes["document"].executor, FanOutWriterNode)
-    assert "update" not in graph.nodes
-    assert "create" not in graph.nodes
-
-
-def test_graph_uses_document_fanout_node_not_update_create(model, tools, tmp_sessions) -> None:
-    """The docs graph wires the document fan-out node and never builds the
-    legacy update/create writer nodes."""
-    graph = build_graph_for_run(
-        "fanout-node-1",
-        surface="pull_request",
-        tools_registry=tools,
-        model=model,
-        storage_dir=tmp_sessions,
-    )
-
-    assert "document" in graph.nodes
-    assert "update" not in graph.nodes
-    assert "create" not in graph.nodes
-
-
-async def test_graph_runs_review_between_document_and_evaluate(
+async def test_document_without_workflow_fails_without_delivery(
     model, tools, tmp_sessions, comment_factory
 ) -> None:
-    """The docs graph wires a ``review`` node between the fan-out writer and
-    evaluation: a completed document alone never opens the evaluation gate —
-    the review verdict (``eval_ready``) does, so evaluation stays false
-    while the writer is mid-correction."""
+    """Offline fixtures (no page_workflow) fail the document node fast instead
+    of fabricating unsealed pages: the graph never reaches delivery."""
     factory, _ = comment_factory
     graph = build_graph_for_run(
-        "review-wired-1",
+        "offline-doc-1",
         surface="pull_request",
         tools_registry=tools,
         model=model,
         storage_dir=tmp_sessions,
         comment_factory=factory,
     )
-    assert "review" in graph.nodes
 
     result = await graph.invoke_async(
         PR_TASK,
-        invocation_state={"run_id": "review-wired-1", "review_policy": "never"},
+        invocation_state={"run_id": "offline-doc-1", "review_policy": "never"},
     )
+
+    assert result.status == Status.FAILED
+    order = [n.node_id for n in result.execution_order]
+    assert "document" in order
+    assert "deliver" not in order
+
+
+async def test_document_escalation_routes_to_human_review_without_changelog(
+    model, tools, tmp_sessions, comment_factory
+) -> None:
+    """Impact tasks without page-scoped evidence settle the page as
+    AWAITING_HUMAN_REVIEW: the workflow reports passed=False ready_for_review,
+    the docs branch skips the changelog, and the change routes to the graph's
+    delivery gate (deliver itself runs under review_policy never)."""
+    factory, _ = comment_factory
+    wiring = docs_workflow_wiring()
+    graph = build_graph_for_run(
+        "escalate-1",
+        surface="pull_request",
+        tools_registry=tools,
+        model=model,
+        storage_dir=tmp_sessions,
+        comment_factory=factory,
+        page_workflow=wiring["page_workflow"],
+        drafts_repo=wiring["drafts_repo"],
+        agents=wiring["agents"],
+    )
+
+    result = await graph.invoke_async(
+        PR_TASK,
+        invocation_state={"run_id": "escalate-1", "review_policy": "never"},
+    )
+
     assert result.status == Status.COMPLETED
     order = [n.node_id for n in result.execution_order]
-    assert order.index("document") < order.index("review") < order.index("evaluate")
+    assert order.count("document") == 1
+    assert "changelog" not in order
+    assert "changelog_evaluate" not in order
+    assert order.index("document") < order.index("deliver")
 
 
 def test_writer_tools_exclude_mutation_and_delivery(tools) -> None:
@@ -289,24 +355,28 @@ def test_writer_tools_exclude_mutation_and_delivery(tools) -> None:
     assert {"read_file", "git_diff", "git_status"} <= names
 
 
-async def test_writer_draft_tools_appended_only_to_doc_authoring_node(
+def test_writer_draft_tools_appended_only_to_doc_authoring_node(
     model, tools, tmp_sessions
 ) -> None:
     """The three draft persistence tools (start_draft/append_chunk/
     finalize_draft) are appended ONLY to the docs writer factory behind the
-    document fan-out node; the answer/changelog writers and the deliver agent
-    must not author into the store."""
+    page workflow; the answer/changelog writers and the deliver agent must not
+    author into the store."""
+    wiring = docs_workflow_wiring()
     graph = build_graph_for_run(
         "draft-tools-1",
         surface="pull_request",
         tools_registry=tools,
         model=model,
         storage_dir=tmp_sessions,
+        page_workflow=wiring["page_workflow"],
+        drafts_repo=wiring["drafts_repo"],
+        agents=wiring["agents"],
     )
     draft_tools = {"start_draft", "append_chunk", "finalize_draft"}
     doc_node = graph.nodes["document"].executor
-    assert draft_tools <= _tool_names(doc_node._factory.tools), (
-        "document writer factory missing draft tools"
+    assert draft_tools <= _tool_names(doc_node.handlers["write"].writer_factory.tools), (
+        "page-workflow writer factory missing draft tools"
     )
     for node_id in ("answer", "changelog", "deliver"):
         assert not draft_tools & set(graph.nodes[node_id].executor.tool_names), (
@@ -316,8 +386,7 @@ async def test_writer_draft_tools_appended_only_to_doc_authoring_node(
 
 def test_deliver_agent_gets_drafted_docs_read_tool(model, tools, tmp_sessions) -> None:
     """The delivery (github) agent must be able to fetch store bodies via the
-    read-only get_drafted_docs tool; writer nodes never see it (they author
-    into the store, they don't read it)."""
+    read-only get_drafted_docs tool; the answer writer never sees it."""
     graph = build_graph_for_run(
         "deliver-tools-1",
         surface="pull_request",
@@ -327,16 +396,15 @@ def test_deliver_agent_gets_drafted_docs_read_tool(model, tools, tmp_sessions) -
     )
     deliver_names = set(graph.nodes["deliver"].executor.tool_names)
     assert "get_drafted_docs" in deliver_names
-    doc_node = graph.nodes["document"].executor
-    assert "get_drafted_docs" not in _tool_names(doc_node._factory.tools)
     assert "get_drafted_docs" not in set(graph.nodes["answer"].executor.tool_names)
+    changelog_names = set(graph.nodes["changelog"].executor.tool_names)
+    assert "get_drafted_docs" not in changelog_names
 
 
 def test_draft_generation_hook_registered_as_provider(
     model, tools, tmp_sessions, monkeypatch
 ) -> None:
-    """The drafts-seeding NextGenerationHook is wired into the docs graph build,
-    so the runner's seed flows into scope for every iterative writer pass."""
+    """The drafts-seeding NextGenerationHook is wired into the docs graph build."""
     import draftly.orchestration.graphs.documentation_graph as docs_graph
 
     constructed: list = []
@@ -358,59 +426,58 @@ def test_draft_generation_hook_registered_as_provider(
     assert constructed, "NextGenerationHook must be instantiated by the graph build"
 
 
-async def test_deliver_gate_blocks_delivery_without_sealed_drafts(
-    model, tools, tmp_sessions, comment_factory, empty_drafts
+async def test_revision_loop_retries_only_failed_page(
+    tools, tmp_sessions, comment_factory
 ) -> None:
-    """Injecting a draft store that never sealed a generation keeps the deliver
-    node from running: the changelog_evaluate → deliver edge requires
-    ``has_drafts`` from the evaluator (the sealed revision check)."""
+    """The full revise loop targets only evaluate-failed pages: page b fails
+    the deterministic gate (content 'TODO'), the page workflow schedules ONE
+    revision for docs/b.md, docs/a.md is untouched, the cross-page reviewer
+    runs once over the settled set, then changelog → deliver completes."""
     factory, _ = comment_factory
+    wiring = docs_workflow_wiring(
+        topics={"docs/a.md": "alpha", "docs/b.md": "beta"},
+        fail_versions={"docs/b.md": {1}},
+        with_reviewer=True,
+    )
     graph = build_graph_for_run(
-        "deliver-blocked",
+        "revise-subset",
         surface="pull_request",
         tools_registry=tools,
-        model=model,
+        model=two_page_model(),
         storage_dir=tmp_sessions,
         comment_factory=factory,
-        drafts_repo=empty_drafts,
+        page_workflow=wiring["page_workflow"],
+        drafts_repo=wiring["drafts_repo"],
+        agents=wiring["agents"],
     )
 
     result = await graph.invoke_async(
         PR_TASK,
-        invocation_state={"run_id": "deliver-blocked", "review_policy": "never"},
+        invocation_state={"run_id": "revise-subset", "review_policy": "never"},
     )
 
     assert result.status == Status.COMPLETED
     order = [n.node_id for n in result.execution_order]
-    assert "deliver" not in order, "delivery must wait for a sealed draft generation"
-    assert empty_drafts.calls, "evaluator must consult the draft store"
-
-
-async def test_deliver_gate_runs_with_sealed_drafts(
-    model, tools, tmp_sessions, comment_factory, sealed_drafts
-) -> None:
-    """A sealed store generation unblocks delivery; the changelog gate still
-    determines ordering (deliver never fires before changelog evaluation)."""
-    factory, _ = comment_factory
-    graph = build_graph_for_run(
-        "deliver-gated",
-        surface="pull_request",
-        tools_registry=tools,
-        model=model,
-        storage_dir=tmp_sessions,
-        comment_factory=factory,
-        drafts_repo=sealed_drafts,
-    )
-
-    result = await graph.invoke_async(
-        PR_TASK,
-        invocation_state={"run_id": "deliver-gated", "review_policy": "never"},
-    )
-
-    assert result.status == Status.COMPLETED
-    order = [n.node_id for n in result.execution_order]
-    assert "deliver" in order, "sealed drafts must unblock delivery"
+    assert order.count("document") == 1
     assert order.index("changelog_evaluate") < order.index("deliver")
+
+    sealed = sorted(wiring["writer_recorder"], key=lambda row: (row[0], row[1]))
+    assert [row[:2] for row in sealed] == [
+        ("docs/a.md", 1),
+        ("docs/b.md", 1),
+        ("docs/b.md", 2),
+    ], wiring["writer_recorder"]
+    first_batch = [prompt for (_, version, prompt) in sealed if version == 1]
+    assert any("Path: docs/a.md" in prompt for prompt in first_batch)
+    assert any("Path: docs/b.md" in prompt for prompt in first_batch)
+    revisions = [prompt for (_, version, prompt) in sealed if version == 2]
+    assert len(revisions) == 1
+    assert "Revise documentation task: docs/b.md" in revisions[0]
+    assert "Path: docs/b.md" in revisions[0]
+    assert "Path: docs/a.md" not in revisions[0]
+
+    assert wiring["review_recorder"], "cross-page reviewer never ran"
+    assert len(wiring["review_recorder"]) == 1
 
 
 def test_read_only_graph_agents_exclude_mutation_tools(model, tools, tmp_sessions) -> None:
@@ -443,15 +510,23 @@ def test_read_only_graph_agents_exclude_mutation_tools(model, tools, tmp_session
     assert _scope_read_only_tools(tools.documentation_engineer)
 
 
-async def test_release_event_includes_changelog_in_order(model, tools, tmp_sessions) -> None:
-    """Release event: classify → context → research → impact → document
-    → evaluate → changelog → changelog_evaluate → deliver."""
+async def test_release_event_includes_changelog_in_order(
+    tools, tmp_sessions, comment_factory
+) -> None:
+    """Release event: document (page workflow passes) → changelog →
+    changelog_evaluate → deliver; no PR notify branch on releases."""
+    factory, _ = comment_factory
+    wiring = docs_workflow_wiring()
     graph = build_graph_for_run(
         "e2e-release-1",
         surface="pull_request",  # releases route to pull_request surface
         tools_registry=tools,
-        model=model,
+        model=docs_model(),
         storage_dir=tmp_sessions,
+        comment_factory=factory,
+        page_workflow=wiring["page_workflow"],
+        drafts_repo=wiring["drafts_repo"],
+        agents=wiring["agents"],
     )
 
     result = await graph.invoke_async(
@@ -461,14 +536,11 @@ async def test_release_event_includes_changelog_in_order(model, tools, tmp_sessi
 
     assert result.status == Status.COMPLETED
     order = [n.node_id for n in result.execution_order]
-    # changelog and changelog_evaluate must appear after evaluate, before deliver
-    eval_idx = order.index("evaluate")
-    deliver_idx = order.index("deliver")
-    assert "changelog" in order
-    assert "changelog_evaluate" in order
+    doc_idx = order.index("document")
     changelog_idx = order.index("changelog")
     changelog_eval_idx = order.index("changelog_evaluate")
-    assert eval_idx < changelog_idx < changelog_eval_idx < deliver_idx
+    deliver_idx = order.index("deliver")
+    assert doc_idx < changelog_idx < changelog_eval_idx < deliver_idx
     # PR notify is PR-opened only: releases must not draft or post
     assert "notify" not in order
     assert "notify_post" not in order
@@ -501,7 +573,7 @@ async def test_none_action_release_routes_to_changelog(model, tools, tmp_session
     order = [n.node_id for n in result.execution_order]
     assert "impact" in order
     # No writer nodes
-    for node in ("answer", "document", "evaluate"):
+    for node in ("answer", "answer_evaluate", "document"):
         assert node not in order
     # Changelog still runs
     assert "changelog" in order
@@ -526,8 +598,6 @@ def test_github_grounding_gives_context_and_swarm_github_api_tools(
     """Real-PR runs (github grounding) must reason over the GitHub API, not a
     nonexistent local checkout, so context + swarm get the read-only GitHub
     tools instead of the repository checkout tools."""
-    from types import SimpleNamespace
-
     from draftly.agents.documentation.context import build_doc_context_agent
     from draftly.agents.documentation.research_swarm import build_doc_research_swarm
 
@@ -588,8 +658,6 @@ def test_github_grounding_impact_agent_uses_api_repo_tools(
 ) -> None:
     """Impact (github grounding) must analyze the API repo, not walk a
     nonexistent local checkout: no code_search, and no read-only local fs/git."""
-    from types import SimpleNamespace
-
     from draftly.agents.documentation.analyzer import build_impact_agent
 
     captured: dict = {}
@@ -632,8 +700,6 @@ def test_default_local_grounding_keeps_checkout_tools(
 ) -> None:
     """Default (local-first) runs keep the repository checkout tools and no
     GitHub API tools — the offline evaluation harness depends on this."""
-    from types import SimpleNamespace
-
     from draftly.agents.documentation.context import build_doc_context_agent
     from draftly.agents.documentation.research_swarm import build_doc_research_swarm
 
@@ -689,17 +755,15 @@ def test_documentation_graph_timeout_budget_covers_a_delivered_run(
 
 
 async def test_memory_grounded_context_reaches_delivery(
-    model,
     tools,
     tmp_sessions,
     comment_factory,
 ) -> None:
-    """Regression: memory-wrapping the context node dropped its EvidenceBundle
-    (an empty MultiAgentResult), so evaluation never saw evidence and the run
-    looped in revision until the timeout killed it before delivery."""
-    from types import SimpleNamespace
-
+    """Regression: memory-wrapping the context node dropped its EvidenceBundle,
+    so evaluation never saw evidence. The page workflow scopes evidence per
+    task, so a grounded two-page run still reaches delivery."""
     factory, _ = comment_factory
+    wiring = docs_workflow_wiring()
 
     class Bundle:
         async def knowledge(self, query: str, *, org_id: str | None = None):
@@ -718,7 +782,7 @@ async def test_memory_grounded_context_reaches_delivery(
         "memory-grounded-1",
         surface="pull_request",
         tools_registry=tools,
-        model=model,
+        model=docs_model(),
         storage_dir=tmp_sessions,
         comment_factory=factory,
         memory=SimpleNamespace(
@@ -726,6 +790,9 @@ async def test_memory_grounded_context_reaches_delivery(
             episodes=Bundle().episodes,
             procedures=Bundle().procedures,
         ),
+        page_workflow=wiring["page_workflow"],
+        drafts_repo=wiring["drafts_repo"],
+        agents=wiring["agents"],
     )
 
     result = await graph.invoke_async(
@@ -737,23 +804,28 @@ async def test_memory_grounded_context_reaches_delivery(
     order = [n.node_id for n in result.execution_order]
     assert order[-1] == "deliver"
     assert order.count("document") == 1
-    assert order.count("evaluate") == 1
     assert "notify_post" in order
 
 
 def test_documentation_graph_wires_required_rubric_graders(model, tools, tmp_sessions) -> None:
-    """The rubric grader is mandatory production wiring: both the docs
-    evaluator and the changelog evaluator are built with a non-None grader."""
+    """The rubric grader is mandatory production wiring: the page-workflow
+    evaluator and the changelog evaluator are both built with a non-None
+    grader."""
+    wiring = docs_workflow_wiring()
     graph = build_graph_for_run(
         "grader-required-1",
         surface="pull_request",
         tools_registry=tools,
         model=model,
         storage_dir=tmp_sessions,
+        page_workflow=wiring["page_workflow"],
+        drafts_repo=wiring["drafts_repo"],
+        agents=wiring["agents"],
     )
 
-    evaluator = graph.nodes["evaluate"].executor
-    assert evaluator.rubric_grader is not None
+    document_node = graph.nodes["document"].executor
+    page_evaluator = document_node.handlers["evaluate"]
+    assert page_evaluator.rubric_grader is not None
 
     changelog_evaluator = graph.nodes["changelog_evaluate"].executor
     assert changelog_evaluator.rubric_grader is not None
@@ -764,19 +836,14 @@ async def test_deliver_prompt_contains_approved_plan_and_changelog(
 ) -> None:
     """The delivered content must actually reach the delivery agent's prompt.
 
-    Regression: update/create/answer/changelog results are only passed to the
-    deliver node as prompt input if a directed edge exists between the two.
-    Without them the delivery agent only sees the bare changelog_evaluate
-    verdict, so the approved DocChangePlan metadata (``files[].path``) and the
-    changelog markdown never appear in the prompt. File bodies are no longer
-    inline: the deliver agent fetches them from the draft store via
-    ``get_drafted_docs`` (Task 7), so this asserts the plan metadata reaches
-    the prompt.
+    The page workflow result (``files[].path``) and the changelog markdown must
+    both appear in the delivery prompt. File bodies are no longer inline: the
+    deliver agent fetches them from the draft store via ``get_drafted_docs``
+    (Task 7), so this asserts the plan metadata reaches the prompt.
     """
     factory, _ = comment_factory
-    recording = RecordingStubModel(
-        structured_outputs=stub_model()._structured_outputs
-    )
+    wiring = docs_workflow_wiring()
+    recording = RecordingStubModel(structured_outputs=docs_model()._structured_outputs)
     graph = build_graph_for_run(
         "deliver-content-1",
         surface="pull_request",
@@ -784,6 +851,9 @@ async def test_deliver_prompt_contains_approved_plan_and_changelog(
         model=recording,
         storage_dir=tmp_sessions,
         comment_factory=factory,
+        page_workflow=wiring["page_workflow"],
+        drafts_repo=wiring["drafts_repo"],
+        agents=wiring["agents"],
     )
 
     result = await graph.invoke_async(
@@ -800,58 +870,8 @@ async def test_deliver_prompt_contains_approved_plan_and_changelog(
     assert recording.delivery_prompts, "delivery agent never ran"
     prompt_text = "\n".join(recording.delivery_prompts)
     assert PLAN_PATH_MARKER in prompt_text, (
-        "approved DocChangePlan metadata (file paths) missing from deliver prompt"
+        "approved page-workflow files (paths) missing from deliver prompt"
     )
     assert CHANGELOG_MARKER in prompt_text, (
         "changelog markdown missing from deliver prompt"
     )
-
-
-async def test_revision_reloop_sends_only_failed_page(
-    tools, tmp_sessions, comment_factory, two_page_drafts
-) -> None:
-    """The full revise loop targets only evaluate-failed pages: page b fails
-    the deterministic gate, document re-runs, and the second execution
-    dispatches a single writer for docs/b.md (docs/a.md is untouched)."""
-    from types import SimpleNamespace
-
-    from tests.graph.conftest import _recording_writer_agent, two_page_model
-
-    recorder: list[str] = []
-    factory, _ = comment_factory
-    graph = build_graph_for_run(
-        "revise-subset",
-        surface="pull_request",
-        tools_registry=tools,
-        model=two_page_model(),
-        storage_dir=tmp_sessions,
-        comment_factory=factory,
-        drafts_repo=two_page_drafts,
-        agents=SimpleNamespace(writer_agent=_recording_writer_agent(recorder)),
-        # The pre-existing topology fires an extra evaluation on revisit (both
-        # the document -> evaluate eval_ready edge and the review -> evaluate
-        # edge fire once the prior round's review is clean) and re-generates the
-        # changelog after each escalated pass, so a failing revise loop needs
-        # more than the DEFAULT_MAX_NODE_EXECUTIONS=15 budget to reach deliver.
-        max_node_executions=30,
-    )
-
-    result = await graph.invoke_async(
-        PR_TASK,
-        invocation_state={"run_id": "revise-subset", "review_policy": "never"},
-    )
-
-    assert result.status == Status.COMPLETED
-    order = [n.node_id for n in result.execution_order]
-    assert order.count("document") == 2
-    # The revisits re-open the document/evaluate and review/evaluate eval_ready
-    # edges, so evaluation runs at least twice (a second round over the subset).
-    assert order.count("evaluate") >= 2
-
-    assert len(recorder) == 3, recorder
-    first_batch = recorder[:2]
-    assert "Path: docs/a.md" in first_batch[0]
-    assert "Path: docs/b.md" in first_batch[1]
-    second = recorder[2]
-    assert "Path: docs/b.md" in second
-    assert "Path: docs/a.md" not in second

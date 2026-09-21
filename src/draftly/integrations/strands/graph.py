@@ -84,6 +84,7 @@ def build_graph_for_run(
     drafts_repo: Any = None,
     research_plan: Any = None,
     progress_sink: Any | None = None,
+    page_workflow: Any = None,
     **graph_kwargs: Any,
 ):
     """Build the graph for ONE surface, with its own session manager.
@@ -126,6 +127,7 @@ def build_graph_for_run(
         graph_kwargs["drafts_repo"] = drafts_repo
         graph_kwargs["research_plan"] = research_plan
         graph_kwargs["progress_sink"] = progress_sink
+        graph_kwargs["page_workflow"] = page_workflow
 
     return builder(
         session_manager=manager,

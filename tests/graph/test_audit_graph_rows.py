@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from strands.multiagent.base import Status
 
 from draftly.integrations.strands.graph import build_graph_for_run
-from tests.graph.conftest import PR_TASK
+from tests.graph.conftest import PR_TASK, docs_workflow_wiring
 
 
 @dataclass
@@ -46,6 +46,7 @@ async def test_real_multiagent_graph_writes_audit_rows(
     factory, _commenter = comment_factory
     repo = _InMemoryAuditRepo()
     run_id = "audit-graph-rows-1"
+    wiring = docs_workflow_wiring()
 
     graph = build_graph_for_run(
         run_id,
@@ -55,6 +56,9 @@ async def test_real_multiagent_graph_writes_audit_rows(
         storage_dir=tmp_sessions,
         audit_repo=repo,
         comment_factory=factory,
+        page_workflow=wiring["page_workflow"],
+        drafts_repo=wiring["drafts_repo"],
+        agents=wiring["agents"],
     )
     assert graph._draftly_audit_hook is not None
 

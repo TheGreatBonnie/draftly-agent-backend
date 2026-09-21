@@ -13,6 +13,8 @@ import json
 from collections.abc import Callable
 from typing import Any
 
+import structlog
+
 from draftly.agents.documentation.draft_scope import (
     DraftScope,
     reset_draft_scope,
@@ -41,6 +43,8 @@ from draftly.orchestration.page_workflow.repository import (
     WorkflowTask,
 )
 from draftly.persistence.repositories.drafts import DraftFile, DraftRepository
+
+logger = structlog.get_logger(__name__)
 
 MAX_PAGE_EVALUATION_ATTEMPTS = MAX_AUTOMATIC_EVALUATION_ATTEMPTS
 CROSS_PAGE_REVIEW_TASK_ID = "cross-page-review"
@@ -333,13 +337,24 @@ class PageEvaluatorHandler:
             status = PageStatus.PASSED.value
             feedback = []
         else:
-            grade = await self.rubric_grader.grade(
-                draft=artifact.content,
-                evidence=normalized_evidence,
-            )
-            for reason in grade.reasons:
-                if reason and reason not in feedback:
-                    feedback.append(reason)
+            # Best-effort LLM judge (mirror of the legacy evaluate node): an
+            # unavailable or degraded model must not crash the workflow, so
+            # feedback degrades to the deterministic gate's own reasons.
+            try:
+                grade = await self.rubric_grader.grade(
+                    draft=artifact.content,
+                    evidence=normalized_evidence,
+                )
+                for reason in grade.reasons:
+                    if reason and reason not in feedback:
+                        feedback.append(reason)
+            except Exception:
+                logger.warning(
+                    "rubric_grader_failed",
+                    run_id=workflow_task.run_id,
+                    page_id=page.id,
+                    exc_info=True,
+                )
             status = (
                 PageStatus.AWAITING_HUMAN_REVIEW.value
                 if attempt >= self.max_attempts

@@ -161,20 +161,18 @@ def two_page_model() -> StubModel:
     return StubModel(structured_outputs=two_page)
 
 
-@pytest.fixture
-def two_page_drafts():
-    """A sealed store where docs/a.md passes evaluation and docs/b.md fails
-    (missing its topic, too short): per-file verdicts differ by path."""
-    return FakeDrafts(
-        [
-            {
-                "path": "docs/a.md",
-                "action": "update",
-                "content": "alpha is implemented and documented docs/a.md " * 20,
-            },
-            {"path": "docs/b.md", "action": "update", "content": "TODO"},
-        ]
-    )
+def docs_model() -> StubModel:
+    """StubModel whose single-page impact task carries its evidence, so the
+    deterministic page-quality gate passes without escalating to human review
+    (impact.tasks without per-page evidence settle the page as
+    AWAITING_HUMAN_REVIEW)."""
+    base = dict(stub_model()._structured_outputs)
+    impact = dict(base[ImpactAnalysis])
+    first = dict(impact["tasks"][0])
+    first["evidence"] = [{"id": "docs/widgets.md", "topic": "widgets"}]
+    impact["tasks"] = [first]
+    base[ImpactAnalysis] = impact
+    return StubModel(structured_outputs=base)
 
 
 @pytest.fixture
@@ -222,77 +220,100 @@ def tmp_sessions(tmp_path):
     return str(tmp_path / "sessions")
 
 
-class FakeDrafts:
-    """In-memory sealed draft store for graph e2e runs (bytes are never inline)."""
+def _sealing_writer_agent(drafts, recorder, *, topics=None, fail_versions=None):
+    """An agent builder that writes deterministic sealed drafts per page.
 
-    def __init__(self, revisions: list[dict] | None = None) -> None:
-        self.revisions = revisions or []
-        self.calls: list[str] = []
+    Each invocation seals exactly one artifact version into ``drafts`` (the
+    production page-workflow path: the node unpacks ``invocation_state`` into
+    ``page_id``/``artifact_version`` and the handler reads the result back from
+    the store). ``fail_versions={page_id: {version, ...}}`` produces failing
+    ``TODO`` content; everything else passes the deterministic quality gate.
+    """
 
-    async def get_latest(self, *, run_id: str) -> list:
-        self.calls.append(run_id)
-        return [
-            SimpleNamespace(path=r["path"], action=r["action"], content=r["content"])
-            for r in self.revisions
-        ]
-
-    async def get_path_latest(self, *, run_id: str, path: str) -> SimpleNamespace | None:
-        for r in self.revisions:
-            if r["path"] == path:
-                return SimpleNamespace(path=r["path"], action=r["action"], content=r["content"])
-        return None
-
-    async def next_generation(self, *, run_id: str) -> int:
-        return 1
-
-
-@pytest.fixture
-def sealed_drafts():
-    """A draft store already holding one sealed `docs/widgets.md` revision, so
-    the pipeline's writer *did* persist its bytes before delivery."""
-    return FakeDrafts(
-        [
-            {
-                "path": "docs/widgets.md",
-                "action": "update",
-                "content": "# Widgets\n\nwidgets docs/widgets.md " * 20,
-            }
-        ]
-    )
-
-
-@pytest.fixture
-def empty_drafts():
-    """A draft store with no sealed generation (writer never persisted)."""
-    return FakeDrafts([])
-
-
-def _recording_writer_agent(recorder: list[str]):
-    class _RecordingWriterAgent:
-        def __init__(self, recorder: list[str]) -> None:
-            self._recorder = recorder
+    class _SealingWriter:
+        def __init__(self) -> None:
+            self._drafts = drafts
 
         async def invoke_async(self, prompt: str, invocation_state=None, **kwargs):
-            self._recorder.append(prompt)
-            return two_page_model_plan()
+            state = invocation_state or {}
+            run_id = state["run_id"]
+            page_id = state["page_id"]
+            version = int(state["artifact_version"])
+            org_id = state.get("project_id")
+            recorder.append((page_id, version, prompt))
+            if fail_versions and version in fail_versions.get(page_id, set()):
+                content = "TODO"
+            else:
+                topic = (topics or {}).get(page_id)
+                if not topic:
+                    topic = page_id.rstrip(".md").rsplit("/", 1)[-1] or page_id
+                content = f"{topic} is implemented and documented as {page_id} " * 30
+            revision = await self._drafts.create_revision(
+                run_id=run_id,
+                org_id=org_id,
+                generation=version,
+                path=page_id,
+                action="update",
+                version=version,
+            )
+            await self._drafts.append_chunk(revision.id, content)
+            await self._drafts.finalize(revision.id)
+            return None
 
     def build(model, tools, runtime=None, agent_id=None, node_id=None):
-        return _RecordingWriterAgent(recorder)
+        del model, tools, runtime, agent_id, node_id
+        return _SealingWriter()
 
     return build
 
 
-def two_page_model_plan() -> DocChangePlan:
-    return DocChangePlan(
-        repository="acme/api",
-        branch="docs/fix",
-        commit_message="docs: two pages",
-        summary="behavior changed in two places",
-        files=[
-            {"path": "docs/a.md", "action": "update"},
-            {"path": "docs/b.md", "action": "update"},
-        ],
-    )
+def _counting_reviewer_agent(recorder):
+    """Cross-page reviewer returning a deterministic ``clean`` verdict."""
+
+    class _CountingReviewer:
+        def __init__(self) -> None:
+            self._recorder = recorder
+
+        async def invoke_async(self, prompt: str, invocation_state=None, **kwargs):
+            self._recorder.append(prompt)
+            return SimpleNamespace(structured_output=ReviewVerdict(verdict="clean", corrections=[]))
+
+    def build(model, tools, runtime=None, agent_id=None, node_id=None):
+        del model, tools, runtime, agent_id, node_id
+        return _CountingReviewer()
+
+    return build
+
+
+def docs_workflow_wiring(*, topics=None, fail_versions=None, with_reviewer=True):
+    """One FakeClient-backed page workflow, draft store, and scripted agents.
+
+    The writer registers the sealing writer (deterministic page content) and,
+    when ``with_reviewer``, the clean-verdict cross-page reviewer.
+    """
+    from draftly.orchestration.page_workflow.repository import PageWorkflowRepository
+    from draftly.persistence.repositories.drafts import DraftRepository
+    from tests.unit.orchestration.page_workflow.test_repository import FakeClient
+
+    database = FakeClient()
+    page_workflow = PageWorkflowRepository(database=database)
+    drafts = DraftRepository(database=database)
+    writer_recorder: list = []
+    agents = {
+        "writer_agent": _sealing_writer_agent(
+            drafts, writer_recorder, topics=topics, fail_versions=fail_versions
+        ),
+    }
+    review_recorder: list = []
+    if with_reviewer:
+        agents["review_agent"] = _counting_reviewer_agent(review_recorder)
+    return {
+        "page_workflow": page_workflow,
+        "drafts_repo": drafts,
+        "agents": SimpleNamespace(**agents),
+        "writer_recorder": writer_recorder,
+        "review_recorder": review_recorder,
+    }
 
 
 class _GraphBuilderCapture:

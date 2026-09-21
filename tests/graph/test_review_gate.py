@@ -19,7 +19,7 @@ from strands.multiagent.base import MultiAgentResult, NodeResult, Status
 from draftly.integrations.strands.graph import build_graph_for_run
 from draftly.orchestration.hooks.review_gate import ReviewGate
 from draftly.orchestration.nodes.base import agent_result
-from tests.graph.conftest import PR_TASK
+from tests.graph.conftest import PR_TASK, docs_workflow_wiring
 
 
 def _interrupt_id(result) -> str:
@@ -28,7 +28,7 @@ def _interrupt_id(result) -> str:
     return result.interrupts[0].id
 
 
-async def _run_to_interrupt(model, tools, tmp_sessions, run_id: str, comment_factory=None):
+async def _run_to_interrupt(wiring, model, tools, tmp_sessions, run_id: str, comment_factory=None):
     graph = build_graph_for_run(
         run_id,
         surface="pull_request",
@@ -36,6 +36,9 @@ async def _run_to_interrupt(model, tools, tmp_sessions, run_id: str, comment_fac
         model=model,
         storage_dir=tmp_sessions,
         comment_factory=comment_factory,
+        page_workflow=wiring["page_workflow"],
+        drafts_repo=wiring["drafts_repo"],
+        agents=wiring["agents"],
     )
     result = await graph.invoke_async(
         PR_TASK,
@@ -47,13 +50,13 @@ async def _run_to_interrupt(model, tools, tmp_sessions, run_id: str, comment_fac
 async def test_gate_interrupts_before_delivery(model, tools, tmp_sessions, comment_factory) -> None:
     factory, _ = comment_factory
     _, result = await _run_to_interrupt(
-        model, tools, tmp_sessions, "gate-1", comment_factory=factory
+        docs_workflow_wiring(), model, tools, tmp_sessions, "gate-1", comment_factory=factory
     )
     interrupt_id = _interrupt_id(result)
 
     order = [n.node_id for n in result.execution_order]
     assert "deliver" not in order
-    assert "evaluate" in order
+    assert "document" in order
     assert interrupt_id.startswith("v1:before_node_call:")
 
 
@@ -61,8 +64,9 @@ async def test_resume_with_approval_completes_delivery(
     model, tools, tmp_sessions, comment_factory
 ) -> None:
     factory, commenter = comment_factory
+    wiring = docs_workflow_wiring()
     _, first = await _run_to_interrupt(
-        model, tools, tmp_sessions, "gate-2", comment_factory=factory
+        wiring, model, tools, tmp_sessions, "gate-2", comment_factory=factory
     )
     interrupt_id = _interrupt_id(first)
 
@@ -73,6 +77,9 @@ async def test_resume_with_approval_completes_delivery(
         model=model,
         storage_dir=tmp_sessions,
         comment_factory=factory,
+        page_workflow=wiring["page_workflow"],
+        drafts_repo=wiring["drafts_repo"],
+        agents=wiring["agents"],
     )
     result = await graph.invoke_async(
         [
@@ -95,8 +102,9 @@ async def test_rejection_cancels_node_and_raises(
     model, tools, tmp_sessions, comment_factory
 ) -> None:
     factory, _ = comment_factory
+    wiring = docs_workflow_wiring()
     _, first = await _run_to_interrupt(
-        model, tools, tmp_sessions, "gate-3", comment_factory=factory
+        wiring, model, tools, tmp_sessions, "gate-3", comment_factory=factory
     )
     interrupt_id = _interrupt_id(first)
 
@@ -107,6 +115,9 @@ async def test_rejection_cancels_node_and_raises(
         model=model,
         storage_dir=tmp_sessions,
         comment_factory=factory,
+        page_workflow=wiring["page_workflow"],
+        drafts_repo=wiring["drafts_repo"],
+        agents=wiring["agents"],
     )
     with pytest.raises(RuntimeError, match="Rejected by reviewer"):
         await graph.invoke_async(
@@ -124,6 +135,7 @@ async def test_rejection_cancels_node_and_raises(
 
 async def test_policy_never_skips_the_gate(model, tools, tmp_sessions, comment_factory) -> None:
     factory, _ = comment_factory
+    wiring = docs_workflow_wiring()
     graph = build_graph_for_run(
         "gate-4",
         surface="pull_request",
@@ -131,6 +143,9 @@ async def test_policy_never_skips_the_gate(model, tools, tmp_sessions, comment_f
         model=model,
         storage_dir=tmp_sessions,
         comment_factory=factory,
+        page_workflow=wiring["page_workflow"],
+        drafts_repo=wiring["drafts_repo"],
+        agents=wiring["agents"],
     )
     result = await graph.invoke_async(
         PR_TASK,
@@ -154,7 +169,7 @@ async def test_interrupt_reason_carries_document_content(
     """
     factory, _ = comment_factory
     _, result = await _run_to_interrupt(
-        model, tools, tmp_sessions, "gate-5", comment_factory=factory
+        docs_workflow_wiring(), model, tools, tmp_sessions, "gate-5", comment_factory=factory
     )
     _interrupt_id(result)
 

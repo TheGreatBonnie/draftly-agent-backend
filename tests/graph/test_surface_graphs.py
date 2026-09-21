@@ -11,7 +11,7 @@ from draftly.orchestration.graphs.evaluation_graph import (
 )
 from draftly.orchestration.graphs.feedback_graph import build_feedback_graph
 from draftly.orchestration.hooks.review_gate import ReviewGate
-from tests.graph.conftest import ISSUE_TASK, SUPPORT_TASK
+from tests.graph.conftest import ISSUE_TASK, SUPPORT_TASK, docs_workflow_wiring
 
 
 async def test_issue_graph_answers_and_delivers(model, tools, tmp_sessions) -> None:
@@ -232,12 +232,16 @@ async def test_merged_pr_with_review_policy_always_interrupts_before_delivery(
         '"pull_request": {"number": 9, "title": "Add PKCE", "sha": "def", '
         '"merged": true, "changed_files": [{"path": "src/authly/oauth.py"}]}}'
     )
+    wiring = docs_workflow_wiring()
     graph = build_graph_for_run(
         "pr-review-1",
         surface="pull_request",
         tools_registry=tools,
         model=model,
         storage_dir=tmp_sessions,
+        page_workflow=wiring["page_workflow"],
+        drafts_repo=wiring["drafts_repo"],
+        agents=wiring["agents"],
     )
     result = await graph.invoke_async(
         merged_task,

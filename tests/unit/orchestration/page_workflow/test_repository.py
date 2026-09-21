@@ -160,6 +160,11 @@ class FakeClient:
                         row["content_hash"] = args[2]
             return []
 
+        if up.startswith("DELETE FROM DRAFT_CHUNKS"):
+            draft_id = args[0]
+            self.chunks = [c for c in self.chunks if c["draft_id"] != draft_id]
+            return []
+
         if "FROM DRAFT_CHUNKS" in up:
             draft_id = args[0]
             rows = [c for c in self.chunks if c["draft_id"] == draft_id]
@@ -179,6 +184,18 @@ class FakeClient:
                 and row["path"] == args[1]
                 and row["version"] == args[2]
             ]
+
+        if "FROM DRAFT_REVISIONS" in up and "ORDER BY VERSION DESC NULLS LAST" in up:
+            rows = [r for r in self.revisions if r["run_id"] == args[0]]
+            return sorted(
+                rows,
+                key=lambda r: (
+                    r["version"] is None,
+                    -(r["version"] or 0),
+                    -r["generation"],
+                    r["path"],
+                ),
+            )
 
         if up.startswith("INSERT INTO DOCUMENTATION_PAGE_STATES"):
             run_id, org_id, page_id, path, action = args

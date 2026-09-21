@@ -216,32 +216,86 @@ def changelog_eval_passed(state: GraphState) -> bool:
     return data is not None and data["passed"]
 
 
+def documentation_passed(state: GraphState) -> bool:
+    """The page workflow finished with every page passed."""
+    if "document" not in state.results:
+        return False
+    data = safe_node_data(state, "document")
+    if data is None:
+        return False
+    result = data.get("result") if isinstance(data.get("result"), dict) else data
+    return bool(result.get("passed"))
+
+
+def documentation_escalated(state: GraphState) -> bool:
+    """The page workflow exhausted its budget and escalated to human review."""
+    if "document" not in state.results:
+        return False
+    data = safe_node_data(state, "document")
+    if data is None:
+        return False
+    result = data.get("result") if isinstance(data.get("result"), dict) else data
+    return (
+        result.get("passed") is False
+        and bool(result.get("ready_for_review"))
+        and bool(result.get("escalated_page_ids"))
+        and not bool(result.get("failed_page_ids"))
+    )
+
+
+def documentation_delivery_ready(state: GraphState) -> bool:
+    """The docs branch is settled enough for the delivery prompt to include it.
+
+    Gates the ``document → deliver`` content edge. Delivery is safe to read the
+    page-workflow files through either fully-passed docs (its own changelog
+    gate is satisfied via :func:`delivery_content_ready`) or an escalated run:
+    escalation hands the pages to the graph-level human ReviewGate, which
+    intercepts delivery until the change is approved.
+    """
+    return documentation_escalated(state) or delivery_content_ready(state)
+
+
+def answer_eval_passed(state: GraphState) -> bool:
+    """Answer quality gate ran and passed."""
+    if "answer_evaluate" not in state.results:
+        return False
+    data = safe_node_data(state, "answer_evaluate")
+    return data is not None and data.get("passed")
+
+
+def answer_needs_revision(state: GraphState) -> bool:
+    """Answer quality gate failed and the answer must be revised."""
+    if "answer_evaluate" not in state.results:
+        return False
+    data = safe_node_data(state, "answer_evaluate")
+    if data is None or data.get("passed") or data.get("escalated"):
+        return False
+    return "answer" in state.results
+
+
 def delivery_content_ready(state: GraphState) -> bool:
     """The changelog gate passed, so deliver's content-carrying edges may fire.
 
-    Gates the fan-in ``update``/``create``/``answer``/``changelog → deliver``
-    edges. Scheduling fires a node when ANY freshly-completed in-edge's
-    condition is satisfied, so without this guard the writer/changelog edges
-    would trigger ``deliver`` before the changelog was evaluated. This
-    condition stays False for every writer/changelog completion (evaluate has
-    not run yet), but is True once ``changelog_evaluate`` has passed — at which
-    point ``_build_node_input`` folds those completed results into the deliver
+    Gates the fan-in ``answer``/``changelog → deliver`` edges (and the
+    ``document → deliver`` edge via :func:`documentation_delivery_ready`).
+    Scheduling fires a node when ANY freshly-completed in-edge's condition is
+    satisfied, so without this guard the writer/changelog edges would trigger
+    ``deliver`` before the changelog was evaluated. This condition stays False
+    for every writer/changelog completion (the changelog evaluator has not run
+    yet), but is True once ``changelog_evaluate`` has passed — at which point
+    ``_build_node_input`` folds those completed results into the deliver
     prompt, and the existing ``changelog_evaluate → deliver`` edge actually
     schedules the node.
 
-    Draft-store gate: ``update``/``create``/``document`` stream file bytes
-    through the draft store (never inline JSON), so when a docs writer
-    completed the evaluator must have confirmed a sealed generation
-    (``has_drafts``) before delivery reads the bodies. The ``answer`` path and
-    other surfaces carry inline content and are unaffected; offline fixtures
-    (``drafts_repo=None``) omit ``has_drafts`` and behave as before.
+    Draft-store gate: the documentation writer never inlines file bytes — the
+    page workflow persisted them (``documentation_passed``), so an escalated
+    run must not schedule delivery through the plain changelog path. Answer and
+    changelog carry inline content and are unaffected.
     """
     if not changelog_eval_passed(state):
         return False
-    if any(nid in state.results for nid in ("update", "create", "document")):
-        evaluation = safe_node_data(state, "evaluate")
-        if isinstance(evaluation, dict) and evaluation.get("has_drafts") is False:
-            return False
+    if "document" in state.results and not documentation_passed(state):
+        return False
     return True
 
 

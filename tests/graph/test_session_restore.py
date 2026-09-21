@@ -15,7 +15,7 @@ from draftly.integrations.strands.graph import (
     build_graph_for_run,
     build_session_manager,
 )
-from tests.graph.conftest import PR_TASK
+from tests.graph.conftest import PR_TASK, docs_workflow_wiring
 
 
 async def test_interrupted_state_restores_on_rebuild(
@@ -23,6 +23,7 @@ async def test_interrupted_state_restores_on_rebuild(
 ) -> None:
     run_id = "sess-1"
     factory, _ = comment_factory
+    wiring = docs_workflow_wiring()
 
     first = build_graph_for_run(
         run_id,
@@ -31,6 +32,9 @@ async def test_interrupted_state_restores_on_rebuild(
         model=model,
         storage_dir=tmp_sessions,
         comment_factory=factory,
+        page_workflow=wiring["page_workflow"],
+        drafts_repo=wiring["drafts_repo"],
+        agents=wiring["agents"],
     )
     result = await first.invoke_async(
         PR_TASK,
@@ -50,6 +54,9 @@ async def test_interrupted_state_restores_on_rebuild(
         model=model,
         storage_dir=tmp_sessions,
         comment_factory=factory,
+        page_workflow=wiring["page_workflow"],
+        drafts_repo=wiring["drafts_repo"],
+        agents=wiring["agents"],
     )
     resumed = await second.invoke_async(
         [
@@ -75,6 +82,7 @@ async def test_resume_does_not_repost_notify_comment(
     interrupted first pass and the resumed completion."""
     run_id = "sess-3"
     factory, commenter = comment_factory
+    wiring = docs_workflow_wiring()
 
     first = build_graph_for_run(
         run_id,
@@ -83,6 +91,9 @@ async def test_resume_does_not_repost_notify_comment(
         model=model,
         storage_dir=tmp_sessions,
         comment_factory=factory,
+        page_workflow=wiring["page_workflow"],
+        drafts_repo=wiring["drafts_repo"],
+        agents=wiring["agents"],
     )
     result = await first.invoke_async(
         PR_TASK,
@@ -100,6 +111,9 @@ async def test_resume_does_not_repost_notify_comment(
         model=model,
         storage_dir=tmp_sessions,
         comment_factory=factory,
+        page_workflow=wiring["page_workflow"],
+        drafts_repo=wiring["drafts_repo"],
+        agents=wiring["agents"],
     )
     resumed = await second.invoke_async(
         [
@@ -123,6 +137,7 @@ async def test_resume_requires_interrupt_response_format(
     """Resuming an activated interrupt with a plain string is a TypeError."""
     run_id = "sess-2"
     factory, _ = comment_factory
+    wiring = docs_workflow_wiring()
 
     first = build_graph_for_run(
         run_id,
@@ -131,6 +146,9 @@ async def test_resume_requires_interrupt_response_format(
         model=model,
         storage_dir=tmp_sessions,
         comment_factory=factory,
+        page_workflow=wiring["page_workflow"],
+        drafts_repo=wiring["drafts_repo"],
+        agents=wiring["agents"],
     )
     result = await first.invoke_async(
         PR_TASK,
@@ -145,6 +163,9 @@ async def test_resume_requires_interrupt_response_format(
         model=model,
         storage_dir=tmp_sessions,
         comment_factory=factory,
+        page_workflow=wiring["page_workflow"],
+        drafts_repo=wiring["drafts_repo"],
+        agents=wiring["agents"],
     )
     import pytest
 
