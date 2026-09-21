@@ -195,6 +195,80 @@ async def test_run_get_is_organization_scoped() -> None:
     assert run_id == "run-1"
 
 
+async def test_page_results_join_and_compact_mapping() -> None:
+    db = AsyncMock()
+    db.fetch_all.return_value = [
+        {
+            "page_id": "readme",
+            "path": "README.md",
+            "status": "passed",
+            "latest_version": 2,
+            "evaluation_attempt": 3,
+            "escalation_reason": None,
+            "score": 0.97,
+            "metrics": [
+                {"name": "accuracy", "passed": True, "blocking": True},
+                {"name": "quality_score", "passed": False, "blocking": True, "reason": "low"},
+                {"name": "style", "passed": False, "blocking": False},
+            ],
+            "revision_feedback": ["Add usage example"],
+        },
+        {
+            "page_id": "api",
+            "path": "docs/api.md",
+            "status": "awaiting_human_review",
+            "latest_version": 1,
+            "evaluation_attempt": 2,
+            "escalation_reason": "Blocking eager review gate: quality below threshold",
+            "score": 0.71,
+            "metrics": [],
+            "revision_feedback": ["Document error codes"],
+        },
+    ]
+
+    results = await WorkflowRunsRepository(db).page_results(org_id="org-1", run_id="run-1")
+
+    query, org_id, run_id = db.fetch_all.await_args.args
+    assert "r.org_id = $1" in query
+    assert "e.artifact_id = s.latest_artifact_id" in query
+    assert "ORDER BY s.path ASC" in query
+    assert org_id == "org-1"
+    assert run_id == "run-1"
+
+    assert [page["path"] for page in results] == ["README.md", "docs/api.md"]
+    assert set(results[0]) == {
+        "page_id",
+        "path",
+        "status",
+        "version",
+        "attempts",
+        "score",
+        "failed_metrics",
+        "feedback",
+        "escalation_reason",
+    }
+    assert results[0]["failed_metrics"] == ["quality_score"]
+    assert results[0]["feedback"] == ["Add usage example"]
+    assert results[0]["version"] == 2
+    assert results[0]["attempts"] == 3
+    assert results[0]["score"] == 0.97
+    assert "content" not in results[0] and "evidence" not in results[0]
+    assert results[1]["failed_metrics"] == []
+    assert results[1]["escalation_reason"] == (
+        "Blocking eager review gate: quality below threshold"
+    )
+    assert results[1]["attempts"] == 2
+
+
+async def test_page_results_returns_empty_for_historical_run() -> None:
+    db = AsyncMock()
+    db.fetch_all.return_value = []
+
+    assert await WorkflowRunsRepository(db).page_results(
+        org_id="org-1", run_id="legacy-run"
+    ) == []
+
+
 async def test_summary_uses_unpaginated_aggregate_query() -> None:
     db = AsyncMock()
     db.fetch_one.side_effect = [

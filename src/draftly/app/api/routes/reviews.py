@@ -111,7 +111,9 @@ def _display_changelog(changelog: Any) -> dict[str, Any] | None:
     }
 
 
-def build_review_display(record: ReviewRecord, raw: dict[str, Any]) -> dict[str, Any]:
+def build_review_display(
+    record: ReviewRecord, raw: dict[str, Any], page_results: list[dict[str, Any]] | None = None
+) -> dict[str, Any]:
     """Build the nullable-safe read model consumed by review pages."""
     detail = _dict(record.detail)
     document = _dict(detail.get("document"))
@@ -176,7 +178,25 @@ def build_review_display(record: ReviewRecord, raw: dict[str, Any]) -> dict[str,
         "changelog": _display_changelog(detail.get("changelog")),
         "github_url": github_url,
         "updated_at": updated_at,
+        "page_results": list(page_results or []),
     }
+
+
+async def _reviews_page_results(request: Request, record: ReviewRecord) -> list[dict[str, Any]]:
+    """Best-effort org-scoped page results for the review's run; never raises."""
+    try:
+        deps = getattr(request.app.state.draftly, "dependencies", None)
+        repositories = getattr(deps, "repositories", None) if deps else None
+        reviews_repo = getattr(repositories, "reviews", None) if repositories else None
+    except Exception:
+        return []
+    page_results = getattr(reviews_repo, "page_results", None)
+    if page_results is None:
+        return []
+    try:
+        return await page_results(org_id=record.org_id, run_id=record.thread_id) or []
+    except Exception:
+        return []
 
 
 async def review_to_dict_enriched(record: ReviewRecord, request: Request) -> dict[str, Any]:
@@ -206,7 +226,9 @@ async def review_to_dict_enriched(record: ReviewRecord, request: Request) -> dic
     except Exception:
         # Best-effort — if no github_workflows row exists (e.g. non-PR), return pr: null
         pass
-    base["display"] = build_review_display(record, base)
+    base["display"] = build_review_display(
+        record, base, page_results=await _reviews_page_results(request, record)
+    )
     return base
 
 

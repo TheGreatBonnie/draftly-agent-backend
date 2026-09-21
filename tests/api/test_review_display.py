@@ -6,6 +6,22 @@ from draftly.app.api.routes.reviews import build_review_display
 from draftly.persistence.repositories.reviews import ReviewRecord
 
 
+def page_result(**overrides: object) -> dict:
+    item = {
+        "page_id": "readme",
+        "path": "README.md",
+        "status": "passed",
+        "version": 2,
+        "attempts": 3,
+        "score": 0.97,
+        "failed_metrics": ["quality_score"],
+        "feedback": ["Add usage example"],
+        "escalation_reason": None,
+    }
+    item.update(overrides)
+    return item
+
+
 def record(
     *,
     detail: dict | None = None,
@@ -134,3 +150,42 @@ def test_display_maps_changelog_entry() -> None:
     assert display["changelog"]["date"] == "2026-09-04"
     assert display["changelog"]["entries"] == [{"category": "Added", "text": "OAuth login"}]
     assert display["changelog"]["raw_markdown"].startswith("## [v1.1.0]")
+
+
+def test_display_includes_compact_page_results_passed_and_escalated() -> None:
+    pages = [
+        page_result(),
+        page_result(
+            page_id="api",
+            path="docs/api.md",
+            status="awaiting_human_review",
+            score=0.71,
+            failed_metrics=[],
+            feedback=["Document error codes"],
+            escalation_reason="Blocking eager review gate: quality below threshold",
+        ),
+    ]
+
+    display = build_review_display(record(detail=None), {"pr": None}, page_results=pages)
+
+    assert [page["path"] for page in display["page_results"]] == ["README.md", "docs/api.md"]
+    page = display["page_results"][0]
+    assert set(page) == {
+        "page_id",
+        "path",
+        "status",
+        "version",
+        "attempts",
+        "score",
+        "failed_metrics",
+        "feedback",
+        "escalation_reason",
+    }
+    assert "content" not in page
+    assert "evidence" not in page
+
+
+def test_display_page_results_default_to_empty_for_historical_runs() -> None:
+    display = build_review_display(record(detail=None), {"pr": None})
+
+    assert display["page_results"] == []

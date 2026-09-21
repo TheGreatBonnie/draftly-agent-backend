@@ -68,6 +68,45 @@ def _payload(value: Any) -> dict[str, Any]:
     return dict(value)
 
 
+def _blocking_failed_metric_names(metrics: Any) -> list[str]:
+    if not isinstance(metrics, list):
+        return []
+    names: list[str] = []
+    for metric in metrics:
+        if not isinstance(metric, dict):
+            continue
+        if metric.get("blocking") and not metric.get("passed"):
+            name = metric.get("name")
+            if isinstance(name, str) and name:
+                names.append(name)
+    return names
+
+
+def _string_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(item) for item in value if item is not None]
+
+
+def _page_result_row(row: Any) -> dict[str, Any]:
+    """Map one page-state/evaluation pair to the compact `page_results` item.
+
+    Deliberately omits artifact content and evidence; display-only endpoints
+    must never read `draft_chunks`.
+    """
+    return {
+        "page_id": str(row["page_id"]),
+        "path": str(row["path"]),
+        "status": str(row["status"]),
+        "version": int(row["latest_version"] or 0),
+        "attempts": int(row["evaluation_attempt"] or 0),
+        "score": float(row["score"]) if row["score"] is not None else None,
+        "failed_metrics": _blocking_failed_metric_names(row.get("metrics")),
+        "feedback": _string_list(row.get("revision_feedback")),
+        "escalation_reason": row.get("escalation_reason"),
+    }
+
+
 class WorkflowDefinitionsRepository:
     """Organization-scoped CRUD and summary queries for definitions."""
 
@@ -616,6 +655,29 @@ class WorkflowRunsRepository:
             run_id,
         )
         return [_row_dict(row) for row in rows]
+
+    async def page_results(self, *, org_id: str, run_id: str) -> list[dict[str, Any]]:
+        """Compact, org-scoped page evaluation results for a documentation run.
+
+        Joins each page state to its latest immutable evaluation using both
+        ``run_id`` and ``latest_artifact_id``. Runs without page rows (e.g.
+        historical runs) yield an empty list. Never reads draft content.
+        """
+        rows = await self._database().fetch_all(
+            """
+            SELECT s.page_id, s.path, s.status, s.latest_version, s.evaluation_attempt,
+                   s.escalation_reason, e.score, e.metrics, e.revision_feedback
+            FROM documentation_page_states s
+            LEFT JOIN documentation_page_evaluations e
+              ON e.run_id = s.run_id AND e.artifact_id = s.latest_artifact_id
+            JOIN workflow_runs r ON r.id = s.run_id
+            WHERE s.run_id = $2 AND r.org_id = $1
+            ORDER BY s.path ASC, s.page_id ASC
+            """,
+            org_id,
+            run_id,
+        )
+        return [_page_result_row(row) for row in rows]
 
 
 __all__ = [

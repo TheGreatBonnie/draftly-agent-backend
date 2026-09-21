@@ -36,6 +36,22 @@ def run_row() -> dict:
     }
 
 
+def page_result(**overrides: object) -> dict:
+    item = {
+        "page_id": "readme",
+        "path": "README.md",
+        "status": "passed",
+        "version": 2,
+        "attempts": 3,
+        "score": 0.97,
+        "failed_metrics": ["quality_score"],
+        "feedback": ["Add usage example"],
+        "escalation_reason": None,
+    }
+    item.update(overrides)
+    return item
+
+
 def make_app(role: str = "member") -> tuple[FastAPI, SimpleNamespace]:
     runs = SimpleNamespace(
         get=AsyncMock(),
@@ -95,6 +111,58 @@ def test_unknown_run_returns_404() -> None:
     repos.runs.get.return_value = None
 
     assert TestClient(app).get("/workflow-runs/foreign").status_code == 404
+
+
+def test_run_detail_serializes_compact_page_results_in_path_order() -> None:
+    app, repos = make_app()
+    repos.runs.get.return_value = run_row()
+    repos.runs.page_results = AsyncMock(
+        return_value=[
+            page_result(),
+            page_result(
+                page_id="api",
+                path="docs/api.md",
+                status="awaiting_human_review",
+                score=0.71,
+                failed_metrics=[],
+                feedback=["Document error codes"],
+                escalation_reason="Blocking eager review gate: quality below threshold",
+            ),
+        ]
+    )
+
+    response = TestClient(app).get("/workflow-runs/run-1")
+
+    assert response.status_code == 200
+    pages = response.json()["run"]["page_results"]
+    assert [page["path"] for page in pages] == ["README.md", "docs/api.md"]
+    page = pages[0]
+    assert set(page) == {
+        "page_id",
+        "path",
+        "status",
+        "version",
+        "attempts",
+        "score",
+        "failed_metrics",
+        "feedback",
+        "escalation_reason",
+    }
+    assert "content" not in page
+    assert "evidence" not in page
+    assert repos.runs.page_results.await_args.kwargs["org_id"] == "org-1"
+    assert repos.runs.page_results.await_args.kwargs["run_id"] == "run-1"
+
+
+def test_run_detail_returns_empty_page_results_for_historical_run() -> None:
+    app, repos = make_app()
+    repos.runs.get.return_value = run_row()
+    repos.runs.page_results = AsyncMock(return_value=[])
+
+    response = TestClient(app).get("/workflow-runs/run-1")
+
+    assert response.status_code == 200
+    assert response.json()["run"]["page_results"] == []
 
 
 def test_manual_run_requires_editor_and_uses_idempotency_header() -> None:

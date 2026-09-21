@@ -131,7 +131,15 @@ async def get_run(
     token: dict[str, Any] = Depends(get_verified_token),
 ) -> dict[str, Any]:
     run = await _authorized_run(request, run_id, token)
-    pending = await _pending_interventions(request, run_id, str(token.get("org_id") or ""))
+    org_id = str(token.get("org_id") or "")
+    runs_repo = _repositories(request).workflow_runs
+    page_results = (
+        await runs_repo.page_results(org_id=org_id, run_id=run_id)
+        if hasattr(runs_repo, "page_results")
+        else []
+    )
+    run = {**run, "page_results": page_results}
+    pending = await _pending_interventions(request, run_id, org_id)
     if pending:
         run = {**run, "pending_interventions": pending}
     return {"run": run}

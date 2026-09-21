@@ -1,14 +1,15 @@
 from __future__ import annotations
 
-import json
 import base64
+import json
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
-from collections.abc import Iterable
 from typing import Any
 from uuid import uuid4
 
 from draftly.integrations.database.client import DatabaseClient
+from draftly.persistence.repositories.workflows import WorkflowRunsRepository
 
 
 def _reason_detail(reason: Any) -> dict[str, Any]:
@@ -192,6 +193,12 @@ class ReviewsRepository:
         if not row:
             return None
         return self._row_to_record(row)
+
+    async def page_results(self, *, org_id: str, run_id: str) -> list[dict[str, Any]]:
+        """Org-scoped compact page results for a run, via the canonical reader."""
+        return await WorkflowRunsRepository(self.database).page_results(
+            org_id=org_id, run_id=run_id
+        )
 
     async def record_decision(
         self,
