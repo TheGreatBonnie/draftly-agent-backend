@@ -228,6 +228,47 @@ class DocumentationWorkflowNode(MultiAgentBase):
             results={self.name: NodeResult(result=agent_result(payload))},
         )
 
+    # -- human resume ---------------------------------------------------------
+
+    async def resume(
+        self,
+        run_id: str,
+        decision: str,
+        comment: str | None = None,
+    ) -> DocumentationWorkflowResult:
+        """Apply a recorded human decision to a settled page workflow.
+
+        ``approve`` marks escalated pages passed — the reviewer accepted the
+        sealed artifacts, so the workflow reports a fully-passed result and a
+        re-approval is a no-op (idempotent resume). Decision semantics for
+        ``request_changes`` (schedule the next version from the comment) and
+        ``reject`` (cancel pending tasks) are owned by the review resume
+        service (documentation workflow task 6).
+        """
+        if not isinstance(self.repository, PageWorkflowRepository):
+            raise RuntimeError("page workflow is not wired for this run")
+        if decision == "approve":
+            states = await self.repository.get_page_states(run_id=run_id)
+            escalated = [
+                s.page_id
+                for s in states
+                if s.status == PageStatus.AWAITING_HUMAN_REVIEW.value
+            ]
+            if escalated:
+                await self.repository.approve_escalated_pages(
+                    run_id=run_id,
+                    page_ids=escalated,
+                    comment=comment,
+                )
+                states = await self.repository.get_page_states(run_id=run_id)
+            return _result_from_states(states)
+        if decision in ("request_changes", "reject"):
+            raise NotImplementedError(
+                f"resume decision {decision!r} is implemented by the review "
+                "resume service (documentation workflow task 6)"
+            )
+        raise ValueError(f"unknown resume decision {decision!r}")
+
     # -- internal ------------------------------------------------------------
 
     def _vacuous_pass(self) -> MultiAgentResult:

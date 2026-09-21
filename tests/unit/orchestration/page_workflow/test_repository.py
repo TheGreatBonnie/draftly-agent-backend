@@ -291,6 +291,24 @@ class FakeClient:
             state["escalation_reason"] = reason
             return [{"page_id": page_id}]
 
+        if up.startswith("UPDATE DOCUMENTATION_PAGE_STATES") and "SET STATUS" in up:
+            run_id, page_id, comment = args
+            state = next(
+                (s for s in self.page_states if s["run_id"] == run_id and s["page_id"] == page_id),
+                None,
+            )
+            if state is None or state["status"] != "awaiting_human_review":
+                return []
+            state["status"] = "passed"
+            if comment:
+                state["escalation_reason"] = (
+                    (state["escalation_reason"] or "")
+                    + ("" if not state["escalation_reason"] else "\n")
+                    + f"Approved: {comment}"
+                )
+            state["updated_at"] = self.now
+            return [{"page_id": page_id}]
+
         if "FROM DOCUMENTATION_PAGE_STATES" in up:
             run_id = args[0]
             states = [s for s in self.page_states if s["run_id"] == run_id]
@@ -1321,3 +1339,65 @@ async def test_create_pages_is_idempotent(
     )
     states = await pages.get_page_states(run_id="run-1")
     assert len(states) == 1
+
+
+async def test_approve_escalated_pages_transitions_only_escalated(
+    pages: PageWorkflowRepository,
+) -> None:
+    await pages.create_pages(
+        run_id="run-1",
+        org_id="org-1",
+        pages=[NewPage(page_id="docs/a.md", path="docs/a.md", action="update")],
+    )
+    await pages.create_pages(
+        run_id="run-1",
+        org_id="org-1",
+        pages=[NewPage(page_id="docs/b.md", path="docs/b.md", action="create")],
+    )
+    client: FakeClient = pages.database
+    client.page_states[0]["status"] = "awaiting_human_review"
+    client.page_states[1]["status"] = "failed"
+
+    approved = await pages.approve_escalated_pages(
+        run_id="run-1",
+        page_ids=["docs/a.md", "docs/b.md"],
+        comment="lgtm",
+    )
+
+    assert approved == 1
+    states = {s.page_id: s for s in await pages.get_page_states(run_id="run-1")}
+    assert states["docs/a.md"].status == "passed"
+    assert states["docs/a.md"].escalation_reason == "Approved: lgtm"
+    assert states["docs/b.md"].status == "failed"
+
+
+async def test_approve_escalated_pages_appends_repeat_decisions(
+    pages: PageWorkflowRepository,
+) -> None:
+    await pages.create_pages(
+        run_id="run-1",
+        org_id="org-1",
+        pages=[NewPage(page_id="docs/a.md", path="docs/a.md", action="update")],
+    )
+    pages.database.page_states[0]["status"] = "awaiting_human_review"
+    pages.database.page_states[0]["escalation_reason"] = "score 0.2 full stop"
+
+    await pages.approve_escalated_pages(
+        run_id="run-1", page_ids=["docs/a.md"], comment="first"
+    )
+    approved = await pages.approve_escalated_pages(
+        run_id="run-1", page_ids=["docs/a.md"], comment="again"
+    )
+
+    # Re-approval recorded as a repeat decision but transitioned nothing.
+    assert approved == 0
+    state = (await pages.get_page_states(run_id="run-1"))[0]
+    assert state.status == "passed"
+    assert state.escalation_reason == "score 0.2 full stop\nApproved: first"
+
+
+async def test_approve_escalated_pages_rejects_empty(
+    pages: PageWorkflowRepository,
+) -> None:
+    with pytest.raises(ValueError, match="at least one"):
+        await pages.approve_escalated_pages(run_id="run-1", page_ids=[])

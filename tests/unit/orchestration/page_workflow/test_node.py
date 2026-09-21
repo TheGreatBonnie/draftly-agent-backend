@@ -28,6 +28,8 @@ from draftly.orchestration.page_workflow.repository import PageWorkflowRepositor
 from draftly.persistence.repositories.drafts import DraftRepository
 from tests.unit.orchestration.page_workflow.test_repository import FakeClient
 
+import pytest
+
 ORIGINAL_TASK = '{"event_id": "e-1", "event_type": "pull_request.opened"}'
 
 IMPACT_WITH_EVIDENCE = {
@@ -280,3 +282,72 @@ async def test_invalid_impact_fails() -> None:
     )
     assert result.status == Status.FAILED
     assert "impact" in node_data(result, "document")["error"]
+
+
+# -- resume ----------------------------------------------------------------
+
+async def test_resume_approve_marks_escalated_pages_passed() -> None:
+    node, _, _, _ = _wired_node()
+    escalated = await _invoke(node, IMPACT_NO_EVIDENCE, [], "run-h")
+    assert node_data(escalated, "document")["result"]["escalated_page_ids"] == [
+        "docs/widgets.md"
+    ]
+
+    report = await node.resume("run-h", "approve", "reviewed, looks good")
+
+    assert report.passed is True
+    assert report.ready_for_review is True
+    assert report.page_count == 1
+    assert report.escalated_page_ids == []
+    assert report.passed_page_ids == ["docs/widgets.md"]
+    states = await node.repository.get_page_states(run_id="run-h")
+    assert states[0].status == "passed"
+
+    # Duplicate resume with the same decision is a no-op.
+    again = await node.resume("run-h", "approve", "reviewed, looks good")
+    assert again.model_dump() == report.model_dump()
+
+
+async def test_resume_approve_is_idempotent() -> None:
+    node, _, _, _ = _wired_node()
+    await _invoke(
+        node,
+        IMPACT_WITH_EVIDENCE,
+        [{"id": "docs/widgets.md", "topic": "widgets"}],
+        "run-i",
+    )
+    first = await node.resume("run-i", "approve", "unnecessary")
+    second = await node.resume("run-i", "approve", "unnecessary")
+    assert first.passed is True
+    assert first.model_dump() == second.model_dump()
+
+
+async def test_resume_reports_pages_not_covered_by_approve() -> None:
+    node, pages, _, _ = _wired_node()
+    await _invoke(node, IMPACT_NO_EVIDENCE, [], "run-j")
+    # A page in a non-escalated terminal state is untouched by approval and
+    # stays visible in the aggregate report.
+    pages.database.page_states[0]["status"] = "failed"
+    report = await node.resume("run-j", "approve", "partial")
+    assert report.passed is False
+    assert report.ready_for_review is False
+    assert report.failed_page_ids == ["docs/widgets.md"]
+
+
+async def test_resume_unknown_decision_raises() -> None:
+    node, _, _, _ = _wired_node()
+    with pytest.raises(ValueError, match="decision"):
+        await node.resume("run-k", "merge", "nope")
+
+
+async def test_resume_request_changes_and_reject_pending_task_6() -> None:
+    node, _, _, _ = _wired_node()
+    for decision in ("request_changes", "reject"):
+        with pytest.raises(NotImplementedError, match=decision):
+            await node.resume("run-l", decision, "later")
+
+
+async def test_resume_requires_wired_repository() -> None:
+    node = DocumentationWorkflowNode("document", repository=None, handlers=None)
+    with pytest.raises(RuntimeError, match="not wired"):
+        await node.resume("run-m", "approve", "nope")

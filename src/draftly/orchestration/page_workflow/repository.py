@@ -203,6 +203,48 @@ class PageWorkflowRepository:
         )
         return [self._to_state(row) for row in rows]
 
+    async def approve_escalated_pages(
+        self,
+        *,
+        run_id: str,
+        page_ids: list[str],
+        comment: str | None = None,
+    ) -> int:
+        """Approve escalated pages: ``awaiting_human_review`` → ``passed``.
+
+        A completed human review accepts the sealed artifacts. Only pages still
+        awaiting human review transition; pages already settled in any other
+        state are left untouched and remain visible in the aggregate report.
+        The reviewer comment is appended to ``escalation_reason`` as the audit
+        trail, so re-approval (idempotent resume) records a repeat decision.
+        """
+        if not page_ids:
+            raise ValueError("approve requires at least one page id")
+        approved = 0
+        for page_id in page_ids:
+            row = await self.database.fetch_one(
+                """
+                UPDATE documentation_page_states
+                   SET status = 'passed',
+                       escalation_reason = CASE
+                           WHEN $3 IS NULL THEN escalation_reason
+                           WHEN escalation_reason IS NULL THEN 'Approved: ' || $3
+                           ELSE escalation_reason || E'\nApproved: ' || $3
+                       END,
+                       updated_at = now()
+                 WHERE run_id = $1
+                   AND page_id = $2
+                   AND status = 'awaiting_human_review'
+                 RETURNING page_id
+                """,
+                run_id,
+                page_id,
+                comment,
+            )
+            if row is not None:
+                approved += 1
+        return approved
+
     # -- evaluations ---------------------------------------------------------
 
     async def record_evaluation(
