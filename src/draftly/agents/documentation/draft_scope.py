@@ -24,6 +24,8 @@ class DraftScope:
     generation: int
     #: Durable page artifact version. Legacy graph writers leave this unset.
     version: int | None = None
+    #: Canonical page path assigned to a page-workflow writer. Legacy scopes omit it.
+    assigned_page_id: str | None = None
 
 
 _draft_scope: ContextVar[DraftScope | None] = ContextVar(

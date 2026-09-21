@@ -102,6 +102,14 @@ class FakeClient:
 
         if "FROM DRAFT_REVISIONS" in q.upper():
             rows = [r for r in self.revisions if not r.get("deleted_at")]
+            if "WHERE RUN_ID = $1 AND PATH = $2 AND VERSION = $3" in q.upper():
+                return [
+                    row
+                    for row in rows
+                    if row["run_id"] == args[0]
+                    and row["path"] == args[1]
+                    and row["version"] == args[2]
+                ]
             if "ORDER BY VERSION DESC" in q.upper():
                 rows.sort(
                     key=lambda r: (
@@ -389,6 +397,61 @@ async def test_finalize_hash_stable_across_chunk_boundaries(repo: DraftRepositor
     await repo.append_chunk(revision.id, "beta")
     sealed = await repo.finalize(revision.id)
     assert sealed.content_hash == hashlib.sha256(b"alphabeta").hexdigest()
+
+
+async def test_prepare_versioned_write_reuses_open_revision_without_partial_chunks(
+    repo: DraftRepository,
+) -> None:
+    first = await repo.create_revision(
+        run_id="run-1",
+        org_id="org-1",
+        generation=1,
+        path="docs/replay.md",
+        action="update",
+        version=1,
+    )
+    await repo.append_chunk(first.id, "partial")
+
+    sealed = await repo.prepare_versioned_write(
+        run_id="run-1", path="docs/replay.md", version=1
+    )
+    replay = await repo.create_revision(
+        run_id="run-1",
+        org_id="org-1",
+        generation=1,
+        path="docs/replay.md",
+        action="update",
+        version=1,
+    )
+    await repo.append_chunk(replay.id, "complete")
+    result = await repo.finalize(replay.id)
+
+    assert sealed is None
+    assert replay.id == first.id
+    assert result.content_hash == hashlib.sha256(b"complete").hexdigest()
+
+
+async def test_prepare_versioned_write_returns_existing_sealed_artifact(
+    repo: DraftRepository,
+) -> None:
+    revision = await repo.create_revision(
+        run_id="run-1",
+        org_id="org-1",
+        generation=1,
+        path="docs/replay.md",
+        action="update",
+        version=1,
+    )
+    await repo.append_chunk(revision.id, "complete")
+    await repo.finalize(revision.id)
+
+    sealed = await repo.prepare_versioned_write(
+        run_id="run-1", path="docs/replay.md", version=1
+    )
+
+    assert sealed is not None
+    assert sealed.artifact_id == revision.id
+    assert sealed.content == "complete"
 
 
 async def test_get_latest_prefers_version_over_newer_legacy_generation(

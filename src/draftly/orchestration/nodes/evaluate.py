@@ -274,12 +274,12 @@ def compute_quality(
     reasons: list[str] = []
     if coverage.passed:
         reasons.append(coverage.reason)
-    if completeness.passed or evidence:
+    if completeness.passed:
+        reasons.append(completeness.reason)
+    elif any(_evidence_topic(item) for item in evidence):
         reasons.append(completeness.reason)
     if detail.passed:
         reasons.append(detail.reason)
-    if not reasons:
-        reasons.append(quality.reason)
 
     return quality.score, reasons
 

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 from contextlib import asynccontextmanager
+from copy import deepcopy
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -18,6 +19,7 @@ from draftly.orchestration.page_workflow.models import MetricResult, PageEvaluat
 from draftly.orchestration.page_workflow.repository import (
     NewPage,
     PageWorkflowRepository,
+    RevisionSchedule,
     StaleArtifactError,
 )
 from draftly.persistence.repositories.drafts import DraftRepository
@@ -71,12 +73,22 @@ class FakeClient:
         self.tasks: list[dict[str, Any]] = []
         self.evaluations: list[dict[str, Any]] = []
         self.now = AUCTION_EPOCH
+        self.fail_evaluate_insert_once = False
 
     # -- DatabaseClient surface (module-level helper above calls these) ------
 
     @asynccontextmanager
     async def transaction(self, *, isolation: str = "read_committed") -> Any:
-        yield self
+        snapshot = (
+            deepcopy(self.page_states),
+            deepcopy(self.tasks),
+            deepcopy(self.evaluations),
+        )
+        try:
+            yield self
+        except Exception:
+            self.page_states, self.tasks, self.evaluations = snapshot
+            raise
 
     async def execute(self, query: str, *args: Any) -> str:
         await self._dispatch(query, *args)
@@ -156,6 +168,18 @@ class FakeClient:
         if "FROM DRAFT_REVISIONS" in up and "WHERE ID = $1" in up:
             return [r for r in self.revisions if r["id"] == args[0]]
 
+        if (
+            "FROM DRAFT_REVISIONS" in up
+            and "WHERE RUN_ID = $1 AND PATH = $2 AND VERSION = $3" in up
+        ):
+            return [
+                row
+                for row in self.revisions
+                if row["run_id"] == args[0]
+                and row["path"] == args[1]
+                and row["version"] == args[2]
+            ]
+
         if up.startswith("INSERT INTO DOCUMENTATION_PAGE_STATES"):
             run_id, org_id, page_id, path, action = args
             if not any(
@@ -185,7 +209,13 @@ class FakeClient:
                 (s for s in self.page_states if s["run_id"] == run_id and s["page_id"] == page_id),
                 None,
             )
-            if state is not None and state["latest_version"] < version:
+            if state is not None and (
+                state["latest_version"] < version
+                or (
+                    state["latest_version"] == version
+                    and state["latest_artifact_id"] == artifact_id
+                )
+            ):
                 state["latest_artifact_id"] = artifact_id
                 state["latest_version"] = version
                 state["status"] = "evaluating"
@@ -205,12 +235,106 @@ class FakeClient:
             state["next_version"] = version + 1
             return [{"version": version}]
 
+        if up.startswith("UPDATE DOCUMENTATION_PAGE_STATES") and "GREATEST" in up:
+            run_id, page_id, next_version = args
+            state = next(
+                (s for s in self.page_states if s["run_id"] == run_id and s["page_id"] == page_id),
+                None,
+            )
+            if state is not None:
+                state["next_version"] = max(state["next_version"], next_version + 1)
+                state["status"] = "revising"
+            return []
+
+        if up.startswith("UPDATE DOCUMENTATION_PAGE_STATES") and "LATEST_ARTIFACT_ID = $3" in up:
+            run_id, page_id, artifact_id, version, content_hash, status, attempt, reason = args
+            state = next(
+                (s for s in self.page_states if s["run_id"] == run_id and s["page_id"] == page_id),
+                None,
+            )
+            artifact = next(
+                (
+                    r
+                    for r in self.revisions
+                    if r["id"] == artifact_id
+                    and r["content_hash"] == content_hash
+                    and r["sealed"]
+                ),
+                None,
+            )
+            if (
+                state is None
+                or artifact is None
+                or state["latest_artifact_id"] != artifact_id
+                or state["latest_version"] != version
+            ):
+                return []
+            state["status"] = status
+            state["evaluation_attempt"] = attempt
+            state["escalation_reason"] = reason
+            return [{"page_id": page_id}]
+
         if "FROM DOCUMENTATION_PAGE_STATES" in up:
             run_id = args[0]
             states = [s for s in self.page_states if s["run_id"] == run_id]
             if len(args) > 1 and args[1] is not None:
                 states = [s for s in states if s["page_id"] == args[1]]
             return sorted(states, key=lambda s: s["page_id"])
+
+        if up.startswith("INSERT INTO DOCUMENTATION_WORKFLOW_TASKS") and "'WRITE'" in up:
+            run_id, task_id, org_id, page_id, artifact_version, input_data = args
+            dependencies: list[str] = []
+            task_type = "write"
+            if not any(t["run_id"] == run_id and t["task_id"] == task_id for t in self.tasks):
+                self.tasks.append(
+                    {
+                        "run_id": run_id,
+                        "task_id": task_id,
+                        "org_id": org_id,
+                        "task_type": task_type,
+                        "page_id": page_id,
+                        "artifact_version": artifact_version,
+                        "dependencies": dependencies,
+                        "status": "pending",
+                        "infrastructure_retries": 0,
+                        "lease_owner": None,
+                        "lease_expires_at": None,
+                        "input_data": input_data,
+                        "output_data": None,
+                        "error": None,
+                        "created_at": self.now,
+                        "updated_at": self.now,
+                    }
+                )
+            return []
+
+        if up.startswith("INSERT INTO DOCUMENTATION_WORKFLOW_TASKS") and "'EVALUATE'" in up:
+            if self.fail_evaluate_insert_once:
+                self.fail_evaluate_insert_once = False
+                raise RuntimeError("injected evaluate-task insert failure")
+            run_id, task_id, org_id, page_id, artifact_version, dependencies, input_data = args
+            if not any(t["run_id"] == run_id and t["task_id"] == task_id for t in self.tasks):
+                self.tasks.append(
+                    {
+                        "run_id": run_id,
+                        "task_id": task_id,
+                        "org_id": org_id,
+                        "task_type": "evaluate",
+                        "page_id": page_id,
+                        "artifact_version": artifact_version,
+                        "dependencies": dependencies,
+                        "status": "pending",
+                        "infrastructure_retries": 0,
+                        "lease_owner": None,
+                        "lease_expires_at": None,
+                        "input_data": input_data,
+                        "output_data": None,
+                        "error": None,
+                        "created_at": self.now,
+                        "updated_at": self.now,
+                    }
+                )
+            return []
 
         if up.startswith("INSERT INTO DOCUMENTATION_WORKFLOW_TASKS"):
             (
@@ -345,8 +469,16 @@ class FakeClient:
             return [{"updated": recycled}]
 
         if up.startswith("INSERT INTO DOCUMENTATION_PAGE_EVALUATIONS"):
-            self.evaluations.append(
-                {
+            existing = next(
+                (
+                    row
+                    for row in self.evaluations
+                    if row["run_id"] == args[0] and row["artifact_id"] == args[3]
+                ),
+                None,
+            )
+            if existing is None:
+                existing = {
                     "run_id": args[0],
                     "org_id": args[1],
                     "page_id": args[2],
@@ -360,8 +492,14 @@ class FakeClient:
                     "revision_feedback": args[10],
                     "created_at": self.now,
                 }
-            )
-            return []
+                self.evaluations.append(existing)
+            return [
+                {
+                    "status": existing["status"],
+                    "attempt": existing["attempt"],
+                    "revision_feedback": existing["revision_feedback"],
+                }
+            ]
 
         raise AssertionError(f"fake does not understand query: {q}")
 
@@ -514,7 +652,7 @@ async def test_record_artifact_promotes_page_state(
     assert state.next_version == 2
 
 
-async def test_record_artifact_rejects_replaying_same_or_older_version(
+async def test_record_artifact_replay_is_idempotent_but_rejects_other_identity(
     client: FakeClient,
     pages: PageWorkflowRepository,
     drafts: DraftRepository,
@@ -528,11 +666,17 @@ async def test_record_artifact_rejects_replaying_same_or_older_version(
         artifact_id=sealed.id,
         version=version,
     )
+    await pages.record_artifact(
+        run_id="run-1",
+        page_id="docs/a.md",
+        artifact_id=sealed.id,
+        version=version,
+    )
     with pytest.raises(StaleArtifactError):
         await pages.record_artifact(
             run_id="run-1",
             page_id="docs/a.md",
-            artifact_id=sealed.id,
+            artifact_id="different-artifact",
             version=version,
         )
 
@@ -555,6 +699,33 @@ async def test_record_evaluation_accepts_current_artifact(
     await pages.record_evaluation(result)
     assert len(client.evaluations) == 1
     assert client.evaluations[0]["artifact_id"] == sealed.id
+    state = (await pages.get_page_states(run_id="run-1"))[0]
+    assert state.status == "passed"
+    assert state.evaluation_attempt == 1
+
+
+async def test_revision_required_projects_constraint_valid_revising_status(
+    client: FakeClient,
+    pages: PageWorkflowRepository,
+    drafts: DraftRepository,
+) -> None:
+    await _seed_page(pages)
+    version = await pages.reserve_next_version(run_id="run-1", page_id="docs/a.md")
+    sealed = await _seed_artifact(client, drafts, pages, generation=1, version=version)
+    await pages.record_artifact(
+        run_id="run-1",
+        page_id="docs/a.md",
+        artifact_id=sealed.id,
+        version=version,
+    )
+
+    await pages.record_evaluation(
+        _evaluation(sealed.id, version, status="revision_required")
+    )
+
+    state = (await pages.get_page_states(run_id="run-1"))[0]
+    assert state.status == "revising"
+    assert state.evaluation_attempt == 1
 
 
 async def test_record_evaluation_rejects_stale_artifact(
@@ -590,6 +761,120 @@ async def test_record_evaluation_rejects_stale_artifact(
     with pytest.raises(StaleArtifactError):
         await pages.record_evaluation(stale_result)
     assert len(client.evaluations) == 1
+    state = (await pages.get_page_states(run_id="run-1"))[0]
+    assert state.latest_artifact_id == second.id
+    assert state.latest_version == second_version
+    assert state.status == "evaluating"
+
+
+async def test_schedule_revisions_is_atomic_and_idempotent_across_replay(
+    client: FakeClient,
+    pages: PageWorkflowRepository,
+    drafts: DraftRepository,
+) -> None:
+    await _seed_page(pages)
+    version = await pages.reserve_next_version(run_id="run-1", page_id="docs/a.md")
+    sealed = await _seed_artifact(client, drafts, pages, generation=1, version=version)
+    await pages.record_artifact(
+        run_id="run-1",
+        page_id="docs/a.md",
+        artifact_id=sealed.id,
+        version=version,
+    )
+    await pages.record_evaluation(
+        _evaluation(sealed.id, version, status="revision_required")
+    )
+    schedule = RevisionSchedule(
+        page_id="docs/a.md",
+        source_artifact_id=sealed.id,
+        source_version=version,
+        attempt=2,
+        write_input={"task": {"id": "docs/a.md"}},
+        evaluate_input={"attempt": 2},
+    )
+
+    first = await pages.schedule_revisions(
+        run_id="run-1", org_id="org-1", revisions=[schedule]
+    )
+    second = await pages.schedule_revisions(
+        run_id="run-1", org_id="org-1", revisions=[schedule]
+    )
+
+    assert first == second == [2]
+    assert [task.task_id for task in await pages.get_tasks(run_id="run-1")] == [
+        "evaluate:docs/a.md:2",
+        "write:docs/a.md:2",
+    ]
+    state = (await pages.get_page_states(run_id="run-1"))[0]
+    assert state.next_version == 3
+    assert state.status == "revising"
+
+
+async def test_schedule_revisions_rejects_over_budget_before_mutation(
+    client: FakeClient,
+    pages: PageWorkflowRepository,
+) -> None:
+    await _seed_page(pages)
+    schedule = RevisionSchedule(
+        page_id="docs/a.md",
+        source_artifact_id="artifact-1",
+        source_version=1,
+        attempt=4,
+        write_input={},
+        evaluate_input={},
+    )
+
+    with pytest.raises(ValueError, match="attempt.*3"):
+        await pages.schedule_revisions(
+            run_id="run-1", org_id="org-1", revisions=[schedule]
+        )
+
+    assert await pages.get_tasks(run_id="run-1") == []
+    state = (await pages.get_page_states(run_id="run-1"))[0]
+    assert state.next_version == 1
+
+
+async def test_schedule_revisions_rolls_back_pair_and_version_on_insert_failure(
+    client: FakeClient,
+    pages: PageWorkflowRepository,
+    drafts: DraftRepository,
+) -> None:
+    await _seed_page(pages)
+    version = await pages.reserve_next_version(run_id="run-1", page_id="docs/a.md")
+    sealed = await _seed_artifact(client, drafts, pages, generation=1, version=version)
+    await pages.record_artifact(
+        run_id="run-1",
+        page_id="docs/a.md",
+        artifact_id=sealed.id,
+        version=version,
+    )
+    await pages.record_evaluation(
+        _evaluation(sealed.id, version, status="revision_required")
+    )
+    schedule = RevisionSchedule(
+        page_id="docs/a.md",
+        source_artifact_id=sealed.id,
+        source_version=version,
+        attempt=2,
+        write_input={"task": {"id": "docs/a.md"}},
+        evaluate_input={"attempt": 2},
+    )
+    client.fail_evaluate_insert_once = True
+
+    with pytest.raises(RuntimeError, match="injected"):
+        await pages.schedule_revisions(
+            run_id="run-1", org_id="org-1", revisions=[schedule]
+        )
+
+    assert await pages.get_tasks(run_id="run-1") == []
+    failed_state = (await pages.get_page_states(run_id="run-1"))[0]
+    assert failed_state.next_version == 2
+    assert failed_state.status == "revising"
+
+    assert await pages.schedule_revisions(
+        run_id="run-1", org_id="org-1", revisions=[schedule]
+    ) == [2]
+    assert len(await pages.get_tasks(run_id="run-1")) == 2
 
 
 async def test_record_evaluation_rejects_version_mismatch_of_current_artifact(

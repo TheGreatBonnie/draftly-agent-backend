@@ -75,6 +75,33 @@ def _validate_rel_path(path: str, field: str, tool_name: str) -> str:
     return normalized
 
 
+def _require_assigned_path(path: str, tool_name: str) -> None:
+    scope = _require_scope()
+    assigned = getattr(scope, "assigned_page_id", None)
+    if assigned is not None and path != assigned:
+        raise ValueError(
+            f"{tool_name}: path {path!r} is outside assigned page {assigned!r}"
+        )
+
+
+async def _require_assigned_draft(
+    repo: DraftRepository,
+    draft_id: str,
+    tool_name: str,
+) -> None:
+    scope = _require_scope()
+    assigned = getattr(scope, "assigned_page_id", None)
+    if assigned is None:
+        return
+    revision = await repo._get_revision(draft_id)
+    if revision is None:
+        raise ValueError(f"{tool_name}: unknown draft_id {draft_id!r}")
+    if revision.run_id != scope.run_id or revision.path != assigned:
+        raise ValueError(
+            f"{tool_name}: draft {draft_id!r} is outside assigned page {assigned!r}"
+        )
+
+
 @tool
 async def start_draft(
     repository: str,
@@ -91,6 +118,7 @@ async def start_draft(
     require_nonempty(repository, "repository", "start_draft")
     require_nonempty(action, "action", "start_draft")
     clean_path = _validate_rel_path(path, "path", "start_draft")
+    _require_assigned_path(clean_path, "start_draft")
 
     scope = _require_scope()
     repo = build_draft_repository()
@@ -130,6 +158,9 @@ async def get_drafted_docs() -> dict:
     scope = _require_scope()
     repo = build_draft_repository()
     revisions = await repo.get_latest(run_id=scope.run_id)
+    assigned = getattr(scope, "assigned_page_id", None)
+    if assigned is not None:
+        revisions = [revision for revision in revisions if revision.path == assigned]
     files = [
         {
             "path": rev.path,
@@ -177,6 +208,7 @@ async def append_chunk(
         )
 
     repo = build_draft_repository()
+    await _require_assigned_draft(repo, draft_id, "append_chunk")
     count = await repo.append_chunk(draft_id, content)
     logger.debug(
         "append_chunk",
@@ -202,6 +234,7 @@ async def finalize_draft(draft_id: str) -> dict:
     except (EmptyToolInputError, OversizedToolInputError) as exc:
         raise ValueError(str(exc)) from exc
     repo = build_draft_repository()
+    await _require_assigned_draft(repo, draft_id, "finalize_draft")
     revision = await repo.finalize(draft_id)
     logger.info(
         "finalize_draft",

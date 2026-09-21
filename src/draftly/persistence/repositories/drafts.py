@@ -85,6 +85,14 @@ class DraftRepository:
         action: str,
         version: int | None = None,
     ) -> DraftRevision:
+        if version is not None:
+            existing = await self._get_versioned_revision(
+                run_id=run_id,
+                path=path,
+                version=version,
+            )
+            if existing is not None:
+                return existing
         draft_id = str(uuid4())
         now = datetime.now(UTC)
         await self.database.execute(
@@ -117,6 +125,60 @@ class DraftRepository:
             version=version,
             content_hash=None,
         )
+
+    async def _get_versioned_revision(
+        self,
+        *,
+        run_id: str,
+        path: str,
+        version: int,
+    ) -> DraftRevision | None:
+        row = await self.database.fetch_one(
+            """
+            SELECT * FROM draft_revisions
+             WHERE run_id = $1 AND path = $2 AND version = $3
+            """,
+            run_id,
+            path,
+            version,
+        )
+        return self._to_revision(row) if row is not None else None
+
+    async def prepare_versioned_write(
+        self,
+        *,
+        run_id: str,
+        path: str,
+        version: int,
+    ) -> DraftFile | None:
+        """Prepare an idempotent task replay for one artifact version.
+
+        A sealed artifact is returned for reuse. An incomplete artifact keeps
+        its stable identity but its partial chunks are cleared so the replayed
+        writer starts from a clean body instead of appending duplicates.
+        """
+        revision = await self._get_versioned_revision(
+            run_id=run_id,
+            path=path,
+            version=version,
+        )
+        if revision is None:
+            return None
+        if revision.sealed:
+            return DraftFile(
+                path=revision.path,
+                action=revision.action,
+                content=await self._assembled(revision.id),
+                content_size=revision.content_size,
+                artifact_id=revision.id,
+                version=revision.version,
+                content_hash=revision.content_hash,
+            )
+        await self.database.execute(
+            "DELETE FROM draft_chunks WHERE draft_id = $1",
+            revision.id,
+        )
+        return None
 
     async def _get_revision(self, draft_id: str) -> DraftRevision | None:
         row = await self.database.fetch_one(

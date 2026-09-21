@@ -8,6 +8,8 @@ instructions.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from collections.abc import Callable
 from typing import Any
 
@@ -18,7 +20,10 @@ from draftly.agents.documentation.draft_scope import (
 )
 from draftly.agents.documentation.writer import WriterFactory
 from draftly.agents.schemas import DocumentationTask
-from draftly.orchestration.nodes.evaluate import compute_page_metrics
+from draftly.orchestration.nodes.evaluate import (
+    _evidence_has_signals,
+    compute_page_metrics,
+)
 from draftly.orchestration.nodes.fan_out import render_task_prompt
 from draftly.orchestration.nodes.review import page_summaries, render_review_prompt
 from draftly.orchestration.nodes.rubric_grader import RubricGrader
@@ -26,15 +31,18 @@ from draftly.orchestration.page_workflow.models import (
     DocumentArtifact,
     PageEvaluationResult,
     PageStatus,
+    normalize_page_id,
 )
 from draftly.orchestration.page_workflow.repository import (
+    MAX_AUTOMATIC_EVALUATION_ATTEMPTS,
     PageState,
     PageWorkflowRepository,
+    RevisionSchedule,
     WorkflowTask,
 )
 from draftly.persistence.repositories.drafts import DraftFile, DraftRepository
 
-MAX_PAGE_EVALUATION_ATTEMPTS = 3
+MAX_PAGE_EVALUATION_ATTEMPTS = MAX_AUTOMATIC_EVALUATION_ATTEMPTS
 CROSS_PAGE_REVIEW_TASK_ID = "cross-page-review"
 
 
@@ -82,6 +90,16 @@ def render_revision_prompt(
     return "\n".join(lines)
 
 
+def _canonical_page_id(value: str) -> str:
+    try:
+        normalized = normalize_page_id(value)
+    except ValueError as exc:
+        raise ValueError(f"page ID must be canonical: {value!r}") from exc
+    if normalized != value:
+        raise ValueError(f"page ID must be canonical: {value!r}")
+    return normalized
+
+
 def _document_task(workflow_task: WorkflowTask) -> DocumentationTask:
     raw = workflow_task.input_data.get("task")
     if not isinstance(raw, dict):
@@ -89,6 +107,7 @@ def _document_task(workflow_task: WorkflowTask) -> DocumentationTask:
     page = DocumentationTask.model_validate(raw)
     if workflow_task.page_id is None:
         raise ValueError(f"task {workflow_task.task_id!r} is missing page_id")
+    _canonical_page_id(workflow_task.page_id)
     if page.id != workflow_task.page_id or page.path != workflow_task.page_id:
         raise ValueError(
             f"task {workflow_task.task_id!r} page plan does not match page_id "
@@ -138,28 +157,6 @@ async def _current_artifact(
     return artifact
 
 
-async def _set_page_status(
-    repository: PageWorkflowRepository,
-    *,
-    run_id: str,
-    page_id: str,
-    status: str,
-) -> None:
-    database = getattr(repository, "database", None)
-    if database is None:
-        return
-    await database.execute(
-        """
-        UPDATE documentation_page_states
-           SET status = $3, updated_at = now()
-         WHERE run_id = $1 AND page_id = $2
-        """,
-        run_id,
-        page_id,
-        status,
-    )
-
-
 class PageWriterHandler:
     """Invoke one fresh writer and promote exactly one sealed artifact."""
 
@@ -181,6 +178,28 @@ class PageWriterHandler:
         version = workflow_task.artifact_version
         if version is None:
             raise ValueError(f"write task {workflow_task.task_id!r} has no version")
+
+        prepare = getattr(self.drafts_repo, "prepare_versioned_write", None)
+        existing_file = (
+            await prepare(
+                run_id=workflow_task.run_id,
+                path=page.id,
+                version=version,
+            )
+            if prepare is not None
+            else None
+        )
+        if existing_file is not None and existing_file.version == version:
+            existing = _artifact(page.id, existing_file)
+            if not existing.content.strip():
+                raise ValueError(f"page {page.id!r} sealed artifact is empty")
+            await self.page_repository.record_artifact(
+                run_id=workflow_task.run_id,
+                page_id=page.id,
+                artifact_id=existing.artifact_id,
+                version=version,
+            )
+            return existing.model_dump(exclude={"content"})
 
         raw_evaluation = workflow_task.input_data.get("evaluation")
         evaluation = (
@@ -225,6 +244,7 @@ class PageWriterHandler:
                 org_id=workflow_task.org_id,
                 generation=version,
                 version=version,
+                assigned_page_id=page.id,
             )
         )
         try:
@@ -269,6 +289,8 @@ class PageEvaluatorHandler:
         self.drafts_repo = drafts_repo
         self.page_repository = page_repository
         self.max_attempts = max_attempts
+        if self.max_attempts > MAX_AUTOMATIC_EVALUATION_ATTEMPTS:
+            raise ValueError("max_attempts cannot exceed the shared automatic budget of 3")
 
     async def __call__(self, workflow_task: WorkflowTask) -> dict[str, Any]:
         page = _document_task(workflow_task)
@@ -276,6 +298,10 @@ class PageEvaluatorHandler:
         if version is None:
             raise ValueError(f"evaluate task {workflow_task.task_id!r} has no version")
         attempt = int(workflow_task.input_data.get("attempt") or version)
+        if attempt < 1 or attempt > self.max_attempts:
+            raise ValueError(
+                f"automatic evaluation attempt must be between 1 and {self.max_attempts}"
+            )
         artifact = await _current_artifact(
             self.drafts_repo,
             run_id=workflow_task.run_id,
@@ -287,7 +313,11 @@ class PageEvaluatorHandler:
             evidence = [item.model_dump() for item in page.evidence]
         if not isinstance(evidence, list):
             raise ValueError("page evidence must be a list")
-        normalized_evidence = [item for item in evidence if isinstance(item, dict)]
+        normalized_evidence = [
+            item
+            for item in evidence
+            if isinstance(item, dict) and _evidence_has_signals(item)
+        ]
         metrics = compute_page_metrics(normalized_evidence, artifact.content)
         quality = metrics[-1]
 
@@ -332,7 +362,6 @@ class PageEvaluatorHandler:
             run_id=workflow_task.run_id,
             org_id=workflow_task.org_id,
         )
-        await self._project_page_state(workflow_task.run_id, result)
 
         if status == "revision_required":
             await self._schedule_revision(workflow_task, page, result)
@@ -340,77 +369,37 @@ class PageEvaluatorHandler:
             await self._schedule_review_if_ready(workflow_task, page)
         return result.model_dump()
 
-    async def _project_page_state(
-        self,
-        run_id: str,
-        result: PageEvaluationResult,
-    ) -> None:
-        database = getattr(self.page_repository, "database", None)
-        if database is None:
-            return
-        reason = (
-            "; ".join(result.revision_feedback)
-            if result.status == PageStatus.AWAITING_HUMAN_REVIEW.value
-            else None
-        )
-        await database.execute(
-            """
-            UPDATE documentation_page_states
-               SET status = $3,
-                   evaluation_attempt = $4,
-                   escalation_reason = $5,
-                   updated_at = now()
-             WHERE run_id = $1 AND page_id = $2
-            """,
-            run_id,
-            result.page_id,
-            result.status,
-            result.attempt,
-            reason,
-        )
-
     async def _schedule_revision(
         self,
         workflow_task: WorkflowTask,
         page: DocumentationTask,
         result: PageEvaluationResult,
     ) -> None:
-        next_version = await self.page_repository.reserve_next_version(
-            run_id=workflow_task.run_id,
-            page_id=page.id,
-        )
-        write_id = f"write:{page.id}:{next_version}"
-        evaluate_id = f"evaluate:{page.id}:{next_version}"
         reviewer_instructions = list(
             workflow_task.input_data.get("reviewer_instructions") or []
         )
-        await self.page_repository.enqueue_task(
+        await self.page_repository.schedule_revisions(
             run_id=workflow_task.run_id,
-            task_id=write_id,
             org_id=workflow_task.org_id,
-            task_type="write",
-            page_id=page.id,
-            artifact_version=next_version,
-            input_data={
-                "task": page.model_dump(),
-                "evaluation": result.model_dump(),
-                "reviewer_instructions": reviewer_instructions,
-            },
-        )
-        await self.page_repository.enqueue_task(
-            run_id=workflow_task.run_id,
-            task_id=evaluate_id,
-            org_id=workflow_task.org_id,
-            task_type="evaluate",
-            page_id=page.id,
-            artifact_version=next_version,
-            dependencies=[write_id],
-            input_data={
-                "task": page.model_dump(),
-                "evidence": [item.model_dump() for item in page.evidence],
-                "attempt": result.attempt + 1,
-                "reviewer_instructions": reviewer_instructions,
-            },
+            revisions=[
+                RevisionSchedule(
+                    page_id=page.id,
+                    source_artifact_id=result.artifact_id,
+                    source_version=result.version,
+                    attempt=result.attempt + 1,
+                    write_input={
+                        "task": page.model_dump(),
+                        "evaluation": result.model_dump(),
+                        "reviewer_instructions": reviewer_instructions,
+                    },
+                    evaluate_input={
+                        "task": page.model_dump(),
+                        "evidence": [item.model_dump() for item in page.evidence],
+                        "attempt": result.attempt + 1,
+                        "reviewer_instructions": reviewer_instructions,
+                    },
+                )
+            ],
         )
 
     async def _schedule_review_if_ready(
@@ -421,22 +410,41 @@ class PageEvaluatorHandler:
         states = await self.page_repository.get_page_states(run_id=workflow_task.run_id)
         if not states or any(state.status != PageStatus.PASSED.value for state in states):
             return
-        review_id = CROSS_PAGE_REVIEW_TASK_ID
-        get_tasks = getattr(self.page_repository, "get_tasks", None)
-        if get_tasks is not None:
-            existing = [
-                task
-                for task in await get_tasks(run_id=workflow_task.run_id)
-                if task.task_type == "cross_page_review"
-            ]
-            review_id = f"{CROSS_PAGE_REVIEW_TASK_ID}:{len(existing) + 1}"
+        if any(
+            state.latest_artifact_id is None or state.latest_version < 1
+            for state in states
+        ):
+            raise ValueError("passed pages must have accepted artifact identities")
+        snapshot = {
+            state.page_id: {
+                "artifact_id": state.latest_artifact_id,
+                "version": state.latest_version,
+                "content_hash": (
+                    await _current_artifact(
+                        self.drafts_repo,
+                        run_id=workflow_task.run_id,
+                        page_id=state.page_id,
+                        expected_version=state.latest_version,
+                        expected_artifact_id=state.latest_artifact_id,
+                    )
+                ).content_hash,
+            }
+            for state in states
+        }
+        digest = hashlib.sha256(
+            json.dumps(snapshot, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()[:16]
+        review_id = f"{CROSS_PAGE_REVIEW_TASK_ID}:{digest}"
         await self.page_repository.enqueue_task(
             run_id=workflow_task.run_id,
             task_id=review_id,
             org_id=workflow_task.org_id,
             task_type="cross_page_review",
             dependencies=[workflow_task.task_id],
-            input_data={"last_page_task": page.model_dump()},
+            input_data={
+                "last_page_task": page.model_dump(),
+                "artifact_snapshot": snapshot,
+            },
         )
 
 
@@ -449,15 +457,43 @@ class CrossPageReviewHandler:
         reviewer_factory: Callable[[], Any],
         drafts_repo: DraftRepository,
         page_repository: PageWorkflowRepository,
+        max_attempts: int = MAX_PAGE_EVALUATION_ATTEMPTS,
     ) -> None:
         self.reviewer_factory = reviewer_factory
         self.drafts_repo = drafts_repo
         self.page_repository = page_repository
+        self.max_attempts = max_attempts
+        if self.max_attempts > MAX_AUTOMATIC_EVALUATION_ATTEMPTS:
+            raise ValueError("max_attempts cannot exceed the shared automatic budget of 3")
 
     async def __call__(self, workflow_task: WorkflowTask) -> dict[str, Any]:
         states = await self.page_repository.get_page_states(run_id=workflow_task.run_id)
-        if not states or any(state.status != PageStatus.PASSED.value for state in states):
+        snapshot = workflow_task.input_data.get("artifact_snapshot")
+        if not isinstance(snapshot, dict):
+            snapshot = {}
+        replaying = bool(states) and all(
+            state.status == PageStatus.PASSED.value
+            or (
+                state.status == PageStatus.REVISING.value
+                and isinstance(snapshot.get(state.page_id), dict)
+                and snapshot[state.page_id].get("artifact_id")
+                == state.latest_artifact_id
+                and snapshot[state.page_id].get("version") == state.latest_version
+            )
+            for state in states
+        )
+        if not replaying:
             raise ValueError("cross-page review starts only after every page has passed")
+        for state in states:
+            _canonical_page_id(state.page_id)
+            if state.path != state.page_id:
+                raise ValueError(
+                    f"page path must match canonical page ID {state.page_id!r}"
+                )
+            if state.latest_artifact_id is None or state.latest_version < 1:
+                raise ValueError(
+                    f"passed page {state.page_id!r} has no accepted artifact identity"
+                )
 
         artifacts: dict[str, DocumentArtifact] = {}
         for state in states:
@@ -468,6 +504,14 @@ class CrossPageReviewHandler:
                 expected_version=state.latest_version,
                 expected_artifact_id=state.latest_artifact_id,
             )
+            expected = snapshot.get(state.page_id)
+            if isinstance(expected, dict) and expected.get("content_hash") not in (
+                None,
+                artifacts[state.page_id].content_hash,
+            ):
+                raise ValueError(
+                    f"review snapshot for {state.page_id!r} is no longer current"
+                )
         rows = [
             {
                 "task_id": state.page_id,
@@ -506,6 +550,7 @@ class CrossPageReviewHandler:
             raise ValueError("cross-page corrections must name known page IDs")
 
         known = {state.page_id: state for state in states}
+        validated: list[tuple[PageState, DocumentationTask, list[str]]] = []
         corrected: list[str] = []
         for correction in corrections:
             page_id = str(getattr(correction, "task_id", "") or "")
@@ -515,63 +560,47 @@ class CrossPageReviewHandler:
             if page_id in corrected:
                 continue
             corrected.append(page_id)
-            await self._schedule_correction(
-                workflow_task,
-                known[page_id],
-                [
-                    str(item)
-                    for item in getattr(correction, "instructions", []) or []
-                    if str(item).strip()
-                ],
+            state = known[page_id]
+            next_attempt = state.evaluation_attempt + 1
+            if next_attempt > self.max_attempts:
+                raise ValueError(
+                    f"automatic evaluation attempt cannot exceed {self.max_attempts}"
+                )
+            validated.append(
+                (
+                    state,
+                    await self._load_page_plan(workflow_task.run_id, state),
+                    [
+                        str(item)
+                        for item in getattr(correction, "instructions", []) or []
+                        if str(item).strip()
+                    ],
+                )
             )
+        await self.page_repository.schedule_revisions(
+            run_id=workflow_task.run_id,
+            org_id=workflow_task.org_id,
+            revisions=[
+                RevisionSchedule(
+                    page_id=state.page_id,
+                    source_artifact_id=str(state.latest_artifact_id),
+                    source_version=state.latest_version,
+                    attempt=state.evaluation_attempt + 1,
+                    write_input={
+                        "task": page.model_dump(),
+                        "reviewer_instructions": instructions,
+                    },
+                    evaluate_input={
+                        "task": page.model_dump(),
+                        "evidence": [item.model_dump() for item in page.evidence],
+                        "attempt": state.evaluation_attempt + 1,
+                        "reviewer_instructions": instructions,
+                    },
+                )
+                for state, page, instructions in validated
+            ],
+        )
         return {"passed": False, "corrected_page_ids": corrected}
-
-    async def _schedule_correction(
-        self,
-        workflow_task: WorkflowTask,
-        state: PageState,
-        instructions: list[str],
-    ) -> None:
-        page = await self._load_page_plan(workflow_task.run_id, state)
-        next_version = await self.page_repository.reserve_next_version(
-            run_id=workflow_task.run_id,
-            page_id=state.page_id,
-        )
-        write_id = f"write:{state.page_id}:{next_version}"
-        evaluate_id = f"evaluate:{state.page_id}:{next_version}"
-        await _set_page_status(
-            self.page_repository,
-            run_id=workflow_task.run_id,
-            page_id=state.page_id,
-            status=PageStatus.REVISING.value,
-        )
-        await self.page_repository.enqueue_task(
-            run_id=workflow_task.run_id,
-            task_id=write_id,
-            org_id=workflow_task.org_id,
-            task_type="write",
-            page_id=state.page_id,
-            artifact_version=next_version,
-            input_data={
-                "task": page.model_dump(),
-                "reviewer_instructions": instructions,
-            },
-        )
-        await self.page_repository.enqueue_task(
-            run_id=workflow_task.run_id,
-            task_id=evaluate_id,
-            org_id=workflow_task.org_id,
-            task_type="evaluate",
-            page_id=state.page_id,
-            artifact_version=next_version,
-            dependencies=[write_id],
-            input_data={
-                "task": page.model_dump(),
-                "evidence": [item.model_dump() for item in page.evidence],
-                "attempt": state.evaluation_attempt + 1,
-                "reviewer_instructions": instructions,
-            },
-        )
 
     async def _load_page_plan(
         self,

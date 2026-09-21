@@ -19,6 +19,8 @@ from typing import Any
 from draftly.integrations.database.client import DatabaseClient
 from draftly.orchestration.page_workflow.models import PageEvaluationResult
 
+MAX_AUTOMATIC_EVALUATION_ATTEMPTS = 3
+
 
 class StaleArtifactError(Exception):  # noqa: N818 - public API name from the plan
     """An artifact write no longer targets the page's current artifact.
@@ -74,6 +76,18 @@ class WorkflowTask:
     output_data: dict[str, Any] | None
     created_at: datetime | None
     updated_at: datetime | None
+
+
+@dataclass(frozen=True)
+class RevisionSchedule:
+    """Atomic write/evaluate pair derived from one accepted source artifact."""
+
+    page_id: str
+    source_artifact_id: str
+    source_version: int
+    attempt: int
+    write_input: dict[str, Any]
+    evaluate_input: dict[str, Any]
 
 
 class PageWorkflowRepository:
@@ -156,7 +170,13 @@ class PageWorkflowRepository:
                        updated_at = now()
                  WHERE run_id = $1
                    AND page_id = $2
-                   AND latest_version < $4
+                   AND (
+                       latest_version < $4
+                       OR (
+                           latest_version = $4
+                           AND latest_artifact_id = $3
+                       )
+                   )
                  RETURNING latest_artifact_id
             )
             SELECT count(*) AS updated FROM promoted
@@ -219,6 +239,7 @@ class PageWorkflowRepository:
                 SELECT latest_artifact_id, latest_version
                   FROM documentation_page_states
                  WHERE run_id = $1 AND page_id = $2
+                 FOR UPDATE
                 """,
                 run,
                 result.page_id,
@@ -233,13 +254,15 @@ class PageWorkflowRepository:
                 raise StaleArtifactError("evaluation targets a stale artifact version")
             if str(artifact["content_hash"]) != result.content_hash:
                 raise StaleArtifactError("evaluation content hash does not match the artifact")
-            await conn.execute(
+            persisted = await conn.fetchrow(
                 """
                 INSERT INTO documentation_page_evaluations (
                     run_id, org_id, page_id, artifact_id, version, content_hash,
                     attempt, status, score, metrics, revision_feedback
                 ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-                ON CONFLICT (run_id, artifact_id) DO NOTHING
+                ON CONFLICT (run_id, artifact_id) DO UPDATE
+                    SET artifact_id = EXCLUDED.artifact_id
+                RETURNING status, attempt, revision_feedback
                 """,
                 run,
                 org,
@@ -253,6 +276,151 @@ class PageWorkflowRepository:
                 [metric.model_dump() for metric in result.metrics],
                 list(result.revision_feedback),
             )
+            persisted_status = str(persisted["status"]) if persisted else result.status
+            persisted_attempt = int(persisted["attempt"]) if persisted else result.attempt
+            persisted_feedback = (
+                list(persisted["revision_feedback"])
+                if persisted
+                else list(result.revision_feedback)
+            )
+            page_status = {
+                "passed": "passed",
+                "revision_required": "revising",
+                "awaiting_human_review": "awaiting_human_review",
+            }[persisted_status]
+            escalation_reason = (
+                "; ".join(str(item) for item in persisted_feedback)
+                if persisted_status == "awaiting_human_review"
+                else None
+            )
+            projected = await conn.fetchrow(
+                """
+                UPDATE documentation_page_states
+                   SET status = $6,
+                       evaluation_attempt = $7,
+                       escalation_reason = $8,
+                       updated_at = now()
+                 WHERE run_id = $1
+                   AND page_id = $2
+                   AND latest_artifact_id = $3
+                   AND latest_version = $4
+                   AND EXISTS (
+                       SELECT 1 FROM draft_revisions
+                        WHERE id = $3 AND content_hash = $5 AND sealed = TRUE
+                   )
+                 RETURNING page_id
+                """,
+                run,
+                result.page_id,
+                result.artifact_id,
+                result.version,
+                result.content_hash,
+                page_status,
+                persisted_attempt,
+                escalation_reason,
+            )
+            if projected is None:
+                raise StaleArtifactError(
+                    "evaluation state projection lost the current artifact identity"
+                )
+
+    async def schedule_revisions(
+        self,
+        *,
+        run_id: str,
+        org_id: str,
+        revisions: list[RevisionSchedule],
+    ) -> list[int]:
+        """Atomically create idempotent write/evaluate pairs for page revisions."""
+        if not revisions:
+            return []
+        page_ids = [revision.page_id for revision in revisions]
+        if len(page_ids) != len(set(page_ids)):
+            raise ValueError("revision batch contains duplicate page IDs")
+        if any(
+            revision.attempt < 1
+            or revision.attempt > MAX_AUTOMATIC_EVALUATION_ATTEMPTS
+            for revision in revisions
+        ):
+            raise ValueError("automatic page evaluation attempt must be between 1 and 3")
+
+        versions: list[int] = []
+        async with self.database.transaction() as conn:
+            for revision in revisions:
+                page = await conn.fetchrow(
+                    """
+                    SELECT latest_artifact_id, latest_version, evaluation_attempt
+                      FROM documentation_page_states
+                     WHERE run_id = $1 AND page_id = $2
+                     FOR UPDATE
+                    """,
+                    run_id,
+                    revision.page_id,
+                )
+                if page is None:
+                    raise StaleArtifactError(
+                        f"page {revision.page_id!r} has no workflow state"
+                    )
+                if (
+                    str(page["latest_artifact_id"]) != revision.source_artifact_id
+                    or int(page["latest_version"]) != revision.source_version
+                ):
+                    raise StaleArtifactError(
+                        f"revision for {revision.page_id!r} targets a stale artifact"
+                    )
+                if int(page["evaluation_attempt"]) + 1 != revision.attempt:
+                    raise ValueError(
+                        f"revision attempt {revision.attempt} is not the next page attempt"
+                    )
+
+                next_version = revision.source_version + 1
+                write_id = f"write:{revision.page_id}:{next_version}"
+                evaluate_id = f"evaluate:{revision.page_id}:{next_version}"
+                await conn.execute(
+                    """
+                    UPDATE documentation_page_states
+                       SET next_version = GREATEST(next_version, $3 + 1),
+                           status = 'revising',
+                           updated_at = now()
+                     WHERE run_id = $1 AND page_id = $2
+                    """,
+                    run_id,
+                    revision.page_id,
+                    next_version,
+                )
+                await conn.execute(
+                    """
+                    INSERT INTO documentation_workflow_tasks (
+                        run_id, task_id, org_id, task_type, page_id,
+                        artifact_version, dependencies, input_data, status
+                    ) VALUES ($1, $2, $3, 'write', $4, $5, '[]'::jsonb, $6, 'pending')
+                    ON CONFLICT (run_id, task_id) DO NOTHING
+                    """,
+                    run_id,
+                    write_id,
+                    org_id,
+                    revision.page_id,
+                    next_version,
+                    dict(revision.write_input),
+                )
+                await conn.execute(
+                    """
+                    INSERT INTO documentation_workflow_tasks (
+                        run_id, task_id, org_id, task_type, page_id,
+                        artifact_version, dependencies, input_data, status
+                    ) VALUES ($1, $2, $3, 'evaluate', $4, $5, $6, $7, 'pending')
+                    ON CONFLICT (run_id, task_id) DO NOTHING
+                    """,
+                    run_id,
+                    evaluate_id,
+                    org_id,
+                    revision.page_id,
+                    next_version,
+                    [write_id],
+                    dict(revision.evaluate_input),
+                )
+                versions.append(next_version)
+        return versions
 
     # -- workflow tasks ------------------------------------------------------
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -59,6 +60,7 @@ class _FakeRepo:
     ) -> _FakeRevision:
         draft_id = f"d-{len(self.revisions) + 1}"
         self.revisions[draft_id] = {
+            "id": draft_id,
             "run_id": run_id,
             "org_id": org_id,
             "generation": generation,
@@ -88,6 +90,10 @@ class _FakeRepo:
     async def get_latest(self, *, run_id: str) -> list[_FakeDraftFile]:
         self.latest_calls.append(run_id)
         return list(self.latest)
+
+    async def _get_revision(self, draft_id: str) -> Any:
+        row = self.revisions.get(draft_id)
+        return SimpleNamespace(**row) if row is not None else None
 
 
 @pytest.fixture
@@ -142,6 +148,78 @@ async def test_start_draft_persists_page_workflow_artifact_version(
         reset_draft_scope(token)
 
     assert repo.revisions[result["draft_id"]]["version"] == 4
+
+
+async def test_page_scoped_start_draft_rejects_sibling_path(repo: _FakeRepo) -> None:
+    token = set_draft_scope(
+        DraftScope(
+            run_id="run-1",
+            org_id="org-1",
+            generation=1,
+            version=1,
+            assigned_page_id="docs/a.md",
+        )
+    )
+    try:
+        with pytest.raises(ValueError, match="assigned page"):
+            await start_draft(
+                repository="acme/api", path="docs/b.md", action="update"
+            )
+    finally:
+        reset_draft_scope(token)
+
+
+async def test_page_scoped_append_and_finalize_reject_sibling_draft(
+    repo: _FakeRepo,
+) -> None:
+    legacy_token = set_draft_scope(
+        DraftScope(run_id="run-1", org_id="org-1", generation=1)
+    )
+    try:
+        sibling = await start_draft(
+            repository="acme/api", path="docs/b.md", action="update"
+        )
+    finally:
+        reset_draft_scope(legacy_token)
+
+    token = set_draft_scope(
+        DraftScope(
+            run_id="run-1",
+            org_id="org-1",
+            generation=1,
+            version=1,
+            assigned_page_id="docs/a.md",
+        )
+    )
+    try:
+        with pytest.raises(ValueError, match="assigned page"):
+            await append_chunk(sibling["draft_id"], "forbidden")
+        with pytest.raises(ValueError, match="assigned page"):
+            await finalize_draft(sibling["draft_id"])
+    finally:
+        reset_draft_scope(token)
+
+
+async def test_page_scoped_get_drafted_docs_filters_siblings(repo: _FakeRepo) -> None:
+    repo.latest = [
+        _FakeDraftFile(path="docs/a.md", action="update", content="a"),
+        _FakeDraftFile(path="docs/b.md", action="update", content="b"),
+    ]
+    token = set_draft_scope(
+        DraftScope(
+            run_id="run-1",
+            org_id="org-1",
+            generation=1,
+            version=1,
+            assigned_page_id="docs/a.md",
+        )
+    )
+    try:
+        result = await get_drafted_docs()
+    finally:
+        reset_draft_scope(token)
+
+    assert [item["path"] for item in result["files"]] == ["docs/a.md"]
 
 
 async def test_start_draft_rejects_unsafe_paths(repo: _FakeRepo, scoped_run: None) -> None:

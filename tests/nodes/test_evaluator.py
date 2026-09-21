@@ -54,7 +54,17 @@ class TestComputeQuality:
     def test_empty_evidence_length_only(self) -> None:
         score, reasons = compute_quality([], "x" * 1000)
         assert score < 0.7
-        assert reasons
+        assert reasons == ["Adequate detail level"]
+
+    def test_signal_free_evidence_preserves_legacy_reason_shape(self) -> None:
+        score, reasons = compute_quality([{}], "x" * 1000)
+        assert score == 0.3
+        assert reasons == ["Adequate detail level"]
+
+    def test_short_empty_evidence_preserves_empty_legacy_reasons(self) -> None:
+        score, reasons = compute_quality([], "short")
+        assert score < 0.7
+        assert reasons == []
 
     def test_missing_citations(self) -> None:
         score, _ = compute_quality(

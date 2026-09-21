@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 from dataclasses import replace
 from types import SimpleNamespace
@@ -179,9 +180,10 @@ class _Pages:
     ) -> None:
         self.evaluations.append(result)
         state = self.states[result.page_id]
+        page_status = "revising" if result.status == "revision_required" else result.status
         self.states[result.page_id] = replace(
             state,
-            status=result.status,
+            status=page_status,
             evaluation_attempt=result.attempt,
             escalation_reason=(
                 "; ".join(result.revision_feedback)
@@ -191,7 +193,48 @@ class _Pages:
         )
 
     async def enqueue_task(self, **kwargs: Any) -> None:
-        self.enqueued.append(kwargs)
+        if not any(item["task_id"] == kwargs["task_id"] for item in self.enqueued):
+            self.enqueued.append(kwargs)
+
+    async def schedule_revisions(
+        self,
+        *,
+        run_id: str,
+        org_id: str,
+        revisions: list[Any],
+    ) -> list[int]:
+        if any(revision.attempt > 3 for revision in revisions):
+            raise ValueError("automatic page evaluation attempt must be <= 3")
+        versions: list[int] = []
+        for revision in revisions:
+            state = self.states[revision.page_id]
+            version = revision.source_version + 1
+            versions.append(version)
+            self.states[revision.page_id] = replace(
+                state,
+                status="revising",
+                next_version=max(state.next_version, version + 1),
+            )
+            await self.enqueue_task(
+                run_id=run_id,
+                task_id=f"write:{revision.page_id}:{version}",
+                org_id=org_id,
+                task_type="write",
+                page_id=revision.page_id,
+                artifact_version=version,
+                input_data=revision.write_input,
+            )
+            await self.enqueue_task(
+                run_id=run_id,
+                task_id=f"evaluate:{revision.page_id}:{version}",
+                org_id=org_id,
+                task_type="evaluate",
+                page_id=revision.page_id,
+                artifact_version=version,
+                dependencies=[f"write:{revision.page_id}:{version}"],
+                input_data=revision.evaluate_input,
+            )
+        return versions
 
     async def get_tasks(self, *, run_id: str) -> list[WorkflowTask]:
         return list(self.tasks)
@@ -285,6 +328,32 @@ async def test_initial_writer_receives_one_page_and_only_its_evidence() -> None:
             "version": 1,
         }
     ]
+
+
+async def test_writer_replay_reuses_sealed_expected_artifact_without_agent_call() -> None:
+    page = _page_task()
+    artifact = _artifact()
+    class _ReplayDrafts(_Drafts):
+        async def prepare_versioned_write(
+            self, *, run_id: str, path: str, version: int
+        ) -> Any:
+            return await self.get_path_latest(run_id=run_id, path=path)
+
+    drafts = _ReplayDrafts([artifact])
+    pages = _Pages([_state(page.id, status="evaluating", artifact=artifact)])
+    factory = _WriterFactory()
+    handler = PageWriterHandler(
+        writer_factory=factory,
+        drafts_repo=drafts,
+        page_repository=pages,
+    )
+
+    output = await handler(
+        _task(task_type="write", input_data={"task": page.model_dump()})
+    )
+
+    assert factory.created_for == []
+    assert output["artifact_id"] == artifact.artifact_id
 
 
 async def test_revision_writer_receives_only_current_page_failure_context() -> None:
@@ -386,7 +455,48 @@ async def test_passing_page_creates_no_revision_task() -> None:
     assert not [item for item in pages.enqueued if item["task_type"] == "write"]
 
 
-async def test_passing_correction_schedules_a_new_cross_page_review_round() -> None:
+async def test_newer_artifact_promotion_after_evaluation_cannot_be_overwritten() -> None:
+    page = _page_task()
+    first = _artifact()
+    second = _artifact(version=2)
+
+    class _InterleavingPages(_Pages):
+        async def record_evaluation(
+            self,
+            result: PageEvaluationResult,
+            *,
+            run_id: str | None = None,
+            org_id: str | None = None,
+        ) -> None:
+            self.evaluations.append(result)
+            current = self.states[result.page_id]
+            self.states[result.page_id] = replace(
+                current,
+                latest_artifact_id=second.artifact_id,
+                latest_version=second.version,
+                status="evaluating",
+            )
+
+    pages = _InterleavingPages(
+        [_state(page.id, status="evaluating", artifact=first)]
+    )
+    handler = PageEvaluatorHandler(
+        rubric_grader=_Grader(),
+        drafts_repo=_Drafts([first]),
+        page_repository=pages,
+    )
+
+    await handler(
+        _task(task_type="evaluate", input_data=_evaluation_input(page, attempt=1))
+    )
+
+    state = pages.states[page.id]
+    assert state.latest_artifact_id == second.artifact_id
+    assert state.status == "evaluating"
+    assert pages.enqueued == []
+
+
+async def test_passing_correction_schedules_review_for_current_artifact_snapshot() -> None:
     page = _page_task()
     artifact = _artifact(version=2)
     prior_review = _task(task_type="cross_page_review", page_id="review")
@@ -410,7 +520,35 @@ async def test_passing_correction_schedules_a_new_cross_page_review_round() -> N
 
     assert output["status"] == "passed"
     reviews = [item for item in pages.enqueued if item["task_type"] == "cross_page_review"]
-    assert [item["task_id"] for item in reviews] == ["cross-page-review:2"]
+    assert len(reviews) == 1
+    assert reviews[0]["task_id"].startswith("cross-page-review:")
+    assert reviews[0]["input_data"]["artifact_snapshot"] == {
+        page.id: {
+            "artifact_id": artifact.artifact_id,
+            "version": artifact.version,
+            "content_hash": artifact.content_hash,
+        }
+    }
+
+
+async def test_review_scheduling_replay_deduplicates_same_artifact_snapshot() -> None:
+    page = _page_task()
+    artifact = _artifact()
+    pages = _Pages([_state(page.id, status="evaluating", artifact=artifact)])
+    handler = PageEvaluatorHandler(
+        rubric_grader=_Grader(),
+        drafts_repo=_Drafts([artifact]),
+        page_repository=pages,
+    )
+    task = _task(
+        task_type="evaluate",
+        input_data=_evaluation_input(page, attempt=1),
+    )
+
+    await asyncio.gather(handler(task), handler(task))
+
+    reviews = [item for item in pages.enqueued if item["task_type"] == "cross_page_review"]
+    assert len(reviews) == 1
 
 
 async def test_failing_attempt_one_schedules_only_version_two_pair() -> None:
@@ -480,6 +618,57 @@ async def test_missing_evidence_escalates_on_first_attempt_without_revision() ->
 
     assert output["status"] == "awaiting_human_review"
     assert not pages.enqueued
+    assert grader.calls == []
+
+
+@pytest.mark.parametrize("evidence", [[{}], [{"excerpt": "no locator"}]])
+async def test_signal_free_evidence_escalates_without_grader_or_revision(
+    evidence: list[dict[str, Any]],
+) -> None:
+    page = _page_task()
+    artifact = _artifact(content="# OAuth\n\nNo attributable source.")
+    pages = _Pages([_state(page.id, status="evaluating", artifact=artifact)])
+    grader = _Grader()
+    handler = PageEvaluatorHandler(
+        rubric_grader=grader,
+        drafts_repo=_Drafts([artifact]),
+        page_repository=pages,
+    )
+
+    output = await handler(
+        _task(
+            task_type="evaluate",
+            input_data={"task": page.model_dump(), "evidence": evidence, "attempt": 1},
+        )
+    )
+
+    assert output["status"] == "awaiting_human_review"
+    assert grader.calls == []
+    assert pages.enqueued == []
+
+
+async def test_evaluator_rejects_attempt_above_shared_budget_before_side_effects() -> None:
+    page = _page_task()
+    artifact = _artifact(version=4)
+    pages = _Pages([_state(page.id, status="evaluating", artifact=artifact, attempt=3)])
+    grader = _Grader()
+    handler = PageEvaluatorHandler(
+        rubric_grader=grader,
+        drafts_repo=_Drafts([artifact]),
+        page_repository=pages,
+    )
+
+    with pytest.raises(ValueError, match="attempt.*3"):
+        await handler(
+            _task(
+                task_type="evaluate",
+                version=4,
+                input_data=_evaluation_input(page, attempt=4),
+            )
+        )
+
+    assert pages.evaluations == []
+    assert pages.enqueued == []
     assert grader.calls == []
 
 
@@ -567,6 +756,138 @@ async def test_cross_page_review_schedules_only_implicated_pages() -> None:
     assert pages.enqueued[0]["input_data"]["reviewer_instructions"] == [
         "Use one term consistently"
     ]
+
+
+async def test_cross_page_review_replay_reuses_correction_pair() -> None:
+    artifact = _artifact()
+    pages = _Pages(
+        [_state(artifact.page_id, status="passed", artifact=artifact, attempt=1)]
+    )
+    reviewer = _Reviewer(
+        ReviewVerdict(
+            verdict="correct",
+            corrections=[
+                ReviewCorrection(
+                    task_id=artifact.page_id,
+                    path=artifact.path,
+                    instructions=["Use one term consistently"],
+                )
+            ],
+        )
+    )
+    handler = CrossPageReviewHandler(
+        reviewer_factory=lambda: reviewer,
+        drafts_repo=_Drafts([artifact]),
+        page_repository=pages,
+    )
+    review_task = _task(
+        task_type="cross_page_review",
+        page_id="review",
+        input_data={
+            "artifact_snapshot": {
+                artifact.page_id: {
+                    "artifact_id": artifact.artifact_id,
+                    "version": artifact.version,
+                    "content_hash": artifact.content_hash,
+                }
+            }
+        },
+    )
+
+    first = await handler(review_task)
+    second = await handler(review_task)
+
+    assert first == second
+    assert [item["task_id"] for item in pages.enqueued] == [
+        "write:docs/oauth.md:2",
+        "evaluate:docs/oauth.md:2",
+    ]
+
+
+async def test_cross_page_review_validates_all_corrections_before_mutating() -> None:
+    a = _artifact(page_id="docs/a.md")
+    b = _artifact(page_id="docs/b.md")
+    pages = _Pages(
+        [
+            _state("docs/a.md", status="passed", artifact=a, attempt=1),
+            _state("docs/b.md", status="passed", artifact=b, attempt=1),
+        ]
+    )
+    verdict = SimpleNamespace(
+        verdict="correct",
+        corrections=[
+            SimpleNamespace(
+                task_id="docs/a.md", path="docs/a.md", instructions=["valid"]
+            ),
+            SimpleNamespace(
+                task_id="docs/ghost.md",
+                path="docs/ghost.md",
+                instructions=["invalid"],
+            ),
+        ],
+    )
+    handler = CrossPageReviewHandler(
+        reviewer_factory=lambda: _Reviewer(verdict),
+        drafts_repo=_Drafts([a, b]),
+        page_repository=pages,
+    )
+
+    with pytest.raises(ValueError, match="known page IDs"):
+        await handler(_task(task_type="cross_page_review", page_id="review"))
+
+    assert pages.enqueued == []
+    assert pages.states["docs/a.md"].status == "passed"
+
+
+async def test_cross_page_correction_cannot_create_attempt_four() -> None:
+    artifact = _artifact()
+    pages = _Pages(
+        [_state(artifact.page_id, status="passed", artifact=artifact, attempt=3)]
+    )
+    reviewer = _Reviewer(
+        ReviewVerdict(
+            verdict="correct",
+            corrections=[
+                ReviewCorrection(
+                    task_id=artifact.page_id,
+                    path=artifact.path,
+                    instructions=["Revise terminology"],
+                )
+            ],
+        )
+    )
+    handler = CrossPageReviewHandler(
+        reviewer_factory=lambda: reviewer,
+        drafts_repo=_Drafts([artifact]),
+        page_repository=pages,
+    )
+
+    with pytest.raises(ValueError, match="attempt.*3"):
+        await handler(_task(task_type="cross_page_review", page_id="review"))
+
+    assert pages.enqueued == []
+
+
+@pytest.mark.parametrize(
+    "bad_page_id",
+    ["../docs/a.md", "/docs/a.md", "docs//a.md", "./docs/a.md", "docs\\a.md"],
+)
+async def test_page_handlers_reject_noncanonical_page_ids(bad_page_id: str) -> None:
+    page = _page_task().model_copy(update={"id": bad_page_id, "path": bad_page_id})
+    handler = PageWriterHandler(
+        writer_factory=_WriterFactory(),
+        drafts_repo=_Drafts(),
+        page_repository=_Pages([]),
+    )
+
+    with pytest.raises(ValueError, match="canonical"):
+        await handler(
+            _task(
+                task_type="write",
+                page_id=bad_page_id,
+                input_data={"task": page.model_dump()},
+            )
+        )
 
 
 def test_compute_page_metrics_exposes_weighted_components_and_gate() -> None:
