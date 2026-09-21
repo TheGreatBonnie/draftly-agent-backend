@@ -135,6 +135,57 @@ def task_progress_envelope(
     )
 
 
+DOCUMENTATION_PROGRESS_EVENTS = frozenset(
+    {
+        "documentation.task.claimed",
+        "documentation.page.written",
+        "documentation.page.evaluated",
+        "documentation.page.revision_scheduled",
+        "documentation.page.escalated",
+        "documentation.workflow.resumed",
+    }
+)
+
+
+def documentation_progress_envelope(
+    event_type: str,
+    *,
+    run_id: str = "",
+    surface: str = "",
+    node_id: str | None = None,
+    task_id: str = "",
+    page_id: str = "",
+    artifact_version: int | None = None,
+    attempt: int | None = None,
+    status: str = "",
+) -> StreamEnvelope:
+    """Shape one compact page-workflow progress envelope.
+
+    Safe fields only: a stable ``event_type`` plus ``run_id``/``task_id``/
+    ``page_id``/``artifact_version``/``attempt``/``status``. Never carries
+    Markdown bodies, evidence, or model messages. Publishing a
+    ``documentation.*`` progress event is best effort and must never change
+    the workflow outcome (consumers drop unknown event types).
+    """
+    payload: dict[str, Any] = {
+        "schema_version": "1",
+        "event_type": event_type,
+        "run_id": run_id,
+        "task_id": task_id,
+        "page_id": page_id,
+        "artifact_version": artifact_version,
+        "attempt": attempt,
+        "status": status,
+    }
+    return StreamEnvelope(
+        type="documentation.progress",
+        run_id=run_id,
+        surface=surface,
+        node_id=node_id,
+        payload=payload,
+    )
+
+
 def _status_name(result: Any) -> str:
     status = getattr(result, "status", None)
     name = getattr(status, "name", None)

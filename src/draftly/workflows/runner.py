@@ -27,7 +27,9 @@ from strands.multiagent.base import Status
 from draftly.delivery.models import PullRequestResult, SupportDeliveryReceipt
 from draftly.events.dispatcher import EventDispatcher
 from draftly.events.stream_envelope import (
+    DOCUMENTATION_PROGRESS_EVENTS,
     StreamEnvelope,
+    documentation_progress_envelope,
     filter_graph_event,
     steering_envelope,
     task_progress_envelope,
@@ -261,17 +263,37 @@ def _progress_event_sink(
     """Wire ONE redacted task-progress envelope per writer-task transition."""
 
     async def sink(progress: dict[str, Any]) -> None:
-        envelope = task_progress_envelope(
-            run_id=run_id,
-            surface=surface,
-            node_id=progress.get("node_id"),
-            task_id=str(progress.get("task_id") or ""),
-            path=str(progress.get("path") or ""),
-            action=str(progress.get("action") or ""),
-            status=str(progress.get("status") or ""),
-            position=int(progress.get("position") or 0),
-            total=int(progress.get("total") or 0),
-        )
+        event_type = str(progress.get("event_type") or "")
+        if event_type in DOCUMENTATION_PROGRESS_EVENTS:
+            envelope = documentation_progress_envelope(
+                event_type,
+                run_id=run_id,
+                surface=surface,
+                node_id=progress.get("node_id"),
+                task_id=str(progress.get("task_id") or ""),
+                page_id=str(progress.get("page_id") or ""),
+                artifact_version=(
+                    int(progress["artifact_version"] or 0) or None
+                    if progress.get("artifact_version") is not None
+                    else None
+                ),
+                attempt=int(progress["attempt"] or 0) or None
+                if progress.get("attempt") is not None
+                else None,
+                status=str(progress.get("status") or ""),
+            )
+        else:
+            envelope = task_progress_envelope(
+                run_id=run_id,
+                surface=surface,
+                node_id=progress.get("node_id"),
+                task_id=str(progress.get("task_id") or ""),
+                path=str(progress.get("path") or ""),
+                action=str(progress.get("action") or ""),
+                status=str(progress.get("status") or ""),
+                position=int(progress.get("position") or 0),
+                total=int(progress.get("total") or 0),
+            )
         envelope.seq = stream_seq.next()
         try:
             await publisher.publish(envelope)
@@ -351,6 +373,9 @@ def _default_graph_factory(context: WorkflowContext) -> GraphFactory:
 
         jobs_repo = getattr(getattr(context, "repositories", None), "jobs", None)
         drafts_repo = getattr(getattr(context, "repositories", None), "drafts", None)
+        page_workflow_repo = getattr(
+            getattr(context, "repositories", None), "page_workflow", None
+        )
         research_plan = _build_research_plan(context, grounding)
         graph = build_graph_for_run(
             run_id,
@@ -366,6 +391,7 @@ def _default_graph_factory(context: WorkflowContext) -> GraphFactory:
             publisher=getattr(context, "publisher", None),
             jobs_repo=jobs_repo,
             drafts_repo=drafts_repo,
+            page_workflow=page_workflow_repo,
             grounding=grounding.get("mode", "local"),
             repo_dir=grounding.get("repo_dir"),
             steering_runtime=steering_runtime,
@@ -675,6 +701,24 @@ class WorkflowRunner:
             await self._notify_reviewers(run_id)
             raise ReviewResumeError(f"Cannot resume run {run_id}: {message}")
         state = WorkflowState(run_id=run_id, event=event, surface=surface)
+        # Documentation runs pause with pages awaiting human review. The
+        # page-workflow decision is applied BEFORE the outer graph resumes:
+        # approval marks escalated artifacts accepted, rejection cancels
+        # pending tasks and fails the pages. Either way the resumed graph sees
+        # a consistent page workflow (plan task 6 §step 3).
+        try:
+            await self._resume_documentation_pages(
+                graph,
+                run_id,
+                "approve" if response.get("approved") is True else "reject",
+                str(response.get("comment") or ""),
+            )
+        except Exception:
+            logger.warning(
+                "workflow_review_documentation_resume_failed",
+                run_id=run_id,
+                exc_info=True,
+            )
         started = time.monotonic()
         installation_token = set_installation_id(event.get("installation_id"))
         support_token = set_support_runtime(support_runtime_for(event))
@@ -749,6 +793,124 @@ class WorkflowRunner:
         resumed = await self._finish_result(event, surface, result, state)
         logger.info("workflow_resume_done", run_id=run_id, status=resumed.status.value)
         return resumed
+
+    async def resume_documentation(
+        self,
+        *,
+        event: dict[str, Any],
+        decision: str,
+        comment: str | None,
+    ) -> Any:
+        """Apply a page-workflow decision outside a review resume.
+
+        Used by the ``request_changes`` path: schedules one human-guided
+        revision per escalated page before the revised graph re-run. Returns
+        ``None`` when the run is not a documentation workflow or has no
+        escalated page state. Never resumes the outer graph — the caller
+        continues it afterwards.
+        """
+        event = dict(event)
+        run_id = str(event.get("event_id") or "")
+        surface = self.dispatcher.route(event)
+        if not run_id or surface is None:
+            raise ValueError(
+                "Cannot resume documentation without a valid run and surface"
+            )
+
+        routing_decisions: dict[str, Any] = {}
+
+        def collect_routing_decision(role: str, decision: Any) -> None:
+            routing_decisions[role] = decision
+
+        from draftly.integrations.strands.models import routing_decision_scope
+
+        repo_dir = repo_checkout_for(event)
+        if repo_dir and not event.get("repo_dir"):
+            event["repo_dir"] = repo_dir
+        grounding = enrich_grounding(
+            {
+                "mode": resolve_grounding(
+                    repo_dir=repo_dir,
+                    installation_id=event.get("installation_id"),
+                ),
+                "repo_dir": event.get("repo_dir"),
+            },
+            event=event,
+        )
+        grounding_token = set_grounding(grounding)
+        steering_token = set_steering_scope(
+            SteeringRunScope(
+                run_id=run_id,
+                surface=surface,
+                org_id=str(event.get("project_id") or ""),
+                project_id=str(event.get("project_id") or ""),
+                workflow_key=_workflow_key_for(event, surface),
+            )
+        )
+        try:
+            with routing_decision_scope(collect_routing_decision):
+                graph = self._graph_factory(run_id, surface)
+        finally:
+            reset_steering_scope(steering_token)
+            reset_grounding(grounding_token)
+        executor = await self._documentation_executor(graph)
+        if executor is None:
+            return None
+        if not await self._escalated_page_ids(executor, run_id):
+            return None
+        logger.info(
+            "workflow_review_documentation_delegated",
+            run_id=run_id,
+            decision=decision,
+        )
+        return await executor.resume(run_id, decision, comment)
+
+    async def _documentation_executor(self, graph: Any) -> Any | None:
+        """Return the wired ``DocumentationWorkflowNode`` executor, if any."""
+        nodes = getattr(graph, "nodes", None)
+        doc = nodes.get("document") if isinstance(nodes, dict) else None
+        executor = getattr(doc, "executor", None) if doc is not None else None
+        from draftly.orchestration.page_workflow.node import (
+            DocumentationWorkflowNode,
+        )
+
+        return executor if isinstance(executor, DocumentationWorkflowNode) else None
+
+    async def _escalated_page_ids(self, executor: Any, run_id: str) -> list[str]:
+        repository = getattr(executor, "repository", None)
+        if repository is None:
+            return []
+        try:
+            states = await repository.get_page_states(run_id=run_id)
+        except Exception:
+            return []
+        from draftly.orchestration.page_workflow.models import PageStatus
+
+        return [
+            s.page_id
+            for s in states
+            if s.status == PageStatus.AWAITING_HUMAN_REVIEW.value
+        ]
+
+    async def _resume_documentation_pages(
+        self,
+        graph: Any,
+        run_id: str,
+        decision: str,
+        comment: str,
+    ) -> Any:
+        """Delegate a recorded decision to the page workflow before a graph resume."""
+        executor = await self._documentation_executor(graph)
+        if executor is None:
+            return None
+        if not await self._escalated_page_ids(executor, run_id):
+            return None
+        logger.info(
+            "workflow_review_documentation_delegated",
+            run_id=run_id,
+            decision=decision,
+        )
+        return await executor.resume(run_id, decision, comment)
 
     async def resume_intervention(
         self,

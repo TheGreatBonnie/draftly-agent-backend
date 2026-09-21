@@ -309,6 +309,26 @@ class FakeClient:
             state["updated_at"] = self.now
             return [{"page_id": page_id}]
 
+        if "WITH FAILED AS" in up and "DOCUMENTATION_PAGE_STATES" in up:
+            run_id, comment = args
+            reason = (comment or "").strip()
+            updated = 0
+            for state in self.page_states:
+                if state["run_id"] != run_id or state["status"] != "awaiting_human_review":
+                    continue
+                state["status"] = "failed"
+                suffix = (
+                    "; rejected by human review"
+                    if not reason
+                    else f"; rejected by human review: {reason}"
+                )
+                state["escalation_reason"] = (
+                    (state["escalation_reason"] or "") + suffix
+                )
+                state["updated_at"] = self.now
+                updated += 1
+            return [{"updated": updated}]
+
         if "FROM DOCUMENTATION_PAGE_STATES" in up:
             run_id = args[0]
             states = [s for s in self.page_states if s["run_id"] == run_id]
@@ -404,6 +424,38 @@ class FakeClient:
                     }
                 )
             return []
+
+        if up.startswith("SELECT INPUT_DATA") and "FROM DOCUMENTATION_WORKFLOW_TASKS" in up:
+            task_type = "evaluate" if "AND TASK_TYPE = 'EVALUATE'" in up else "write"
+            run_id, page_id = args
+            matches = [
+                t
+                for t in self.tasks
+                if t["run_id"] == run_id
+                and t["page_id"] == page_id
+                and t["task_type"] == task_type
+            ]
+            matches.sort(
+                key=lambda t: (t["created_at"], t["task_id"]),
+                reverse=True,
+            )
+            row = matches[0] if matches else None
+            return [{"input_data": row["input_data"]}] if row else []
+
+        if up.startswith("WITH CANCELLED AS"):
+            run_id = args[0]
+            updated = 0
+            for task in self.tasks:
+                if task["run_id"] != run_id or task["status"] not in ("pending", "running"):
+                    continue
+                task["status"] = "cancelled"
+                task["error"] = (
+                    task["error"]
+                    or "cancelled by human review rejection"
+                )
+                task["updated_at"] = self.now
+                updated += 1
+            return [{"updated": updated}]
 
         if up.startswith("SELECT * FROM DOCUMENTATION_WORKFLOW_TASKS"):
             run_id = args[0]

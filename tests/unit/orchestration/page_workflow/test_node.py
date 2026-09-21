@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 from types import SimpleNamespace
 
+import pytest
 from strands.multiagent.base import Status
 
 from draftly.agents.documentation.writer import WriterFactory
@@ -27,8 +28,6 @@ from draftly.orchestration.page_workflow.node import DocumentationWorkflowNode
 from draftly.orchestration.page_workflow.repository import PageWorkflowRepository
 from draftly.persistence.repositories.drafts import DraftRepository
 from tests.unit.orchestration.page_workflow.test_repository import FakeClient
-
-import pytest
 
 ORIGINAL_TASK = '{"event_id": "e-1", "event_type": "pull_request.opened"}'
 
@@ -340,11 +339,25 @@ async def test_resume_unknown_decision_raises() -> None:
         await node.resume("run-k", "merge", "nope")
 
 
-async def test_resume_request_changes_and_reject_pending_task_6() -> None:
+async def test_resume_request_changes_requires_a_comment() -> None:
     node, _, _, _ = _wired_node()
-    for decision in ("request_changes", "reject"):
-        with pytest.raises(NotImplementedError, match=decision):
-            await node.resume("run-l", decision, "later")
+    await _invoke(node, IMPACT_NO_EVIDENCE, [], "run-l")
+    with pytest.raises(ValueError, match="non-empty comment"):
+        await node.resume("run-l", "request_changes", "   ")
+    with pytest.raises(ValueError, match="non-empty comment"):
+        await node.resume("run-l", "request_changes", None)
+
+
+async def test_resume_reject_fails_escalated_pages() -> None:
+    node, _, _, _ = _wired_node()
+    await _invoke(node, IMPACT_NO_EVIDENCE, [], "run-n")
+    report = await node.resume("run-n", "reject", "out of scope")
+    assert report.passed is False
+    assert report.ready_for_review is False
+    assert report.failed_page_ids == ["docs/widgets.md"]
+    states = await node.repository.get_page_states(run_id="run-n")
+    assert states[0].status == "failed"
+    assert "rejected by human review" in states[0].escalation_reason
 
 
 async def test_resume_requires_wired_repository() -> None:

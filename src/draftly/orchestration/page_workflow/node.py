@@ -203,6 +203,22 @@ class DocumentationWorkflowNode(MultiAgentBase):
         result = _result_from_states(states)
 
         payload: dict[str, Any] = {"result": result.model_dump()}
+        # Compact sealed-artifact claim consumed by the delivery-gate
+        # conditions: every passed change must name a sealed artifact per
+        # planned page (plan task 6 §step 5). Never carries content bodies.
+        sealed = [
+            {
+                "page_id": s.page_id,
+                "path": s.path,
+                "artifact_id": s.latest_artifact_id,
+                "version": s.latest_version,
+                "status": s.status,
+            }
+            for s in states
+            if s.latest_artifact_id
+        ]
+        if sealed:
+            payload["sealed_pages"] = sealed
         # Best-effort metadata for the ReviewGate's ``_collect_document`` and
         # the delivery prompt builder. The planned page paths are the
         # authoritative ``files`` (the page workflow never emits byte plans);
@@ -223,6 +239,7 @@ class DocumentationWorkflowNode(MultiAgentBase):
             page_count=result.page_count,
             escalated_page_ids=result.escalated_page_ids,
         )
+        await self._emit_page_progress(run_id, states)
         return MultiAgentResult(
             status=Status.COMPLETED,
             results={self.name: NodeResult(result=agent_result(payload))},
@@ -240,13 +257,19 @@ class DocumentationWorkflowNode(MultiAgentBase):
 
         ``approve`` marks escalated pages passed — the reviewer accepted the
         sealed artifacts, so the workflow reports a fully-passed result and a
-        re-approval is a no-op (idempotent resume). Decision semantics for
-        ``request_changes`` (schedule the next version from the comment) and
-        ``reject`` (cancel pending tasks) are owned by the review resume
-        service (documentation workflow task 6).
+        re-approval is a no-op (idempotent resume). ``request_changes``
+        requires a comment and schedules one human-guided write/evaluate pair
+        per escalated page (the three automated attempts are untouched);
+        ``reject`` cancels pending tasks and fails the escalated pages. Unknown
+        decisions raise ``ValueError``.
         """
         if not isinstance(self.repository, PageWorkflowRepository):
             raise RuntimeError("page workflow is not wired for this run")
+        await self._emit(
+            "documentation.workflow.resumed",
+            run_id=run_id,
+            status=decision,
+        )
         if decision == "approve":
             states = await self.repository.get_page_states(run_id=run_id)
             escalated = [
@@ -261,15 +284,165 @@ class DocumentationWorkflowNode(MultiAgentBase):
                     comment=comment,
                 )
                 states = await self.repository.get_page_states(run_id=run_id)
+            await self._emit_page_progress(run_id, states)
             return _result_from_states(states)
-        if decision in ("request_changes", "reject"):
-            raise NotImplementedError(
-                f"resume decision {decision!r} is implemented by the review "
-                "resume service (documentation workflow task 6)"
+        if decision == "request_changes":
+            if not comment or not comment.strip():
+                raise ValueError("request_changes requires a non-empty comment")
+            states = await self.repository.get_page_states(run_id=run_id)
+            escalated = [
+                s.page_id
+                for s in states
+                if s.status == PageStatus.AWAITING_HUMAN_REVIEW.value
+            ]
+            if not escalated:
+                # No pending human work: a duplicate request is a no-op.
+                return _result_from_states(states)
+            org_id = states[0].org_id if states else run_id
+            await self.repository.schedule_human_revisions(
+                run_id=run_id,
+                comment=comment,
             )
+            try:
+                executor = PageWorkflowExecutor(
+                    repository=self.repository,
+                    handlers=self.handlers,
+                    write_concurrency=self.write_concurrency,
+                    evaluation_concurrency=self.evaluation_concurrency,
+                    lease_seconds=self.lease_seconds,
+                    lease_owner=self.lease_owner,
+                )
+                await executor.run(run_id, org_id)
+            except DeadlockedWorkflowError:
+                logger.error(
+                    "page_workflow_deadlocked_on_resume",
+                    run_id=run_id,
+                    decision=decision,
+                )
+            except Exception as exc:  # noqa: BLE001 - infrastructure fails the resume
+                logger.exception(
+                    "page_workflow_resume_failed",
+                    run_id=run_id,
+                    decision=decision,
+                    error=str(exc),
+                )
+                return _result_from_states(
+                    await self.repository.get_page_states(run_id=run_id)
+                )
+            states = await self.repository.get_page_states(run_id=run_id)
+            await self._emit_page_progress(run_id, states)
+            return _result_from_states(states)
+        if decision == "reject":
+            await self.repository.cancel_pending_tasks(run_id=run_id)
+            await self.repository.mark_escalated_failed(
+                run_id=run_id,
+                comment=comment,
+            )
+            states = await self.repository.get_page_states(run_id=run_id)
+            await self._emit_page_progress(run_id, states)
+            return _result_from_states(states)
         raise ValueError(f"unknown resume decision {decision!r}")
 
     # -- internal ------------------------------------------------------------
+
+    async def _emit(
+        self,
+        event_type: str,
+        *,
+        run_id: str,
+        task_id: str = "",
+        page_id: str = "",
+        artifact_version: int | None = None,
+        attempt: int | None = None,
+        status: str = "",
+    ) -> None:
+        """Publish one compact ``documentation.*`` progress event (best effort)."""
+        sink = self.progress_sink
+        if sink is None:
+            return
+        try:
+            await sink(
+                {
+                    "event_type": event_type,
+                    "run_id": run_id,
+                    "task_id": task_id,
+                    "page_id": page_id,
+                    "artifact_version": artifact_version,
+                    "attempt": attempt,
+                    "status": status,
+                }
+            )
+        except Exception:  # noqa: BLE001 - progress publishing must not fail the run
+            logger.warning(
+                "documentation_progress_publish_failed",
+                event_type=event_type,
+                run_id=run_id,
+                exc_info=True,
+            )
+
+    async def _emit_page_progress(
+        self,
+        run_id: str,
+        states: list[Any],
+    ) -> None:
+        """Derive compact progress events from the settle page/workflow state."""
+        for state in states:
+            if state.latest_artifact_id is None:
+                continue
+            status = state.status
+            if status == PageStatus.AWAITING_HUMAN_REVIEW.value:
+                await self._emit(
+                    "documentation.page.escalated",
+                    run_id=run_id,
+                    page_id=state.page_id,
+                    artifact_version=state.latest_version,
+                    attempt=state.evaluation_attempt,
+                    status=status,
+                )
+            if status in (
+                PageStatus.PASSED.value,
+                PageStatus.AWAITING_HUMAN_REVIEW.value,
+            ):
+                await self._emit(
+                    "documentation.page.evaluated",
+                    run_id=run_id,
+                    page_id=state.page_id,
+                    artifact_version=state.latest_version,
+                    attempt=state.evaluation_attempt,
+                    status=status,
+                )
+            if state.latest_version and state.latest_version > 1:
+                await self._emit(
+                    "documentation.page.revision_scheduled",
+                    run_id=run_id,
+                    page_id=state.page_id,
+                    artifact_version=state.latest_version,
+                    attempt=state.evaluation_attempt,
+                    status=status,
+                )
+        try:
+            tasks = await self.repository.get_tasks(run_id=run_id)
+        except Exception:  # noqa: BLE001 - progress publishing is best effort
+            tasks = []
+        for task in tasks:
+            if task.status in ("running", "completed", "cancelled"):
+                await self._emit(
+                    "documentation.task.claimed",
+                    run_id=run_id,
+                    task_id=task.task_id,
+                    page_id=task.page_id or "",
+                    artifact_version=task.artifact_version,
+                    status=task.status,
+                )
+            if task.task_type == "write" and task.status == "completed":
+                await self._emit(
+                    "documentation.page.written",
+                    run_id=run_id,
+                    task_id=task.task_id,
+                    page_id=task.page_id or "",
+                    artifact_version=task.artifact_version,
+                    status=task.status,
+                )
 
     def _vacuous_pass(self) -> MultiAgentResult:
         """Completed pass with no page work (non-write action, empty plan)."""

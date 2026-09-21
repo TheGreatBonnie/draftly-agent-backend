@@ -149,6 +149,25 @@ async def resume_review_from_runtime(
                 )
         if runner is None or getattr(runner, "run", None) is None:
             raise ReviewResumeError("Workflow runner unavailable")
+        # Documentation runs: schedule one human-guided revision per escalated
+        # page BEFORE the revised graph re-run, so the revision actually
+        # executes (a page whose artifacts await review otherwise re-pauses
+        # with no work to do). Best effort — a non-documentation run or an
+        # escalation-free run is a no-op.
+        if getattr(runner, "resume_documentation", None) is not None:
+            try:
+                await runner.resume_documentation(
+                    event=event,
+                    decision="request_changes",
+                    comment=comment.strip(),
+                )
+            except Exception:
+                logger.warning(
+                    "review_revision_documentation_resume_failed",
+                    run_id=run_id,
+                    review_id=review_id,
+                    exc_info=True,
+                )
         revised_state = await runner.run(revision_event)
         setattr(revised_state, "decision_outcome", result)
         setattr(revised_state, "review_revision_of", review_id)

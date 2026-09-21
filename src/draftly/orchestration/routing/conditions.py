@@ -216,15 +216,68 @@ def changelog_eval_passed(state: GraphState) -> bool:
     return data is not None and data["passed"]
 
 
-def documentation_passed(state: GraphState) -> bool:
-    """The page workflow finished with every page passed."""
+def _documentation_pair(state: GraphState) -> tuple[dict, dict]:
+    """Return ``(node_payload, result_dict)`` for the document node."""
     if "document" not in state.results:
+        return {}, {}
+    payload = safe_node_data(state, "document")
+    if not isinstance(payload, dict):
+        return {}, {}
+    result = payload.get("result") if isinstance(payload.get("result"), dict) else payload
+    return payload, result if isinstance(result, dict) else {}
+
+
+_WRITE_FILE_ACTIONS = ("create", "update")
+
+
+def _planned_page_paths(payload: dict) -> list[str]:
+    """Planned write pages from the change-plan ``files`` list.
+
+    ``skip`` rows are planned non-writes (the page workflow never touches
+    them), so they do not need a sealed artifact to gate delivery.
+    """
+    planned: list[str] = []
+    for item in payload.get("files") or []:
+        if not isinstance(item, dict):
+            continue
+        path = str(item.get("path") or "")
+        if not path:
+            continue
+        action = str(item.get("action") or "")
+        if action and action not in _WRITE_FILE_ACTIONS:
+            continue
+        planned.append(path)
+    return planned
+
+
+def _sealed_page_paths(payload: dict) -> set[str]:
+    sealed: set[str] = set()
+    for item in payload.get("sealed_pages") or []:
+        if not isinstance(item, dict):
+            continue
+        path = str(item.get("path") or "")
+        if path:
+            sealed.add(path)
+    return sealed
+
+
+def documentation_passed(state: GraphState) -> bool:
+    """The page workflow finished with every planned page passed.
+
+    Hardened (plan task 6 §step 5): a ``passed`` result only schedules the
+    changelog when it is explicitly true, reports no escalated or failed page
+    IDs, and carries a sealed-artifact claim covering every planned write page.
+    A malformed upstream result (for example ``passed: true`` alongside
+    escalated pages, or a claim without sealed artifacts) therefore cannot
+    publish partial content.
+    """
+    payload, result = _documentation_pair(state)
+    if result.get("passed") is not True:
         return False
-    data = safe_node_data(state, "document")
-    if data is None:
+    if result.get("escalated_page_ids") or result.get("failed_page_ids"):
         return False
-    result = data.get("result") if isinstance(data.get("result"), dict) else data
-    return bool(result.get("passed"))
+    sealed = _sealed_page_paths(payload)
+    return all(path in sealed for path in _planned_page_paths(payload))
 
 
 def documentation_escalated(state: GraphState) -> bool:

@@ -466,6 +466,186 @@ class PageWorkflowRepository:
 
     # -- workflow tasks ------------------------------------------------------
 
+    async def schedule_human_revisions(
+        self,
+        *,
+        run_id: str,
+        comment: str,
+    ) -> list[int]:
+        """Schedule one human-guided write/evaluate pair per escalated page.
+
+        Requested changes attach one revision pair to every page currently
+        awaiting human review, bounded by the reviewer comment. Human-guided
+        revisions record the same ``attempt`` as the page's automatic record
+        (the three automated attempts are untouched) and mark their task input
+        with ``human_guided: True`` so the evaluator never schedules a further
+        automatic revision.
+        """
+        comment = (comment or "").strip()
+        if not comment:
+            raise ValueError("request_changes requires a non-empty comment")
+        versions: list[int] = []
+        async with self.database.transaction() as conn:
+            pages = await conn.fetch(
+                """
+                SELECT page_id, org_id, evaluation_attempt, latest_version
+                  FROM documentation_page_states
+                 WHERE run_id = $1
+                   AND status = 'awaiting_human_review'
+                 ORDER BY page_id
+                 FOR UPDATE
+                """,
+                run_id,
+            )
+            for page in pages:
+                page_id = str(page["page_id"])
+                org_id = str(page["org_id"])
+                evaluation_attempt = int(page["evaluation_attempt"] or 0)
+                latest_version = int(page["latest_version"] or 0)
+                plan_row = await conn.fetchrow(
+                    """
+                    SELECT input_data
+                      FROM documentation_workflow_tasks
+                     WHERE run_id = $1 AND page_id = $2 AND task_type = 'write'
+                     ORDER BY created_at DESC, task_id DESC
+                     LIMIT 1
+                    """,
+                    run_id,
+                    page_id,
+                )
+                plan = dict((plan_row["input_data"] or {}) if plan_row else {})
+                task = plan.get("task")
+                evidence_row = await conn.fetchrow(
+                    """
+                    SELECT input_data
+                      FROM documentation_workflow_tasks
+                     WHERE run_id = $1 AND page_id = $2 AND task_type = 'evaluate'
+                     ORDER BY created_at DESC, task_id DESC
+                     LIMIT 1
+                    """,
+                    run_id,
+                    page_id,
+                )
+                evidence = list(
+                    (evidence_row["input_data"] or {}).get("evidence", [])
+                    if evidence_row
+                    else []
+                )
+                next_version = latest_version + 1
+                write_id = f"write:{page_id}:{next_version}"
+                evaluate_id = f"evaluate:{page_id}:{next_version}"
+                await conn.execute(
+                    """
+                    UPDATE documentation_page_states
+                       SET next_version = GREATEST(next_version, $3 + 1),
+                           status = 'revising',
+                           updated_at = now()
+                     WHERE run_id = $1 AND page_id = $2
+                    """,
+                    run_id,
+                    page_id,
+                    next_version,
+                )
+                await conn.execute(
+                    """
+                    INSERT INTO documentation_workflow_tasks (
+                        run_id, task_id, org_id, task_type, page_id,
+                        artifact_version, dependencies, input_data, status
+                    ) VALUES ($1, $2, $3, 'write', $4, $5, '[]'::jsonb, $6, 'pending')
+                    ON CONFLICT (run_id, task_id) DO NOTHING
+                    """,
+                    run_id,
+                    write_id,
+                    org_id,
+                    page_id,
+                    next_version,
+                    {
+                        "task": task,
+                        "human_guided": True,
+                        "revision_comment": comment,
+                    },
+                )
+                await conn.execute(
+                    """
+                    INSERT INTO documentation_workflow_tasks (
+                        run_id, task_id, org_id, task_type, page_id,
+                        artifact_version, dependencies, input_data, status
+                    ) VALUES ($1, $2, $3, 'evaluate', $4, $5, $6, $7, 'pending')
+                    ON CONFLICT (run_id, task_id) DO NOTHING
+                    """,
+                    run_id,
+                    evaluate_id,
+                    org_id,
+                    page_id,
+                    next_version,
+                    [write_id],
+                    {
+                        "task": task,
+                        "evidence": evidence,
+                        "attempt": evaluation_attempt,
+                        "human_guided": True,
+                        "revision_comment": comment,
+                    },
+                )
+                versions.append(next_version)
+        return versions
+
+    async def cancel_pending_tasks(self, *, run_id: str) -> int:
+        """Cancel every pending or running workflow task for the run.
+
+        Used by the ``reject`` decision so no queued page work can execute
+        after the change is refused.
+        """
+        row = await self.database.fetch_one(
+            """
+            WITH cancelled AS (
+                UPDATE documentation_workflow_tasks
+                   SET status = 'cancelled',
+                       error = CASE WHEN error IS NULL
+                                    THEN 'cancelled by human review rejection'
+                                    ELSE error END,
+                       updated_at = now()
+                 WHERE run_id = $1
+                   AND status IN ('pending', 'running')
+                 RETURNING task_id
+            )
+            SELECT count(*) AS updated FROM cancelled
+            """,
+            run_id,
+        )
+        return int(row["updated"]) if row else 0
+
+    async def mark_escalated_failed(self, *, run_id: str, comment: str | None = None) -> int:
+        """Move pages awaiting human review to ``failed`` (rejection).
+
+        The rejection reason is appended to the existing escalation trail so
+        the audit history stays readable.
+        """
+        reason = (comment or "").strip()
+        row = await self.database.fetch_one(
+            """
+            WITH failed AS (
+                UPDATE documentation_page_states
+                   SET status = 'failed',
+                       escalation_reason = CASE
+                           WHEN $2::text IS NULL OR $2 = ''
+                           THEN coalesce(escalation_reason, '')
+                                || '; rejected by human review'
+                           ELSE coalesce(escalation_reason, '')
+                                || '; rejected by human review: ' || $2
+                           END,
+                       updated_at = now()
+                 WHERE run_id = $1
+                   AND status = 'awaiting_human_review'
+                 RETURNING page_id
+            )
+            SELECT count(*) AS updated FROM failed
+            """,
+            run_id,
+            reason,
+        )
+        return int(row["updated"]) if row else 0
+
     async def enqueue_task(
         self,
         *,

@@ -306,6 +306,9 @@ class PageEvaluatorHandler:
             raise ValueError(
                 f"automatic evaluation attempt must be between 1 and {self.max_attempts}"
             )
+        human_guided = bool(workflow_task.input_data.get("human_guided"))
+        if human_guided and not workflow_task.input_data.get("revision_comment"):
+            raise ValueError("human-guided revision requires a review comment")
         artifact = await _current_artifact(
             self.drafts_repo,
             run_id=workflow_task.run_id,
@@ -336,6 +339,27 @@ class PageEvaluatorHandler:
         elif quality.passed:
             status = PageStatus.PASSED.value
             feedback = []
+        elif human_guided:
+            # A human-guided revision is a single reviewer-directed pass: it
+            # never schedules another automatic revision. Feedback degrades to
+            # the judge's reasons (best effort) and the page pauses again at
+            # the review gate.
+            try:
+                grade = await self.rubric_grader.grade(
+                    draft=artifact.content,
+                    evidence=normalized_evidence,
+                )
+                for reason in grade.reasons:
+                    if reason and reason not in feedback:
+                        feedback.append(reason)
+            except Exception:
+                logger.warning(
+                    "rubric_grader_failed",
+                    run_id=workflow_task.run_id,
+                    page_id=page.id,
+                    exc_info=True,
+                )
+            status = PageStatus.AWAITING_HUMAN_REVIEW.value
         else:
             # Best-effort LLM judge (mirror of the legacy evaluate node): an
             # unavailable or degraded model must not crash the workflow, so
