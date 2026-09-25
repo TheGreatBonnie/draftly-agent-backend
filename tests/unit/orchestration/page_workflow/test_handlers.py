@@ -9,6 +9,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from strands.types.exceptions import MaxTokensReachedException
 
 from draftly.agents.schemas import DocumentationTask, ReviewCorrection, ReviewVerdict
 from draftly.orchestration.nodes.rubric_grader import RubricGrade
@@ -270,6 +271,45 @@ class _WriterFactory:
         return agent
 
 
+class _TruncatingAgent(_Agent):
+    """Writer agent whose first ``failures`` turns hit the provider output cap.
+
+    Strands raises ``MaxTokensReachedException`` and leaves the partial message
+    in the conversation, so the documented recovery is to call the agent again.
+    """
+
+    def __init__(self, failures: int = 1) -> None:
+        super().__init__()
+        self.failures = failures
+
+    async def invoke_async(
+        self,
+        prompt: str,
+        invocation_state: dict[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> Any:
+        self.prompts.append(prompt)
+        self.states.append(invocation_state)
+        self.kwargs.append(kwargs)
+        if len(self.prompts) <= self.failures:
+            raise MaxTokensReachedException(
+                message="Model stopped generating due to maximum token limit."
+            )
+        return SimpleNamespace(structured_output=SimpleNamespace())
+
+
+class _TruncatingFactory(_WriterFactory):
+    def __init__(self, failures: int = 1) -> None:
+        super().__init__()
+        self.failures = failures
+
+    def create(self, task: DocumentationTask) -> _Agent:
+        self.created_for.append(task)
+        agent = _TruncatingAgent(self.failures)
+        self.agents.append(agent)
+        return agent
+
+
 class _Grader:
     def __init__(self, reasons: list[str] | None = None) -> None:
         self.reasons = reasons or []
@@ -394,6 +434,82 @@ async def test_writer_omits_limits_kwarg_when_unset() -> None:
     )
 
     assert "limits" not in factory.agents[0].kwargs[0]
+
+
+async def test_writer_resumes_once_after_a_max_tokens_truncation() -> None:
+    """A truncated response must not cost the page.
+
+    Run e1e96f90: ``write:docs/api/auth.md:1`` and ``write:docs/api/oauth.md:1``
+    failed with MaxTokensReachedException (twice, after the infrastructure
+    retry), which failed the whole ``document`` node and the PR workflow.
+    Strands leaves the partial message in the conversation, so the documented
+    recovery is to call the agent again and let it finish the draft.
+    """
+    page = _page_task()
+    artifact = _artifact()
+    drafts = _Drafts([artifact])
+    pages = _Pages([_state(page.id)])
+    factory = _TruncatingFactory(failures=1)
+    handler = PageWriterHandler(
+        writer_factory=factory,
+        drafts_repo=drafts,
+        page_repository=pages,
+    )
+
+    output = await handler(
+        _task(task_type="write", input_data={"task": page.model_dump()})
+    )
+
+    agent = factory.agents[0]
+    assert len(agent.prompts) == 2, "the writer must be resumed exactly once"
+    assert "cut off" in agent.prompts[1]
+    assert page.path in agent.prompts[1]
+    assert output["artifact_id"] == artifact.artifact_id
+    assert pages.recorded_artifacts[0]["artifact_id"] == artifact.artifact_id
+
+
+async def test_writer_resume_keeps_the_same_invocation_context_and_limits() -> None:
+    """The resume continues the SAME page attempt: same invocation state, same
+    Strands limits, same draft scope."""
+    page = _page_task()
+    artifact = _artifact()
+    drafts = _Drafts([artifact])
+    pages = _Pages([_state(page.id)])
+    factory = _TruncatingFactory(failures=1)
+    handler = PageWriterHandler(
+        writer_factory=factory,
+        drafts_repo=drafts,
+        page_repository=pages,
+        limits={"turns": 60, "output_tokens": 48_000},
+    )
+
+    await handler(_task(task_type="write", input_data={"task": page.model_dump()}))
+
+    agent = factory.agents[0]
+    assert agent.states[0] == agent.states[1]
+    assert agent.states[1]["page_id"] == page.id
+    assert agent.kwargs[0]["limits"] == {"turns": 60, "output_tokens": 48_000}
+    assert agent.kwargs[1]["limits"] == {"turns": 60, "output_tokens": 48_000}
+
+
+async def test_writer_fails_when_the_truncation_persists_after_the_resume() -> None:
+    """One resume, then the task fails as before — a page that cannot be written
+    within the budget must still surface as a task failure."""
+    page = _page_task()
+    artifact = _artifact()
+    drafts = _Drafts([artifact])
+    pages = _Pages([_state(page.id)])
+    factory = _TruncatingFactory(failures=2)
+    handler = PageWriterHandler(
+        writer_factory=factory,
+        drafts_repo=drafts,
+        page_repository=pages,
+    )
+
+    with pytest.raises(MaxTokensReachedException):
+        await handler(_task(task_type="write", input_data={"task": page.model_dump()}))
+
+    assert len(factory.agents[0].prompts) == 2
 
 
 async def test_writer_accepts_plan_with_slug_id_and_distinct_real_path() -> None:

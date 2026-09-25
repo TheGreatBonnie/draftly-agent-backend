@@ -15,6 +15,7 @@ from collections.abc import Callable
 from typing import Any
 
 import structlog
+from strands.types.exceptions import MaxTokensReachedException
 
 from draftly.agents.documentation.draft_scope import (
     DraftScope,
@@ -47,6 +48,23 @@ logger = structlog.get_logger(__name__)
 
 MAX_PAGE_EVALUATION_ATTEMPTS = MAX_AUTOMATIC_EVALUATION_ATTEMPTS
 CROSS_PAGE_REVIEW_TASK_ID = "cross-page-review"
+
+#: One resume per write attempt after the provider cut a response short.
+#: Strands leaves the partial message in the conversation and documents the
+#: recovery as "continue by calling the agent again"; a second truncation still
+#: fails the task. Run e1e96f90 lost ``docs/api/auth.md`` and ``docs/api/oauth.md``
+#: — and with them the whole PR workflow — to a single truncation each.
+MAX_WRITER_RESUMES = 1
+
+#: Continuation instruction for a resumed writer. Keeps the model on the
+#: outstanding draft calls instead of restarting the page from scratch.
+WRITER_RESUME_PROMPT = (
+    "Your previous response was cut off by the model's output limit before you "
+    "finished. CONTINUE exactly where it stopped for {path}: append the chunks "
+    "that are still missing, then finalize_draft. Do not restart the file, do "
+    "not repeat tool calls that already succeeded, and keep each append_chunk "
+    "small."
+)
 
 _FIRST_HEADING = re.compile(r"^#(?!#)\s+(.+)$", re.MULTILINE)
 _LINKS = re.compile(r"\[[^\]]*\]\(([^)]+)\)")
@@ -312,6 +330,44 @@ class PageWriterHandler:
             f"anything still accurate):\n\n{content}"
         )
 
+    async def _invoke_writer(
+        self,
+        agent: Any,
+        prompt: str,
+        invocation_state: dict[str, Any],
+        kwargs: dict[str, Any],
+        page: DocumentationTask,
+    ) -> None:
+        """Invoke the writer, resuming once after an output-cap truncation.
+
+        A per-response truncation is recoverable: the partial message is already
+        in the agent's conversation, so re-invoking with a continuation
+        instruction lets the same agent finish the outstanding draft calls for
+        the SAME page. Only a repeated truncation fails the task.
+        """
+        attempt = 0
+        while True:
+            try:
+                await agent.invoke_async(
+                    prompt,
+                    invocation_state=invocation_state,
+                    **kwargs,
+                )
+                return
+            except MaxTokensReachedException as exc:
+                if attempt >= MAX_WRITER_RESUMES:
+                    raise
+                attempt += 1
+                logger.warning(
+                    "writer_max_tokens_resume",
+                    run_id=invocation_state.get("run_id"),
+                    page_id=page.id,
+                    attempt=attempt,
+                    error=str(exc),
+                )
+                prompt = WRITER_RESUME_PROMPT.replace("{path}", page.id)
+
+
     async def __call__(self, workflow_task: WorkflowTask) -> dict[str, Any]:
         page = _document_task(workflow_task)
         version = workflow_task.artifact_version
@@ -393,11 +449,7 @@ class PageWriterHandler:
             kwargs: dict[str, Any] = {}
             if self.limits is not None:
                 kwargs["limits"] = self.limits
-            await agent.invoke_async(
-                prompt,
-                invocation_state=invocation_state,
-                **kwargs,
-            )
+            await self._invoke_writer(agent, prompt, invocation_state, kwargs, page)
         finally:
             reset_draft_scope(token)
 
