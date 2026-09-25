@@ -85,6 +85,8 @@ async def list_runs(
         limit=limit,
         cursor=cursor,
     )
+    if hasattr(repo, "with_progress"):
+        items = await repo.with_progress(items)
     return {"items": items, "total": total, "next_cursor": next_cursor}
 
 
@@ -138,6 +140,8 @@ async def get_run(
         if hasattr(runs_repo, "page_results")
         else []
     )
+    if hasattr(runs_repo, "with_progress"):
+        run = (await runs_repo.with_progress([run]))[0]
     run = {**run, "page_results": page_results}
     pending = await _pending_interventions(request, run_id, org_id)
     if pending:

@@ -112,3 +112,24 @@ async def test_runner_skips_broadcast_without_project_id():
     runner = WorkflowRunner(context, graph_factory=graph_factory)
     await runner.run({"event_id": "ev-3", "event_type": "push", "source": "github"})
     assert broadcaster.calls == []  # no org → no broadcast
+
+
+async def test_streaming_node_transitions_refresh_dashboard():
+    broadcaster = FakeBroadcaster()
+    context = make_context(broadcaster)
+    class Publisher:
+        async def publish(self, envelope):
+            return None
+    class Graph:
+        async def stream_async(self, task, invocation_state):
+            yield {"type": "multiagent_node_start", "node_id": "research"}
+            yield {"type": "multiagent_node_stop", "node_id": "research",
+                   "node_result": {"status": "COMPLETED"}}
+            yield {"result": make_result(Status.COMPLETED)}
+    runner = WorkflowRunner(context, publisher=Publisher())
+    await runner._invoke_streaming(
+        Graph(), "task", {"run_id": "run-1", "project_id": "org-9"}, "pull_request"
+    )
+    progress = [call for call in broadcaster.calls if call[2].get("node_id") == "research"]
+    assert len(progress) == 2
+    assert all(call[1] == "workflow:changed" and call[0] == "org-9" for call in progress)

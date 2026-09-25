@@ -293,6 +293,25 @@ class _Reviewer:
         return SimpleNamespace(structured_output=self.verdict)
 
 
+class _Documents:
+    """Minimal documents-store stand-in: content lookup by org/repo/path."""
+
+    def __init__(self, by_path: dict[str, str] | None = None) -> None:
+        self.by_path = dict(by_path or {})
+        self.calls: list[tuple[str, str, str]] = []
+
+    async def get_by_org_repository_path(
+        self,
+        *,
+        org_id: str,
+        repository: str,
+        path: str,
+    ) -> dict[str, str] | None:
+        self.calls.append((org_id, repository, path))
+        content = self.by_path.get(path)
+        return {"content": content} if content is not None else None
+
+
 async def test_initial_writer_receives_one_page_and_only_its_evidence() -> None:
     page = _page_task()
     artifact = _artifact()
@@ -328,6 +347,123 @@ async def test_initial_writer_receives_one_page_and_only_its_evidence() -> None:
             "version": 1,
         }
     ]
+
+
+async def test_writer_accepts_plan_with_slug_id_and_distinct_real_path() -> None:
+    """A page plan whose id is a slug and path the real repo path must be accepted.
+
+    The page-workflow layer keys tasks and artifacts by the plan id (a slug),
+    while the plan path names the repository file. The write guard must not
+    require id == path; that legacy contract rejects every real plan.
+    """
+    page = DocumentationTask(
+        id="update-oauth-howto",
+        path="docs/how-to/oauth-authorization-url.md",
+        action="update",
+        reason="Extend the OAuth URL guide to cover the authorization-code exchange",
+        requirements=["Add the code-exchange step"],
+        evidence=[
+            {
+                "id": "src/oauth.py",
+                "topic": "authorization-code exchange",
+                "excerpt": "exchange_code(provider, code, redirect_uri)",
+            }
+        ],
+    )
+    artifact = _artifact(page_id="update-oauth-howto", version=1)
+    drafts = _Drafts([artifact])
+    pages = _Pages([_state("update-oauth-howto")])
+    factory = _WriterFactory()
+    handler = PageWriterHandler(
+        writer_factory=factory,
+        drafts_repo=drafts,
+        page_repository=pages,
+    )
+
+    output = await handler(
+        _task(
+            task_type="write",
+            page_id="update-oauth-howto",
+            input_data={"task": page.model_dump()},
+        )
+    )
+
+    assert [task.id for task in factory.created_for] == ["update-oauth-howto"]
+    assert output["artifact_id"] == artifact.artifact_id
+
+
+async def test_update_writer_receives_existing_file_content_for_first_write() -> None:
+    """An update task's first write must see the repo's current file body.
+
+    The writer replaces the whole page (draft store has no v1 bytes yet); only
+    the documents store knows the file's current content, so the first-write
+    prompt hydrates it instead of asking the model to rewrite from memory.
+    """
+    page = _page_task()
+    artifact = _artifact()
+    drafts = _Drafts([artifact])
+    pages = _Pages([_state(page.id)])
+    factory = _WriterFactory()
+    documents = _Documents(by_path={"docs/oauth.md": "# OAuth\n\nlegacy body"})
+    handler = PageWriterHandler(
+        writer_factory=factory,
+        drafts_repo=drafts,
+        page_repository=pages,
+        documents_repo=documents,
+    )
+
+    output = await handler(
+        _task(
+            task_type="write",
+            input_data={
+                "task": page.model_dump(),
+                "repository": "acme/api",
+            },
+        )
+    )
+
+    assert documents.calls == [("org-1", "acme/api", "docs/oauth.md")]
+    prompt = factory.agents[0].prompts[0]
+    assert "EXISTING CONTENT" in prompt
+    assert "legacy body" in prompt
+    assert output["artifact_id"] == artifact.artifact_id
+
+
+async def test_create_write_skips_existing_content_hydration() -> None:
+    """Create tasks never look up (or surface) a stale repo file body."""
+    page = DocumentationTask(
+        id="docs/new.md",
+        path="docs/new.md",
+        action="create",
+        reason="document the new endpoint",
+    )
+    artifact = _artifact(page_id="docs/new.md", content="# New\n\ncontent")
+    drafts = _Drafts([artifact])
+    pages = _Pages([_state("docs/new.md")])
+    factory = _WriterFactory()
+    documents = _Documents(by_path={"docs/new.md": "# stale"})
+    handler = PageWriterHandler(
+        writer_factory=factory,
+        drafts_repo=drafts,
+        page_repository=pages,
+        documents_repo=documents,
+    )
+
+    await handler(
+        _task(
+            task_type="write",
+            page_id="docs/new.md",
+            input_data={
+                "task": page.model_dump(),
+                "repository": "acme/api",
+            },
+        )
+    )
+
+    assert documents.calls == []
+    prompt = factory.agents[0].prompts[0]
+    assert "Existing content" not in prompt
+    assert "stale" not in prompt
 
 
 async def test_writer_replay_reuses_sealed_expected_artifact_without_agent_call() -> None:

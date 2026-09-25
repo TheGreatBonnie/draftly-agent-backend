@@ -1,13 +1,16 @@
 import json
 from typing import Any
+from urllib.parse import urlencode
 from uuid import uuid4
 
+import httpx
 import structlog
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, Response
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 
-from draftly.app.api.auth import get_verified_token, require_reviewer_role
+from draftly.app.api.auth import get_verified_token, require_admin_role, require_reviewer_role
+from draftly.app.api.integration_oauth import consume_state, create_state
 from draftly.app.composition.rq_jobs import enqueue_job
 from draftly.app.config import get_settings
 from draftly.integrations.github.app_auth import (
@@ -94,34 +97,73 @@ ALLOWED_RETURN_TO = frozenset({"/onboarding/github", "/integrations/github"})
 
 @router.get("/install-url")
 async def github_install_url(
-    response: Response,
+    request: Request,
     return_to: str | None = None,
-    token: dict = Depends(get_verified_token),
+    token: dict = Depends(require_admin_role),
 ) -> dict[str, str]:
     if not settings.github_app_slug:
         raise HTTPException(status_code=500, detail="GitHub App slug not configured")
-    if return_to is not None:
-        if return_to not in ALLOWED_RETURN_TO:
-            raise HTTPException(status_code=400, detail="Invalid return_to path")
-        response.set_cookie(
-            RETURN_TO_COOKIE,
-            return_to,
-            max_age=600,
-            httponly=True,
-            samesite="lax",
-            path="/api",
-        )
-    return {"install_url": f"https://github.com/apps/{settings.github_app_slug}/installations/new"}
+    if return_to is not None and return_to not in ALLOWED_RETURN_TO:
+        raise HTTPException(status_code=400, detail="Invalid return_to path")
+    org_id = token.get("org_id")
+    if not org_id:
+        raise HTTPException(status_code=400, detail="No organization selected")
+    nonce = await create_state(
+        request.app.state.draftly.dependencies.integrations.database,
+        "github",
+        org_id,
+        token["user_id"],
+        return_to or "/integrations/github",
+    )
+    return {
+        "install_url": f"{settings.public_api_url.rstrip('/')}/api/github/setup-start"
+        + "?"
+        + urlencode({"state": nonce})
+    }
+
+
+@router.get("/setup-start")
+async def github_setup_start(request: Request, state: str) -> RedirectResponse:
+    db = request.app.state.draftly.dependencies.integrations.database
+    row = await db.fetch_one(
+        """SELECT nonce FROM integration_oauth_states
+           WHERE nonce = $1 AND provider = 'github' AND expires_at > now()""",
+        state,
+    )
+    if not row:
+        raise HTTPException(status_code=400, detail="Invalid or expired authorization state")
+    response = RedirectResponse(
+        url=f"https://github.com/apps/{settings.github_app_slug}/installations/new"
+    )
+    response.set_cookie(
+        "github_setup_state",
+        state,
+        max_age=600,
+        httponly=True,
+        secure=request.url.scheme == "https",
+        samesite="lax",
+        path="/api/github",
+    )
+    return response
 
 
 @router.delete("/installations/{installation_id}")
 async def delete_github_installation(
     installation_id: int,
-    token: dict = Depends(get_verified_token),
+    request: Request,
+    token: dict = Depends(require_admin_role),
 ) -> dict[str, str]:
     from draftly.persistence.repositories.github import remove_github_installation
 
-    await remove_github_installation(installation_id=installation_id)
+    db = request.app.state.draftly.dependencies.integrations.database
+    row = await db.fetch_one(
+        "SELECT id FROM github_installations WHERE installation_id = $1 AND org_id = $2",
+        installation_id,
+        token.get("org_id") or "",
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail="Connection not found")
+    await remove_github_installation(installation_id=installation_id, db=db)
     return {"status": "disconnected"}
 
 
@@ -133,16 +175,11 @@ async def github_installations(
     return await repos.github_installations.list_by_org(token.get("org_id") or "")
 
 
-@router.post("/link")
-async def link_github(
+async def _link_github_installation(
     request: LinkGitHubRequest,
-    token: dict = Depends(get_verified_token),
+    org_id: str,
 ) -> dict[str, Any]:
     """Link a GitHub App installation to the current Clerk organization."""
-    org_id = token.get("org_id")
-    if not org_id:
-        raise HTTPException(status_code=400, detail="No organization selected")
-
     logger.info(
         "github_link_requested",
         installation_id=request.installation_id,
@@ -180,6 +217,18 @@ async def link_github(
         raise HTTPException(
             status_code=409,
             detail=f"GitHub org '{github_org}' is already linked to another organization",
+        )
+
+    from draftly.app.dependencies import build_dependencies
+
+    db = build_dependencies(settings=settings).integrations.database
+    existing_install = await db.fetch_one(
+        "SELECT org_id FROM github_installations WHERE installation_id = $1",
+        request.installation_id,
+    )
+    if existing_install and existing_install["org_id"] != org_id:
+        raise HTTPException(
+            status_code=409, detail="Installation is connected to another organization"
         )
 
     # Link: update org's github_org column
@@ -220,30 +269,118 @@ async def link_github(
     return {"status": "linked", "github_org": github_org}
 
 
+@router.post("/link")
+async def link_github(
+    body: LinkGitHubRequest,
+    request: Request,
+    token: dict = Depends(require_admin_role),
+) -> dict[str, Any]:
+    """Compatibility endpoint for installations already owned by this org."""
+    org_id = token.get("org_id") or ""
+    if not org_id:
+        raise HTTPException(status_code=400, detail="No organization selected")
+    db = request.app.state.draftly.dependencies.integrations.database
+    owned = await db.fetch_one(
+        "SELECT id FROM github_installations WHERE installation_id = $1 AND org_id = $2",
+        body.installation_id,
+        org_id,
+    )
+    if not owned:
+        raise HTTPException(status_code=403, detail="Complete GitHub authorization first")
+    return await _link_github_installation(body, org_id)
+
+
 @router.get("/setup-callback")
 async def github_setup_callback(
     request: Request,
     installation_id: int | None = None,
     setup_action: str | None = None,
 ) -> RedirectResponse:
-    """GitHub App post-install redirect (official setup URL contract).
-
-    GitHub redirects here after installation with ?installation_id= (and
-    setup_action=install). Per GitHub docs this parameter is spoofable, so
-    nothing is persisted from it here — the authenticated link happens later
-    via POST /onboarding/github/connect, which validates the installation
-    through the App-JWT-authed GitHub API before storing it. This endpoint
-    only routes the browser back to where the install was initiated.
-    """
-    return_to = request.cookies.get(RETURN_TO_COOKIE)
-    if return_to not in ALLOWED_RETURN_TO:
-        return_to = "/integrations/github"
-    frontend_url = f"{settings.frontend_url}{return_to}"
-    if installation_id:
-        frontend_url += f"?installation_id={installation_id}"
-    response = RedirectResponse(url=frontend_url)
-    response.delete_cookie(RETURN_TO_COOKIE, path="/api")
+    """Continue setup through GitHub user authorization before linking."""
+    state = request.cookies.get("github_setup_state") or ""
+    if not state:
+        raise HTTPException(status_code=400, detail="Missing GitHub setup state")
+    db = request.app.state.draftly.dependencies.integrations.database
+    row = await db.fetch_one(
+        """SELECT nonce FROM integration_oauth_states
+           WHERE nonce = $1 AND provider = 'github' AND expires_at > now()""",
+        state,
+    )
+    if not row or not installation_id or setup_action not in ("install", "update"):
+        raise HTTPException(status_code=400, detail="Invalid GitHub setup callback")
+    if not settings.github_client_id or not settings.github_client_secret:
+        raise HTTPException(status_code=503, detail="GitHub user authorization is not configured")
+    await db.execute(
+        "UPDATE integration_oauth_states SET installation_id = $1 WHERE nonce = $2",
+        installation_id,
+        state,
+    )
+    authorization_url = "https://github.com/login/oauth/authorize?" + urlencode(
+        {
+            "client_id": settings.github_client_id,
+            "redirect_uri": f"{settings.public_api_url.rstrip('/')}/api/github/authorize-callback",
+            "state": state,
+        }
+    )
+    response = RedirectResponse(url=authorization_url)
+    response.delete_cookie("github_setup_state", path="/api/github")
     return response
+
+
+@router.get("/authorize-callback")
+async def github_authorize_callback(request: Request, code: str, state: str) -> RedirectResponse:
+    """Verify the signed-in GitHub user can access the installation."""
+    db = request.app.state.draftly.dependencies.integrations.database
+    pending = await db.fetch_one(
+        """SELECT org_id, installation_id FROM integration_oauth_states
+           WHERE nonce = $1 AND provider = 'github' AND expires_at > now()""",
+        state,
+    )
+    if not pending or not pending["installation_id"]:
+        raise HTTPException(status_code=400, detail="Invalid GitHub authorization state")
+    callback_url = f"{settings.public_api_url.rstrip('/')}/api/github/authorize-callback"
+    async with httpx.AsyncClient(timeout=10) as client:
+        token_response = await client.post(
+            "https://github.com/login/oauth/access_token",
+            data={
+                "client_id": settings.github_client_id,
+                "client_secret": settings.github_client_secret,
+                "code": code,
+                "redirect_uri": callback_url,
+            },
+            headers={"Accept": "application/json"},
+        )
+        token_response.raise_for_status()
+        user_token = token_response.json().get("access_token")
+        if not user_token:
+            raise HTTPException(status_code=400, detail="GitHub authorization failed")
+        installations_response = await client.get(
+            "https://api.github.com/user/installations?per_page=100",
+            headers={
+                "Authorization": f"Bearer {user_token}",
+                "Accept": "application/vnd.github+json",
+            },
+        )
+        installations_response.raise_for_status()
+        accessible = {
+            int(item["id"]) for item in installations_response.json().get("installations", [])
+        }
+    if int(pending["installation_id"]) not in accessible:
+        raise HTTPException(
+            status_code=403, detail="GitHub installation is unavailable to this user"
+        )
+    oauth_state = await consume_state(db, "github", state)
+    await _link_github_installation(
+        LinkGitHubRequest(installation_id=int(pending["installation_id"])),
+        oauth_state["org_id"],
+    )
+    bus = getattr(request.app.state, "dashboard_broadcaster", None)
+    if bus is not None:
+        await bus.broadcast(oauth_state["org_id"], "integration:changed", {"provider": "github"})
+    destination = f"{settings.frontend_url}{oauth_state['return_to']}"
+    if oauth_state["return_to"] == "/onboarding/github":
+        destination += "?" + urlencode({"installation_id": pending["installation_id"]})
+    return RedirectResponse(url=destination)
 
 
 @router.post("/webhook")
@@ -270,7 +407,6 @@ async def github_webhook(
     if signature is None or not verify_webhook_signature(body, signature):
         logger.warning("github_webhook_invalid_signature")
         raise HTTPException(status_code=401, detail="Invalid signature")
-
 
     try:
         payload = json.loads(body)
@@ -322,9 +458,7 @@ async def github_webhook(
 
     run_id = str(event.get("event_id") or uuid4().hex)
     org_repo = str(event.get("repository") or "")
-    org_id, installation_id = await _resolve_webhook_identity(
-        app_state, event, payload
-    )
+    org_id, installation_id = await _resolve_webhook_identity(app_state, event, payload)
     # The normalized event is the runner's persistence boundary. Carry the
     # resolved tenant identity forward so events, audit runs, and reviews use
     # the same organization as the jobs/workflow rows created below.
@@ -361,6 +495,7 @@ async def github_webhook(
         owner_repo = str(event.get("repository") or "")
         owner, _, repo = owner_repo.partition("/")
         from draftly.persistence.repositories.github import save_github_workflow
+
         deps = getattr(app_state, "dependencies", None)
         integrations = getattr(deps, "integrations", None) if deps else None
         db = getattr(integrations, "database", None)
@@ -412,9 +547,7 @@ async def github_webhook(
         worker = getattr(app_state, "worker", None)
         if worker is None or getattr(worker, "run_task", None) is None:
             raise HTTPException(status_code=503, detail="Background worker is disabled")
-        background_tasks.add_task(
-            worker.run_task, task_name, event=event, run_id=run_id
-        )
+        background_tasks.add_task(worker.run_task, task_name, event=event, run_id=run_id)
         logger.info(
             "github_webhook_dispatch_inprocess",
             task_name=task_name,
@@ -591,9 +724,7 @@ async def resume_review(
         worker = getattr(app_state, "worker", None)
         if worker is None or getattr(worker, "run_task", None) is None:
             raise HTTPException(status_code=503, detail="Background worker is disabled")
-        background_tasks.add_task(
-            worker.run_task, "review.resume", **dispatch_args
-        )
+        background_tasks.add_task(worker.run_task, "review.resume", **dispatch_args)
         logger.info(
             "review_resume_dispatch_inprocess",
             task_name="review.resume",

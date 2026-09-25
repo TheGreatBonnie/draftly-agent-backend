@@ -141,10 +141,51 @@ def group_chunks_into_pages(
     return pages, orphans
 
 
+def _select_path_patterns(paths: list[str] | tuple[str, ...] | None) -> tuple[str, ...]:
+    """Normalize include/exclude entries into Tavily ``select_paths`` regexes.
+
+    The staging UI confirms *absolute URLs* (the discovered candidates), e.g.
+    ``https://docs.example.com/authly/docs/explanation/guides``, and the docs
+    config's ``include_paths``/``exclude_paths`` therefore hold absolute URLs.
+    Tavily's ``select_paths``/``exclude_paths`` are regex patterns matched
+    against the *path* component of crawled URLs (e.g. ``/docs/.*``), so an
+    absolute URL never matches and the crawl silently returns zero pages.
+
+    Each entry is converted to a path-boundary pattern:
+
+    * absolute URL          -> ``/authly/docs/explanation/guides.*``
+      (origin stripped, ``.*`` appended so the subtree below still loads);
+    * bare path/entry that already looks like a pattern (``/docs/.*``) -> passthrough;
+    * empty/root-only entry -> dropped.
+    """
+
+    patterns: list[str] = []
+    for raw in paths or ():
+        text = str(raw).strip()
+        if not text:
+            continue
+        parts = urlsplit(text)
+        if parts.scheme and parts.netloc:  # absolute URL -> use its path
+            text = parts.path or "/"
+        text = text.rstrip("/") or "/"
+        if text in ("", "/"):
+            continue
+        pattern = text if text.endswith(".*") else f"{text}.*"
+        if pattern not in patterns:
+            patterns.append(pattern)
+    return tuple(patterns)
+
+
 class TavilyDocumentationSource:
     """Ingest public documentation via Tavily into the docs namespace."""
 
-    def __init__(self, client: Any, *, documents: Any = None, memory: Any = None) -> None:
+    def __init__(
+        self,
+        client: Any,
+        *,
+        documents: Any = None,
+        memory: Any = None,
+    ) -> None:
         self.client = client
         self.documents = documents
         self.memory = memory
@@ -165,8 +206,8 @@ class TavilyDocumentationSource:
         resp = await self.client.map(
             root,
             max_depth=3,
-            select_paths=config.include_paths or (),
-            exclude_paths=config.exclude_paths or (),
+            select_paths=_select_path_patterns(config.include_paths),
+            exclude_paths=_select_path_patterns(config.exclude_paths),
             allow_external=False,
         )
         candidates: list[str] = []
@@ -210,8 +251,8 @@ class TavilyDocumentationSource:
         crawl = await self.client.crawl(
             root,
             max_depth=3,
-            select_paths=config.include_paths or (),
-            exclude_paths=config.exclude_paths or (),
+            select_paths=_select_path_patterns(config.include_paths),
+            exclude_paths=_select_path_patterns(config.exclude_paths),
             extract_depth="advanced",
             format="markdown",
         )
@@ -257,7 +298,7 @@ class TavilyDocumentationSource:
             on_progress=on_progress,
         )
 
-        if result.document_count == 0 and result.failed_files:
+        if result.document_count == 0 and not result.skipped_count:
             raise TavilyError(
                 TavilyErrorCode.UPSTREAM,
                 f"tavily sync stored zero documents with {len(result.failed_files)} failures",

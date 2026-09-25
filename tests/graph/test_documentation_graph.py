@@ -693,6 +693,72 @@ def test_github_grounding_impact_agent_uses_api_repo_tools(
     assert {"semantic_search", "keyword_search", "hybrid_search"} <= impact_tools
 
 
+def test_github_grounding_impact_prompt_names_only_registered_tools(
+    model,
+    tools,
+    tmp_sessions,
+) -> None:
+    """The impact prompt must only name repo tools actually registered for the
+    run's grounding — no phantom local-checkout names in github mode."""
+    from draftly.agents.documentation.analyzer import build_impact_agent
+
+    captured: dict = {}
+
+    def impact_builder(agent_model, agent_tools, **kwargs):
+        agent = build_impact_agent(agent_model, agent_tools, **kwargs)
+        captured["prompt"] = agent.system_prompt
+        return agent
+
+    build_graph_for_run(
+        "github-impact-2",
+        surface="pull_request",
+        tools_registry=tools,
+        model=model,
+        agents=SimpleNamespace(impact_agent=impact_builder),
+        storage_dir=tmp_sessions,
+        grounding="github",
+    )
+
+    prompt = captured["prompt"]
+    assert "github_get_tree" in prompt
+    assert "github_read_file" in prompt
+    assert "list_directory" not in prompt
+    assert "list_directory, github_read_file, read_file" not in prompt
+
+
+def test_default_local_grounding_has_no_github_tools_in_impact_prompt(
+    model,
+    tools,
+    tmp_sessions,
+) -> None:
+    """Local-first runs must not instruct the impact agent to call GitHub API
+    repo tools that are not registered (no installation token offline)."""
+    from draftly.agents.documentation.analyzer import build_impact_agent
+
+    captured: dict = {}
+
+    def impact_builder(agent_model, agent_tools, **kwargs):
+        agent = build_impact_agent(agent_model, agent_tools, **kwargs)
+        captured["prompt"] = agent.system_prompt
+        return agent
+
+    build_graph_for_run(
+        "local-impact-1",
+        surface="pull_request",
+        tools_registry=tools,
+        model=model,
+        agents=SimpleNamespace(impact_agent=impact_builder),
+        storage_dir=tmp_sessions,
+    )
+
+    prompt = captured["prompt"]
+    assert "github_get_tree" not in prompt
+    assert "github_read_file" not in prompt
+    # the run's actual repo tools are named instead
+    assert "get_files" in prompt
+    assert "code_search" in prompt
+
+
 def test_default_local_grounding_keeps_checkout_tools(
     model,
     tools,

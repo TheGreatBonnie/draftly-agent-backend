@@ -39,7 +39,25 @@ Use tools in order:
 2. `keyword_search` — function/class/endpoint names from diff
 3. `hybrid_search` — combine both for best recall
 
+Call format for both tools (every call):
+`{"query": "<one plain string>", "namespace": "<one plain string>", "limit": <int>}`
+Pass scalars only — a JSON array for `query`/`namespace` is rejected at tool
+binding. After a binding error, retry once with corrected scalar arguments; it
+is NOT a "no results" signal.
+
 Minimum evidence: 2 search results or 1 high-confidence match.
+
+## When Search Has No Coverage
+
+Search covers the *indexed* documentation store — a repository's `docs/` tree
+may not be indexed yet. When searches return nothing or only binding errors,
+switch to the repository itself: enumerate the docs tree with your repo
+tooling (`github_get_tree` / `list_directory`, `github_read_file` /
+`read_file`), then map each changed symbol/area onto the pages that exist
+there. `affected_documents` must contain real paths observed in that tree.
+`create` only for a path that is genuinely absent — and then use the
+repository's real layout (e.g. `docs/how-to/...`, `docs/reference/...`), not
+an invented flat filename.
 
 ## Urgency Assignment
 

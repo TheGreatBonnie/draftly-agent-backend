@@ -10,6 +10,8 @@ silent no-op with a broken argument.
 
 from __future__ import annotations
 
+from typing import Any
+
 
 class EmptyToolInputError(RuntimeError):
     """Raised when a tool received no usable input (Strands parse-drop to {})."""
@@ -38,6 +40,36 @@ def require_nonempty(value: str, field: str, tool_name: str) -> None:
             "streaming / tool-input parse issue). Re-issue this tool call with "
             "a real value for '{field}'."
         )
+
+
+def coerce_string(value: Any, field: str, tool_name: str) -> str:
+    """Normalize a string-ish LLM tool argument to a plain non-empty string.
+
+    Agents frequently emit required string arguments as JSON arrays
+    (e.g. ``{"query": ["oauth", "login"]}``). Strands rejects such calls at
+    argument binding, the model thrashes in a retry loop, and the tool never
+    runs. Lists/tuples join on spaces (blank items dropped); ``str`` passes
+    through verbatim; ``None``/empty/blank join to an empty string and raise
+    :class:`EmptyToolInputError` with the same retryable message as
+    :func:`require_nonempty`.
+    """
+    if isinstance(value, (list, tuple)):
+        pieces = [
+            str(p).strip() for p in value if p is not None and str(p).strip()
+        ]
+        text = " ".join(pieces).strip()
+    elif value is None:
+        text = ""
+    else:
+        text = str(value).strip()
+    if not text:
+        raise EmptyToolInputError(
+            f"{tool_name}: required argument '{field}' is empty. "
+            "The tool call was received without its JSON arguments (a model "
+            "streaming / tool-input parse issue). Re-issue this tool call with "
+            "a real value for '{field}'."
+        )
+    return text
 
 
 def require_max_length(value: str, limit: int, field: str, tool_name: str) -> None:

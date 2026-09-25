@@ -189,8 +189,23 @@ class TestProbeDrivenOrcaRanking:
 class TestEmbeddingProviderRanking:
     """Only the OpenRouter embedder passed the live probe."""
 
-    def test_openrouter_embedder_ranks_first(self) -> None:
+    def test_openrouter_embedder_ranks_first(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         from draftly.models.factory import build_embedding_router
+
+        # Self-contained: this must not depend on ambient .env values
+        # (tests/scripts/probe_models.py loads .env at import when collected).
+        for var in (
+            "REQUESTY_API_KEY",
+            "ORCAROUTER_API_KEY",
+            "OPENROUTER_API_KEY",
+            "NEBIUS_TOKEN_FACTORY_API_KEY",
+        ):
+            monkeypatch.setenv(var, "test-key")
+        monkeypatch.delenv("DRAFTLY_ENABLED_PROVIDERS", raising=False)
+        monkeypatch.delenv("EMBEDDING_MODEL_ID", raising=False)
+        monkeypatch.delenv("EMBEDDING_DIMENSIONS", raising=False)
 
         ranked = build_embedding_router().registry.list_embedding_models()
 

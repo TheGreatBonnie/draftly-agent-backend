@@ -106,6 +106,23 @@ def test_run_detail_and_steps_are_org_scoped() -> None:
     assert repos.runs.get.await_args.kwargs["org_id"] == "org-1"
 
 
+def test_list_and_detail_include_projected_progress() -> None:
+    app, repos = make_app()
+    historical = {**run_row(), "current_stage": None, "stage_states": {}}
+    repos.runs.get.return_value = historical
+    repos.runs.list.return_value = ([historical], 1, None)
+    repos.runs.with_progress = AsyncMock(return_value=[{
+        **historical, "current_stage": "research",
+        "stage_states": {"research": "completed"}, "stage_sequence": ["research"]
+    }])
+    client = TestClient(app)
+    listed = client.get("/workflow-runs")
+    detail = client.get("/workflow-runs/run-1")
+    assert listed.json()["items"][0]["stage_sequence"] == ["research"]
+    assert detail.json()["run"]["current_stage"] == "research"
+    assert repos.runs.with_progress.await_count == 2
+
+
 def test_unknown_run_returns_404() -> None:
     app, repos = make_app()
     repos.runs.get.return_value = None

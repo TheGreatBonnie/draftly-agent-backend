@@ -373,6 +373,9 @@ def _default_graph_factory(context: WorkflowContext) -> GraphFactory:
 
         jobs_repo = getattr(getattr(context, "repositories", None), "jobs", None)
         drafts_repo = getattr(getattr(context, "repositories", None), "drafts", None)
+        documents_repo = getattr(
+            getattr(context, "repositories", None), "documents", None
+        )
         page_workflow_repo = getattr(
             getattr(context, "repositories", None), "page_workflow", None
         )
@@ -397,6 +400,7 @@ def _default_graph_factory(context: WorkflowContext) -> GraphFactory:
             steering_runtime=steering_runtime,
             research_plan=research_plan,
             progress_sink=progress_sink,
+            documents_repo=documents_repo,
             **context.graph_limits(),
         )
         graph._draftly_stream_seq = stream_seq
@@ -1543,6 +1547,26 @@ class WorkflowRunner:
                     seq = seq_allocator.next() if seq_allocator is not None else seq + 1
                     envelope.seq = seq
                     await self._safe_publish(envelope)
+                    if envelope.type in {"node_start", "node_stop"}:
+                        broadcaster = getattr(
+                            getattr(self.context, "broadcaster", None), "broadcast", None
+                        )
+                        org_id = str(invocation_state.get("project_id") or "")
+                        if broadcaster is not None and org_id:
+                            try:
+                                await broadcaster(org_id, "workflow:changed", {
+                                    "run_id": run_id,
+                                    "status": "running",
+                                    "kind": surface,
+                                    "node_id": envelope.node_id,
+                                    "seq": seq,
+                                })
+                            except Exception:
+                                logger.warning(
+                                    "workflow_progress_broadcast_failed",
+                                    run_id=run_id,
+                                    exc_info=True,
+                                )
                 if isinstance(raw, dict):
                     if "result" in raw:
                         result = raw["result"]

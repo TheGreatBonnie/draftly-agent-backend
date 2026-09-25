@@ -34,9 +34,18 @@ class SearchResponse(BaseModel):
 
 
 class MapResponse(BaseModel):
-    # urls is required: a 200 without it is an unexpected shape.
-    urls: list[str]
-    limit: int | None = None
+    # results is required: a 200 without it is an unexpected shape. Real
+    # Tavily /map 200 bodies use `results: string[]` (docs.tavily.com/
+    # api-reference/endpoint/map); `urls` is a backward-compatible alias.
+    base_url: str | None = None
+    results: list[str]
+    response_time: float | None = None
+    request_id: str | None = None
+
+    @property
+    def urls(self) -> list[str]:
+        """Alias for ``results`` — callers read ``resp.urls``."""
+        return self.results
 
 
 class CrawlResult(BaseModel):

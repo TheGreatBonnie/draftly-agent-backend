@@ -17,7 +17,10 @@ from datetime import datetime
 from typing import Any
 
 from draftly.integrations.database.client import DatabaseClient
-from draftly.orchestration.page_workflow.models import PageEvaluationResult
+from draftly.orchestration.page_workflow.models import (
+    PageEvaluationResult,
+    PageStatus,
+)
 
 MAX_AUTOMATIC_EVALUATION_ATTEMPTS = 3
 
@@ -110,13 +113,18 @@ class PageWorkflowRepository:
         org_id: str,
         pages: Iterable[NewPage],
     ) -> None:
-        """Seed page workflow states; existing rows are left untouched."""
+        """Seed page workflow states; existing rows are left untouched.
+
+        ``status`` is NOT NULL with no default in the schema (060), so every
+        seed row must supply the initial page status explicitly — a NULL here
+        raised ``NotNullViolationError`` and failed the whole page workflow.
+        """
         for page in pages:
             await self.database.execute(
                 """
                 INSERT INTO documentation_page_states (
-                    run_id, org_id, page_id, path, action
-                ) VALUES ($1, $2, $3, $4, $5)
+                    run_id, org_id, page_id, path, action, status
+                ) VALUES ($1, $2, $3, $4, $5, $6)
                 ON CONFLICT (run_id, page_id) DO NOTHING
                 """,
                 run_id,
@@ -124,6 +132,7 @@ class PageWorkflowRepository:
                 page.page_id,
                 page.path,
                 page.action,
+                PageStatus.PENDING.value,
             )
 
     async def reserve_next_version(self, *, run_id: str, page_id: str) -> int:

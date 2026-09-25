@@ -400,12 +400,16 @@ async def test_map_builds_request_and_parses() -> None:
         return httpx.Response(
             200,
             json={
-                "urls": [
+                # Real Tavily /map 200 shape (docs.tavily.com/api-reference/endpoint/map):
+                # results is a list of discovered URLs.
+                "base_url": "https://docs.example.com",
+                "results": [
                     "https://docs.example.com/start",
                     "https://docs.example.com/start#intro",
                     "https://other.example.com/x",
                 ],
-                "limit": 50,
+                "response_time": 1.5,
+                "request_id": "req-map-1",
             },
         )
 
@@ -427,3 +431,4 @@ async def test_map_builds_request_and_parses() -> None:
         "https://docs.example.com/start#intro",
         "https://other.example.com/x",
     ]
+    assert resp.request_id == "req-map-1"

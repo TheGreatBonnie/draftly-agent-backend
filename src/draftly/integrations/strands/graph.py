@@ -82,6 +82,7 @@ def build_graph_for_run(
     repo_dir: str | None = None,
     steering_runtime: Any = None,
     drafts_repo: Any = None,
+    documents_repo: Any = None,
     research_plan: Any = None,
     progress_sink: Any | None = None,
     page_workflow: Any = None,
@@ -125,6 +126,7 @@ def build_graph_for_run(
         graph_kwargs["grounding"] = grounding
         graph_kwargs["repo_dir"] = repo_dir
         graph_kwargs["drafts_repo"] = drafts_repo
+        graph_kwargs["documents_repo"] = documents_repo
         graph_kwargs["research_plan"] = research_plan
         graph_kwargs["progress_sink"] = progress_sink
         graph_kwargs["page_workflow"] = page_workflow

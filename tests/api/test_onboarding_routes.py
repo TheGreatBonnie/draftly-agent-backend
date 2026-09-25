@@ -676,6 +676,38 @@ class TestInitializeRobustness:
         repos = state.dependencies.repositories
         repos.onboarding.upsert.assert_not_awaited()
 
+    def test_initialize_preflight_409_releases_acquired_lock(self, client):
+        """Regression: a source-preflight 409 must release the init lock this
+        caller acquired. Previously the 409 raised right after acquisition and
+        leaked the lock until its 7-day TTL, so the next attempt hit the
+        stale-lock recovery path (log warning onboarding_stale_init_lock_recovered)
+        — the exact failure from the 2026-09-24T20:31 incident."""
+        state = client.app.state.draftly
+        repos = state.dependencies.repositories
+        repos.onboarding.get = AsyncMock(return_value={
+            "org_id": "test-org", "state": "PREFERENCES_CONFIGURED",
+            "selected_repository": {"installation_id": 1},  # github mode, no full_name
+        })
+        redis_mock = MagicMock()
+        native_mock = AsyncMock()
+        native_mock.set.return_value = True
+        # get() returns whatever run_id set() stored, so guarded release matches
+        def fake_get(key):
+            return native_mock.set.call_args[0][1]
+
+        native_mock.get = AsyncMock(side_effect=fake_get)
+        redis_mock.native = native_mock
+        state.redis_client = redis_mock
+        with (
+            patch.object(onboarding, "release_init_lock", AsyncMock()) as release,
+            patch.object(onboarding, "force_release_init_lock", AsyncMock()) as force,
+        ):
+            resp = client.post("/onboarding/initialize")
+
+        assert resp.status_code == 409
+        release.assert_awaited_once()
+        force.assert_not_awaited()
+
     def test_double_initialize_single_flights(self, client):
         self._set_state(client, "PREFERENCES_CONFIGURED")
         state = client.app.state.draftly

@@ -245,6 +245,8 @@ class DraftRepository:
         if revision.sealed:
             raise ValueError(f"draft {draft_id!r} is already sealed")
         content = await self._assembled(draft_id)
+        if not content.strip():
+            raise ValueError(f"draft {draft_id!r} is empty; append content before finalizing")
         size = len(content)
         digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
         now = datetime.now(UTC)

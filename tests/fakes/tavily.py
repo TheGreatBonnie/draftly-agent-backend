@@ -41,7 +41,7 @@ class FakeTavilyClient:
 
         self.calls.append(("map", url, kwargs))
         self._maybe_fail()
-        return MapResponse(urls=list(self.map_urls))
+        return MapResponse(results=list(self.map_urls))
 
     async def crawl(self, url: str, **kwargs: Any) -> Any:
         from draftly.integrations.tavily.models import CrawlResponse, CrawlResult

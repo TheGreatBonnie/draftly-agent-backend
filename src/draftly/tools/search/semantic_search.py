@@ -8,7 +8,7 @@ import time
 import structlog
 from strands.tools import tool
 
-from draftly.tools._guard import require_nonempty
+from draftly.tools._guard import coerce_string
 
 logger = structlog.get_logger(__name__)
 
@@ -42,8 +42,8 @@ async def semantic_search(
     limit: int = 10,
 ) -> list[dict]:
     """Search memory items by embedding similarity in a namespace."""
-    require_nonempty(query, "query", "semantic_search")
-    require_nonempty(namespace, "namespace", "semantic_search")
+    query = coerce_string(query, "query", "semantic_search")
+    namespace = coerce_string(namespace, "namespace", "semantic_search")
 
     from draftly.integrations.database.vector_search import VectorSearch
     from draftly.memory.scope import current_memory_scope

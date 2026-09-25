@@ -20,6 +20,7 @@ from draftly.documentation.source_models import (
 )
 from draftly.documentation.tavily_source import (
     TavilyDocumentationSource,
+    _select_path_patterns,
     build_research_shards,
     group_chunks_into_pages,
     pack_sample_files,
@@ -102,6 +103,72 @@ async def test_discover_dedupes_and_filters_off_root() -> None:
     ]
     assert result.total == 2
     assert result.skipped == 3
+
+
+def test_select_path_patterns_converts_absolute_urls() -> None:
+    # The onboarding UI confirms *absolute URLs* (the discovered candidates),
+    # but Tavily `select_paths`/`exclude_paths` are regex PATH patterns.
+    assert _select_path_patterns(
+        ["https://docs.example.com/a", "https://docs.example.com/docs/guides"]
+    ) == ("/a.*", "/docs/guides.*")
+
+
+def test_select_path_patterns_passes_through_existing_patterns() -> None:
+    assert _select_path_patterns(["/docs/.*", "/guides/.*"]) == (
+        "/docs/.*",
+        "/guides/.*",
+    )
+
+
+def test_select_path_patterns_dedupes_and_empties() -> None:
+    assert _select_path_patterns(
+        ["https://docs.example.com/a", "/a.*", "https://docs.example.com/a/"]
+    ) == ("/a.*",)
+    assert _select_path_patterns([]) == ()
+    assert _select_path_patterns(None) == ()
+
+
+@pytest.mark.asyncio
+async def test_discover_sends_path_patterns_to_map() -> None:
+    fake = FakeTavilyClient(
+        map_urls=["https://docs.example.com/a", "https://docs.example.com/b"]
+    )
+    source, _, _ = _source(fake)
+
+    await source.discover(
+        _config(
+            include_paths=[
+                "https://docs.example.com/a",
+                "https://docs.example.com/docs/guides",
+            ],
+            exclude_paths=["https://docs.example.com/private"],
+        )
+    )
+
+    _, url, kwargs = fake.calls[0]
+    assert url == ROOT + "/"
+    assert kwargs["select_paths"] == ("/a.*", "/docs/guides.*")
+    assert kwargs["exclude_paths"] == ("/private.*",)
+
+
+@pytest.mark.asyncio
+async def test_sync_sends_path_patterns_to_crawl() -> None:
+    fake = FakeTavilyClient(
+        crawl_pages={"https://docs.example.com/a": "# A\n\nContent A."}
+    )
+    source, _, _ = _source(fake)
+
+    await source.sync(
+        org_id="org-1",
+        config=_config(
+            include_paths=["https://docs.example.com/a"],
+            exclude_paths=["https://docs.example.com/private"],
+        ),
+    )
+
+    _, url, kwargs = fake.calls[0]
+    assert kwargs["select_paths"] == ("/a.*",)
+    assert kwargs["exclude_paths"] == ("/private.*",)
 
 
 @pytest.mark.asyncio
@@ -212,6 +279,20 @@ async def test_sync_hash_change_replaces_chunks() -> None:
     # stale chunks removed before the replacement batch is stored
     assert memory.deleted != []
     assert len(memory.batches) == 1
+
+
+@pytest.mark.asyncio
+async def test_sync_raises_when_zero_documents_stored_without_failures() -> None:
+    """A crawl that returns zero usable pages (no content, no failures) must
+    fail the sync instead of silently completing with an empty corpus — the
+    silent case otherwise poisons onboarding with a 0-doc COMPLETED row."""
+    fake = FakeTavilyClient(crawl_pages={})  # crawl yields nothing at all
+    source, _, _ = _source(fake)
+
+    with pytest.raises(TavilyError) as exc:
+        await source.sync(org_id="org-1", config=_config())
+
+    assert exc.value.code == TavilyErrorCode.UPSTREAM
 
 
 @pytest.mark.asyncio

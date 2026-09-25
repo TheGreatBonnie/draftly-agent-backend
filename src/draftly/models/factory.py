@@ -931,7 +931,22 @@ def build_agent_policies() -> dict[str, AgentModelPolicy]:
     return policies
 
 
-def build_embedding_router() -> EmbeddingRouter:
+def build_embedding_router(
+    enabled_providers: set[str] | None = None,
+) -> EmbeddingRouter:
+    """Build the embedding router, honoring the provider gate.
+
+    Mirrors ``build_model_router``: an explicit ``enabled_providers``
+    param wins; when unset, ``DRAFTLY_ENABLED_PROVIDERS`` is parsed
+    (unset/empty means all providers). Unlike the chat registry — which
+    keeps every provider registered and filters at route time —
+    gated-out providers are not registered here at all, because
+    ``EmbeddingRouter`` iterates ``registry.list_embedding_models()``
+    directly with no separate filter.
+    """
+    if enabled_providers is None:
+        enabled_providers = _enabled_providers_from_env()
+
     registry = ModelRegistry()
 
     health = ProviderHealthRegistry()
@@ -949,6 +964,13 @@ def build_embedding_router() -> EmbeddingRouter:
                 "embedding provider skipped provider=%s var=%s",
                 provider_name,
                 api_key_var,
+            )
+            continue
+
+        if enabled_providers is not None and provider_name not in enabled_providers:
+            logger.info(
+                "embedding provider gated provider=%s",
+                provider_name,
             )
             continue
 
@@ -1001,8 +1023,8 @@ def build_embedding_router() -> EmbeddingRouter:
 
     if not registry.list_embedding_models():
         raise RuntimeError(
-            "No embedding provider is configured (set REQUESTY_API_KEY, "
-            "ORCAROUTER_API_KEY, or OPENROUTER_API_KEY)."
+            "No embedding provider is enabled (set an embedding provider "
+            "API key in .env, or widen DRAFTLY_ENABLED_PROVIDERS)."
         )
 
     return EmbeddingRouter(

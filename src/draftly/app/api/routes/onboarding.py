@@ -179,8 +179,7 @@ async def create_workspace(
     current = await repos.onboarding.get(org_id)
     _require_transition(current, "WORKSPACE_CREATED", "create workspace")
     stage_config = [
-        {"id": s, "label": STAGE_LABELS.get(s, s), "order": i}
-        for i, s in enumerate(STAGES)
+        {"id": s, "label": STAGE_LABELS.get(s, s), "order": i} for i, s in enumerate(STAGES)
     ]
     await repos.onboarding.upsert(
         org_id,
@@ -207,6 +206,13 @@ async def connect_github(
     from draftly.persistence.repositories.organizations import update_org_github
 
     info = await get_installation_info(body.installation_id)
+    owned = await request.app.state.draftly.dependencies.integrations.database.fetch_one(
+        "SELECT id FROM github_installations WHERE installation_id = $1 AND org_id = $2",
+        body.installation_id,
+        org_id,
+    )
+    if not owned:
+        raise HTTPException(status_code=403, detail="Complete GitHub authorization first")
     account = info.get("account")
     github_org = account.get("login") if isinstance(account, dict) else None
     if not isinstance(github_org, str) or not github_org:
@@ -428,9 +434,7 @@ async def refresh_documentation(
     repos = _repos(request)
     current = await repos.onboarding.get(org_id)
     if _selected(current).get("source_type") != "public_documentation":
-        raise HTTPException(
-            status_code=409, detail="No public documentation corpus selected"
-        )
+        raise HTTPException(status_code=409, detail="No public documentation corpus selected")
     if not _public_ingestion_enabled(request):
         raise HTTPException(
             status_code=409,
@@ -555,12 +559,35 @@ async def _release_init_lock(request: Request, org_id: str, run_id: str) -> None
     """Guarded release shared with the RQ worker via app/services/init_lock."""
     await release_init_lock(_redis(request), org_id, run_id)
 
+
 def _init_worker_guard(request: Request):
     """Worker + registered-task check; must run BEFORE any state mutation."""
     worker = _worker(request)
     if not worker.task_runner.has_task("onboarding.initialize"):
         raise HTTPException(status_code=404, detail="Unknown job: onboarding.initialize")
     return worker
+
+
+def _initialize_selection_error(selected_repository: dict[str, Any] | None) -> str | None:
+    """Source-aware preflight for initialize; returns a 409 detail or None.
+
+    GitHub sources require an ``owner/repo`` full_name — the ingestion job
+    would otherwise call GitHub with an empty/bad repo path and die with a
+    cryptic 404. ``public_documentation`` sources (spec: 2026-09-20-tavily-rag)
+    key ingestion off ``documentation_config.root_url`` instead, and their
+    ``full_name`` is a bare origin (e.g. "thegreatbonnie.github.io"), never
+    "owner/repo".
+    """
+    selected = selected_repository or {}
+    if selected.get("source_type", "github_repository") == "public_documentation":
+        config = selected.get("documentation_config") or {}
+        if not selected.get("full_name") or not config.get("root_url"):
+            return "No documentation corpus selected; choose documentation before initializing"
+        return None
+    repo_full = selected.get("full_name", "")
+    if not repo_full or "/" not in repo_full:
+        return "No repository selected; choose a repository before initializing"
+    return None
 
 
 async def _execute_initialization(
@@ -639,17 +666,21 @@ async def _execute_initialization(
                 detail="Initialization already in progress",
             )
 
-    # Guard: the initialize workflow ingests a repo keyed by selected_repository
-    # "full_name" (initialize.py reads repo_full = selected_repository["full_name"]).
-    # If it's missing, the job would call GitHub with an empty repo path and fail
-    # with a cryptic 404 (https://api.github.com/repos/). Reject up front so the
-    # frontend can recover (re-select a repository) instead of a doomed job.
-    repo_full = (selected_repository or {}).get("full_name", "")
-    if not repo_full or "/" not in repo_full:
-        raise HTTPException(
-            status_code=409,
-            detail="No repository selected; choose a repository before initializing",
-        )
+    # Source-aware preflight: the initialize workflow ingests a repo keyed by
+    # selected_repository "full_name" (initialize.py:243). GitHub sources need
+    # an owner/repo path or the job would call GitHub with an empty repo path
+    # and fail with a cryptic 404 (https://api.github.com/repos/); public docs
+    # (source_type == "public_documentation") key ingestion off
+    # documentation_config.root_url — their full_name is a bare origin. Reject
+    # up front so the frontend can recover (re-select a source) instead of a
+    # doomed job.
+    guard_detail = _initialize_selection_error(selected_repository)
+    if guard_detail:
+        # We own the lock on this branch (fresh or stale-recovered start). A
+        # client error must not strand the lock for its 7-day TTL, or the next
+        # attempt would trip onboarding_stale_init_lock_recovered.
+        await release_init_lock(_redis(request), org_id, run_id)
+        raise HTTPException(status_code=409, detail=guard_detail)
 
     ticket = await _tickets(request).issue(run_id, org_id=org_id)
 
@@ -669,11 +700,7 @@ async def _execute_initialization(
     rq_queues = getattr(app_state, "rq_queues", None)
     task_handlers = getattr(app_state, "task_handlers", None)
     settings = getattr(app_state, "settings", None)
-    rq_enabled = (
-        bool(getattr(settings, "rq_enabled", False))
-        if settings is not None
-        else False
-    )
+    rq_enabled = bool(getattr(settings, "rq_enabled", False)) if settings is not None else False
 
     rq_job_id = ""
     if rq_enabled and rq_queues is not None and task_handlers is not None:
@@ -707,9 +734,7 @@ async def _execute_initialization(
         )
         logger.info("onboarding_jobs_inserted", run_id=run_id, org_id=org_id)
     except Exception:
-        logger.exception(
-            "onboarding_jobs_insert_failed", run_id=run_id, org_id=org_id
-        )
+        logger.exception("onboarding_jobs_insert_failed", run_id=run_id, org_id=org_id)
         raise HTTPException(
             status_code=500, detail="Failed to register initialization run"
         ) from None
@@ -773,9 +798,7 @@ async def start_initialization(
     if current_state != "PREFERENCES_CONFIGURED":
         raise HTTPException(status_code=409, detail=f"Cannot initialize from {current_state}")
     worker = _init_worker_guard(request)
-    return await _execute_initialization(
-        repos, org_id, worker, _selected(current), request=request
-    )
+    return await _execute_initialization(repos, org_id, worker, _selected(current), request=request)
 
 
 @router.get("/initialize/status")
@@ -811,9 +834,7 @@ async def retry_initialize(
     if not current or current.get("state") != "FAILED":
         raise HTTPException(status_code=409, detail="Can only retry from FAILED state")
     worker = _init_worker_guard(request)
-    return await _execute_initialization(
-        repos, org_id, worker, _selected(current), request=request
-    )
+    return await _execute_initialization(repos, org_id, worker, _selected(current), request=request)
 
 
 @router.post("/complete")

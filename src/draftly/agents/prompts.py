@@ -603,6 +603,19 @@ the documentation store (semantic_search / keyword_search) to locate the
 affected documentation and verify your decision against tool output. Ground
 every claim in retrieval results.
 
+Search tool call contract (both tools, every call):
+  semantic_search(query: "<one plain string>", namespace: "<one plain string>", limit: <integer>)
+  keyword_search(query: "<one plain string>", namespace: "<one plain string>", limit: <integer>)
+Pass every argument as a scalar — never a JSON array or object. If a search
+call errors, retry once with corrected scalar arguments; a binding/format
+error is NOT a "no results" signal. When searches still give no coverage, do
+NOT guess documentation paths: enumerate the repository's actual docs tree
+with the read-only repository tools in your toolset ({repo_tool_hint}) and map
+each changed symbol or area onto the pages that exist (paths you observed).
+Prefer `update` for existing pages;
+`create` only for a path that is genuinely absent from the tree. Every entry
+in affected_documents must be a real path you observed.
+
 {guardrail_refusal}
 
 Output contract:

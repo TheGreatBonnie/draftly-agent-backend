@@ -77,6 +77,7 @@ class Settings(BaseSettings):
     port: int = 8000
     agentcore_port: int = 8080
     frontend_url: str = "http://localhost:3000"
+    public_api_url: str = "http://localhost:8000"
 
     # ------------------------------------------------------------------
     # API
@@ -105,6 +106,8 @@ class Settings(BaseSettings):
     github_repository: str | None = None
     github_app_id: str | None = None
     github_app_slug: str | None = None
+    github_client_id: str | None = None
+    github_client_secret: str | None = None
     github_private_key_path: str | None = None
 
     # ------------------------------------------------------------------
@@ -126,6 +129,7 @@ class Settings(BaseSettings):
     discord_bot_token: str | None = None
     discord_public_key: str | None = None
     discord_app_id: str | None = None
+    discord_client_secret: str | None = None
     discord_guild_id: str | None = None
 
     # ------------------------------------------------------------------

@@ -134,6 +134,7 @@ def build_documentation_graph(
     comment_factory: Any = None,
     steering_runtime: Any = None,
     drafts_repo: Any = None,
+    documents_repo: Any = None,
     research_plan: Any = None,
     write_concurrency: int = 3,
     progress_sink: Any | None = None,
@@ -353,6 +354,7 @@ def build_documentation_graph(
                     writer_factory=writer_factory,
                     drafts_repo=drafts_repo,
                     page_repository=page_workflow,
+                    documents_repo=documents_repo,
                 ),
                 "evaluate": PageEvaluatorHandler(
                     rubric_grader=docs_rubric_grader,

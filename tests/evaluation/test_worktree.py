@@ -80,6 +80,47 @@ def test_staged_changes_still_yield_full_diff(repo: Path) -> None:
     assert pr["authoring_action"] == "update"
 
 
+def test_untracked_new_doc_is_create_and_shows_in_diff(repo: Path) -> None:
+    """An *uncommitted, untracked* doc is scenario content: it must surface as a
+    create in file_actions and appear in the diff, not be silently dropped
+    (``git diff HEAD`` alone ignores untracked files)."""
+    (repo / "docs" / "how-to" / "provider-setup.md").write_text(
+        "# GitHub provider\n\nSet up a provider in two clicks.\n"
+    )
+
+    pr = build_worktree_pr(repo_dir=str(repo), repository="authly", pr_number=1)
+    assert pr["file_actions"]["docs/how-to/provider-setup.md"] == "create"
+    assert "docs/how-to/provider-setup.md" in pr["changed_files"]
+    assert "Set up a provider in two clicks." in pr["diff"]
+    assert pr["authoring_action"] == "create"
+
+
+def test_untracked_only_change_is_authorable_not_none(tmp_path: Path) -> None:
+    """A scenario whose entire PR is brand-new files (nothing tracked modified)
+    must still resolve to an authorable diff: otherwise 007-support-gap and
+    similar additive-only scenarios read as ``none``."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    _git(root, "init", "-q", "-b", "feat/007-support-gap")
+    _git(root, "config", "user.email", "t@t")
+    _git(root, "config", "user.name", "t")
+    (root / "src" / "authly").mkdir(parents=True)
+    (root / "src" / "authly" / "_core.py").write_text("CORE = True\n")
+    _git(root, "add", ".")
+    _git(root, "commit", "-q", "-m", "base")
+
+    # The whole scenario is an untracked brand-new how-to doc.
+    (root / "docs" / "how-to").mkdir(parents=True)
+    (root / "docs" / "how-to" / "configure-oauth-redirect.md").write_text(
+        "# Configure OAuth redirect\n\nFull walkthrough.\n"
+    )
+
+    pr = build_worktree_pr(repo_dir=str(root), repository="authly", pr_number=1)
+    assert pr["authoring_action"] == "create"
+    assert pr["changed_files"] == ["docs/how-to/configure-oauth-redirect.md"]
+    assert "# Configure OAuth redirect" in pr["diff"]
+
+
 def test_code_only_diff_is_update_not_none(tmp_path: Path) -> None:
     """A PR that changes source but ships no doc files means the stale docs
     must be updated to match: authoring_action resolves to ``update``, never

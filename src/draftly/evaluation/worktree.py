@@ -58,10 +58,26 @@ def _is_bytecode(path: str) -> bool:
     return "__pycache__" in path or path.endswith(".pyc")
 
 
+def _untracked_paths(repo_dir: str) -> list[str]:
+    """Working-tree paths git does not track yet (``??`` in ``status --porcelain``).
+
+    Untracked files are legitimate scenario content — a PR that adds a brand-new
+    file (e.g. ``007-support-gap``'s new how-to doc) exists in the worktree only
+    as an untracked file, and ``git diff HEAD`` never reports those.
+    """
+    status = _run_git(repo_dir, "status", "--porcelain", "--untracked-files=all")
+    return [
+        line[3:].strip()
+        for line in status.splitlines()
+        if line.startswith("?? ") and not _is_bytecode(line[3:].strip())
+    ]
+
+
 def _changed_paths(repo_dir: str, base: str, head: str) -> list[str]:
     """Repository paths changed between ``base`` and ``head`` (slowly by default)."""
     if base == head:
         raw = _run_git(repo_dir, "diff", "--name-only", head).splitlines()
+        raw.extend(_untracked_paths(repo_dir))
     else:
         raw = _run_git(repo_dir, "diff", "--name-only", f"{base}...{head}").splitlines()
     return [line.strip() for line in raw if line.strip() and not _is_bytecode(line.strip())]
@@ -111,6 +127,34 @@ def _path_actions(repo_dir: str, base: str, head: str, paths: list[str]) -> dict
     return actions
 
 
+def _new_file_diff(path: str, content: str) -> str:
+    """A ``--- /dev/null``-style unified diff for an untracked working-tree file.
+
+    ``git diff`` has no view of untracked files, but the scenario contract
+    treats them as PR content, so synthesize the same hunks git would emit for
+    an added file.
+    """
+    if content == "":
+        lines: list[str] = []
+        count = 0
+    elif content.endswith("\n"):
+        lines = content[:-1].split("\n")
+        count = len(lines)
+    else:
+        lines = content.split("\n")
+        count = len(lines)
+    body = "".join(f"+{ln}\n" for ln in lines)
+    if content and not content.endswith("\n"):
+        body += "\\ No newline at end of file\n"
+    start = count if count == 0 else 1
+    return (
+        f"--- /dev/null\n"
+        f"+++ b/{path}\n"
+        f"@@ -0,0 +{start},{count} @@\n"
+        f"{body}"
+    )
+
+
 def _diff_text(repo_dir: str, base: str, head: str, paths: list[str]) -> str:
     """Unified diff owned by the scenario, limited to the given source paths."""
     if base == head:
@@ -118,10 +162,22 @@ def _diff_text(repo_dir: str, base: str, head: str, paths: list[str]) -> str:
         # against the pinned base commit. Diff against HEAD so the full change
         # set is captured regardless of staging state — `git diff` alone would
         # be empty when every change is staged (index == working tree).
-        cmd = ["diff", "HEAD"]
+        tracked = [p for p in paths if p not in _untracked_paths(repo_dir)]
+        diff = ""
+        if tracked:
+            diff = _run_git(repo_dir, "diff", "HEAD", "--", *tracked)
+        untracked = {p for p in paths if p not in tracked}
+        if untracked:
+            chunks = [diff, "\n"]
+            for p in sorted(untracked):
+                content = (Path(repo_dir) / p).read_text()
+                chunks.append(_new_file_diff(p, content))
+            diff = "\n".join(chunks)
     else:
         cmd = ["diff", f"{base}...{head}"]
-    diff = _run_git(repo_dir, *cmd, "--", *paths)
+        if paths:
+            cmd += ["--", *paths]
+        diff = _run_git(repo_dir, *cmd)
     lines: list[str] = []
     for ln in diff.splitlines():
         if _is_bytecode(ln) or "\0" in ln or ln.startswith("Binary files"):

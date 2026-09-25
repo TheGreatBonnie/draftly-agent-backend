@@ -198,7 +198,9 @@ class FakeClient:
             )
 
         if up.startswith("INSERT INTO DOCUMENTATION_PAGE_STATES"):
-            run_id, org_id, page_id, path, action = args
+            # SQL contract: the INSERT must supply a non-null page status; the
+            # schema column is NOT NULL with no default, so the arg is mandatory.
+            run_id, org_id, page_id, path, action, status = args
             if not any(
                 s["run_id"] == run_id and s["page_id"] == page_id for s in self.page_states
             ):
@@ -209,7 +211,7 @@ class FakeClient:
                         "page_id": page_id,
                         "path": path,
                         "action": action,
-                        "status": "pending",
+                        "status": status,
                         "latest_artifact_id": None,
                         "latest_version": 0,
                         "next_version": 1,
@@ -637,6 +639,15 @@ async def _seed_artifact(
     )
     await drafts.append_chunk(revision.id, content)
     return await drafts.finalize(revision.id)
+
+
+async def test_create_pages_seeds_pending_status(
+    client: FakeClient, pages: PageWorkflowRepository
+) -> None:
+    """Seed rows must carry a non-null ``status`` (schema is NOT NULL, no default)."""
+    await _seed_page(pages)
+    assert len(client.page_states) == 1
+    assert client.page_states[0]["status"] == "pending"
 
 
 async def test_reserve_next_version_allocates_monotonically_per_page(

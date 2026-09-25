@@ -30,7 +30,7 @@ class SlackInstallationStore(AsyncInstallationStore):
     def __init__(self, db: DatabaseClient) -> None:
         self.db = db
 
-    async def async_save(self, installation: Installation) -> None:
+    async def async_save(self, installation: Installation, org_id: str | None = None) -> None:
         team_id = installation.team_id or ""
         existing = await self.db.fetch_one(
             "SELECT id::text FROM slack_installations WHERE team_id = $1",
@@ -44,7 +44,7 @@ class SlackInstallationStore(AsyncInstallationStore):
                        bot_scopes = $7, user_scopes = $8, token_type = $9,
                        updated_at = now()
                    WHERE team_id = $10""",
-                installation.user_id,  # placeholder: org mapped at install route
+                org_id,
                 installation.bot_user_id,
                 installation.bot_token,
                 installation.user_id,
@@ -61,7 +61,7 @@ class SlackInstallationStore(AsyncInstallationStore):
                    (org_id, team_id, team_name, bot_user_id, bot_token,
                     bot_scopes, user_id, user_token, user_scopes, token_type)
                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)""",
-                installation.user_id,  # placeholder: org mapped at install route
+                org_id,
                 team_id,
                 installation.team_name,
                 installation.bot_user_id,

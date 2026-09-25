@@ -84,6 +84,14 @@ class ExtractionOutput(BaseModel):
     procedures: list[Procedure] = Field(default_factory=list)
 
 
+class ChunkExtraction(ExtractionOutput):
+    chunk_id: str
+
+
+class GroupedExtractionOutput(BaseModel):
+    items: list[ChunkExtraction] = Field(default_factory=list)
+
+
 class EvaluationScores(BaseModel):
     coverage: float = Field(ge=0.0, le=1.0)
     completeness: float = Field(ge=0.0, le=1.0)
@@ -123,6 +131,9 @@ class HealthResult:
 
 
 CHUNK_BATCH_SIZE = 50
+EXTRACTION_GROUP_MAX_CHUNKS = 4
+EXTRACTION_GROUP_MAX_CHARS = 6000
+EXTRACTION_PERSIST_GROUPS = 4
 # Per-chunk/LLM-call timeout in seconds. "0" disables the per-call deadline so
 # slower providers (e.g. kimi-k2.5, which streams a structured tool call before
 # returning) are given time to complete instead of being cut off mid-stream
@@ -328,12 +339,24 @@ async def _llm_generate(
         result = await agent.invoke_async(
             prompt, structured_output_model=output_model, limits=LLM_LIMITS,
         )
-    except BaseException:
+    except BaseException as exc:
+        logger.warning(
+            "llm_generate_failed", latency_ms=round((time.monotonic() - start) * 1000),
+            err_type=type(exc).__name__,
+        )
         if telemetry is not None:
             await telemetry(False, (time.monotonic() - start) * 1000.0)
         raise
     latency_ms = (time.monotonic() - start) * 1000.0
     _record_usage(result)
+    usage = getattr(getattr(result, "metrics", None), "accumulated_usage", None)
+    usage = usage if isinstance(usage, dict) else {}
+    logger.info(
+        "llm_generate_done", latency_ms=round(latency_ms),
+        input_tokens=int(usage.get("inputTokens") or 0),
+        output_tokens=int(usage.get("outputTokens") or 0),
+        structured_output=bool(result.structured_output is not None),
+    )
     if telemetry is not None:
         await telemetry(result.structured_output is not None, latency_ms)
     return result.structured_output
@@ -434,6 +457,42 @@ RECOMMENDATION_PROMPT = (
 )
 
 
+def _group_extraction_chunks(chunks: list[dict]) -> list[list[dict]]:
+    """Pack chunks from one page without changing their retrieval granularity."""
+    pages: dict[str, list[dict]] = {}
+    for chunk in chunks:
+        meta = chunk.get("metadata") or {}
+        page = meta.get("document_id") or meta.get("path") or meta.get("source_url")
+        # Unattributed chunks stay independent; do not merge unrelated pages.
+        key = str(page) if page else f"__chunk__:{chunk.get('id', id(chunk))}"
+        pages.setdefault(key, []).append(chunk)
+
+    groups: list[list[dict]] = []
+    for page_chunks in pages.values():
+        page_chunks.sort(key=lambda c: (c.get("metadata") or {}).get("start_line") or 0)
+        current: list[dict] = []
+        chars = 0
+        for chunk in page_chunks:
+            size = len(chunk.get("content") or "")
+            if not (chunk.get("content") or "").strip():
+                if current:
+                    groups.append(current)
+                    current, chars = [], 0
+                groups.append([chunk])
+                continue
+            if current and (
+                len(current) >= EXTRACTION_GROUP_MAX_CHUNKS
+                or chars + size > EXTRACTION_GROUP_MAX_CHARS
+            ):
+                groups.append(current)
+                current, chars = [], 0
+            current.append(chunk)
+            chars += size
+        if current:
+            groups.append(current)
+    return groups
+
+
 async def run_knowledge_construction(
     context: Any,
     *,
@@ -441,294 +500,268 @@ async def run_knowledge_construction(
     publish: Callable[[str, dict[str, Any]], Awaitable[None]],
     source_type: str = "github_repository",
 ) -> KnowledgeExtractionResult:
-    """Stage 2: Extract knowledge from synced document chunks via LLM."""
+    """Stage 2: extract with independent agents and persist completed groups."""
     if _research_synthesis_enabled(context) and source_type == "public_documentation":
         return await _run_research_synthesis(context, org_id=org_id, publish=publish)
     from draftly.memory.candidates.models import MemoryCandidate
+    from draftly.memory.candidates.service import CandidateService
+    from draftly.memory.docgraph.service import DocGraphService
     from draftly.memory.models.knowledge import Knowledge
 
     result = KnowledgeExtractionResult()
-
+    started = time.monotonic()
     chunks = await context.memory.recall(
-        namespace="documents",
-        query="*",
-        limit=500,
-        org_id=org_id,
+        namespace="documents", query="*", limit=500, org_id=org_id,
     )
-
     if not chunks:
         logger.info("knowledge_construction_no_chunks org=%s", org_id)
         return result
 
+    groups = _group_extraction_chunks(chunks)
     total = len(chunks)
-    # Resolve routed model + recorder for this stage
-    stage_model, routing_decision = _resolve_stage_model(
-        context, "knowledge_extractor",
-    )
+    stage_model, routing_decision = _resolve_stage_model(context, "knowledge_extractor")
     recorder = _OutcomeRecorder(context, routing_decision)
-    # Task 7 allocated ONE agent to reuse across chunks — but Strands permits a
-    # single in-flight invoke per Agent, so a *shared* agent breaks concurrency
-    # (ConcurrencyException → 0 facts extracted, all chunks failed). Fix: a pool
-    # of LLM_MAX_CONCURRENCY agents (one per concurrent slot), borrowed per chunk
-    # and returned afterwards. Unbuildable models degrade to per-call
-    # construction (pool=None) via _llm_generate's agent=None path.
-    try:
-        agent_pool = _agent_pool(
-            stage_model,
-            ExtractionOutput,
-            LLM_MAX_CONCURRENCY,
-            role=AgentRole.WRITER,
-            system_prompt=EXTRACTION_SYSTEM_PROMPT,
-            agent_id_prefix="onboarding-extraction",
-            node_id="onboarding-extraction",
-        )
-    except Exception:
-        agent_pool = None
-    sem = asyncio.Semaphore(LLM_MAX_CONCURRENCY)
-
-    async def _extract(chunk: dict) -> tuple[ExtractionOutput | None, str]:
-        """LLM-extract one chunk under the concurrency cap and chunk timeout."""
-        content = chunk.get("content", "")
-        cid = chunk.get("id", "unknown")
-        if not content.strip():
-            return None, cid
-        prompt = EXTRACTION_PROMPT.format(content=content[:2000])
-        try:
-            async with sem:
-                agent = None
-                if agent_pool is not None:
-                    agent = await agent_pool.get()
-                try:
-                    extracted = await _llm_with_chunk_timeout(
-                        _llm_generate(
-                            stage_model, prompt, agent=agent,
-                            output_model=ExtractionOutput,
-                            telemetry=recorder.record,
-                        ),
-                    )
-                    return extracted, cid
-                finally:
-                    if agent is not None:
-                        agent_pool.put_nowait(agent)
-        except Exception as exc:
-            # With a CHUNK_TIMEOUT_SECONDS ceiling a TimeoutError subclasses
-            # Exception on 3.11+ — hung providers are recorded as failed chunks
-            # instead of stalling the workflow. The bare TimeoutError has an
-            # empty str(), so log the type to keep failures diagnosable.
-            logger.warning(
-                "knowledge_extraction_chunk_failed chunk=%s err=%s err_type=%s",
-                cid, exc, type(exc).__name__,
-            )
-            return None, cid
-
-    # Corpus-scaled emit cadence: keep the per-batch progress cadence but never
-    # exceed the tick budget, no matter how many chunks are ingested.
+    request_count = 0
+    throttled_count = 0
+    persistence_ms = 0.0
     emit_every = tick_interval(total)
 
     async def _bounded(coro: Awaitable[Any]) -> Any:
         if KNOWLEDGE_BATCH_TIMEOUT_SECONDS > 0:
-            return await asyncio.wait_for(
-                coro, timeout=KNOWLEDGE_BATCH_TIMEOUT_SECONDS
-            )
+            return await asyncio.wait_for(coro, timeout=KNOWLEDGE_BATCH_TIMEOUT_SECONDS)
         return await coro
 
-    for i in range(0, total, CHUNK_BATCH_SIZE):
-        batch = chunks[i : i + CHUNK_BATCH_SIZE]
-        facts: list[Knowledge] = []
-        # Accumulate across all chunks in this batch, then flush once.
-        batch_relations: list[dict] = []
-        batch_candidates: list[MemoryCandidate] = []
-
+    async def _call(prompt: str, schema: type[BaseModel]) -> BaseModel | None:
+        nonlocal request_count, throttled_count
+        request_count += 1
         try:
-            extracted_results = await _bounded(
-                asyncio.gather(*(_extract(chunk) for chunk in batch))
+            agent = build_draftly_agent(
+                role=AgentRole.WRITER,
+                system_prompt=EXTRACTION_SYSTEM_PROMPT,
+                model=stage_model,
+                structured_output_model=schema,
+                runtime=SteeringRuntime.disabled(),
+                agent_id=f"onboarding-extraction-{request_count}",
+                node_id="onboarding-extraction",
             )
-        except TimeoutError:
-            # A hung provider stalled the whole batch past the ceiling; record
-            # every chunk as failed and move on instead of hanging the workflow.
+            return await _llm_with_chunk_timeout(
+                _llm_generate(
+                    stage_model, prompt, agent=agent, output_model=schema,
+                    telemetry=recorder.record,
+                )
+            )
+        except Exception as exc:
+            if "throttl" in type(exc).__name__.lower() or "rate limit" in str(exc).lower():
+                throttled_count += 1
             logger.warning(
-                "knowledge_batch_extract_timeout count=%d",
-                len(batch),
+                "knowledge_extraction_request_failed err=%s err_type=%s",
+                exc, type(exc).__name__,
             )
-            result.failed_chunks.extend(
-                chunk.get("id", "unknown") for chunk in batch
-            )
-            continue
+            return None
 
-        for chunk, (extracted, chunk_id) in zip(batch, extracted_results):
+    async def _extract_group(group: list[dict]) -> list[tuple[dict, ExtractionOutput | None]]:
+        if len(group) == 1:
+            chunk = group[0]
+            if not (chunk.get("content") or "").strip():
+                return [(chunk, None)]
+            prompt = EXTRACTION_PROMPT.format(content=(chunk.get("content") or "")[:2000])
+            output = await _call(prompt, ExtractionOutput)
+            return [(chunk, output if isinstance(output, ExtractionOutput) else None)]
+
+        prompt = (
+            "Extract facts, relationships, and procedures separately for every "
+            "documentation chunk below. Return exactly one item per Chunk ID; "
+            "copy each ID exactly.\n\n"
+            + "\n\n".join(
+                f"Chunk ID: {chunk.get('id', 'unknown')}\nContent:\n"
+                f"{(chunk.get('content') or '')[:EXTRACTION_GROUP_MAX_CHARS]}"
+                for chunk in group
+            )
+        )
+        output = await _call(prompt, GroupedExtractionOutput)
+        expected = [str(chunk.get("id", "unknown")) for chunk in group]
+        if isinstance(output, GroupedExtractionOutput):
+            found = [item.chunk_id for item in output.items]
+            if len(found) == len(expected) and set(found) == set(expected):
+                by_id = {item.chunk_id: item for item in output.items}
+                return [(chunk, by_id[str(chunk.get("id", "unknown"))]) for chunk in group]
+        logger.warning("knowledge_extraction_group_invalid count=%d", len(group))
+        # No grouped output is persisted until all IDs validate. Retry each
+        # chunk independently so one malformed group cannot lose coverage.
+        results: list[tuple[dict, ExtractionOutput | None]] = []
+        for chunk in group:
+            prompt = EXTRACTION_PROMPT.format(content=(chunk.get("content") or "")[:2000])
+            output = await _call(prompt, ExtractionOutput)
+            results.append((chunk, output if isinstance(output, ExtractionOutput) else None))
+        return results
+
+    work_queue: asyncio.Queue[list[dict] | None] = asyncio.Queue(maxsize=LLM_MAX_CONCURRENCY * 2)
+    completed_queue: asyncio.Queue[list[tuple[dict, ExtractionOutput | None]]] = asyncio.Queue(
+        maxsize=LLM_MAX_CONCURRENCY * 2
+    )
+
+    async def _produce() -> None:
+        for group in groups:
+            await work_queue.put(group)
+        for _ in range(LLM_MAX_CONCURRENCY):
+            await work_queue.put(None)
+
+    async def _worker() -> None:
+        while True:
+            group = await work_queue.get()
+            if group is None:
+                return
+            try:
+                extracted = await _bounded(_extract_group(group))
+            except TimeoutError:
+                logger.warning("knowledge_group_extract_timeout count=%d", len(group))
+                extracted = [(chunk, None) for chunk in group]
+            except Exception as exc:
+                logger.warning("knowledge_group_extract_failed count=%d err=%s", len(group), exc)
+                extracted = [(chunk, None) for chunk in group]
+            await completed_queue.put(extracted)
+
+    async def _persist(batch: list[tuple[dict, ExtractionOutput | None]]) -> None:
+        nonlocal persistence_ms
+        started_persist = time.monotonic()
+        facts: list[Knowledge] = []
+        relations: list[dict] = []
+        candidates: list[MemoryCandidate] = []
+        batch_ids = [chunk.get("id", "unknown") for chunk, _ in batch]
+        for chunk, extracted in batch:
+            chunk_id = chunk.get("id", "unknown")
             if extracted is None:
-                # Empty content or a failed/timed-out extraction.
                 result.failed_chunks.append(chunk_id)
                 continue
-
-            # Collect extracted facts; stored in one batch at batch end
-            # (Task 6: 1 embed_batch + 1 transaction per batch instead of
-            # per-fact remember() round trips).
             for fact in extracted.facts:
-                facts.append(
-                    Knowledge(
-                        namespace="knowledge",
-                        content=fact,
-                        org_id=org_id,
-                        topic=chunk.get("metadata", {}).get("title"),
-                        source_quality=0.7,
-                    )
-                )
+                facts.append(Knowledge(
+                    namespace="knowledge", content=fact, org_id=org_id,
+                    topic=(chunk.get("metadata") or {}).get("title"), source_quality=0.7,
+                ))
+            for rel in extracted.relationships:
+                relations.append({
+                    "_chunk_id": chunk_id, "source": rel.source,
+                    "target": rel.target, "type": rel.type, "org_id": org_id,
+                    "source_type": "code", "target_type": "doc",
+                })
+            for proc in extracted.procedures:
+                candidates.append(MemoryCandidate(
+                    org_id=org_id, candidate_type="procedure_pattern",
+                    payload=proc.model_dump(), source_type="document_chunk",
+                    source_id=chunk_id, evidence=[(chunk.get("content") or "")[:200]],
+                    confidence=0.6,
+                ))
 
-            try:
-                # Collect relationships for the batch-level flush below.
-                # _chunk_id is used only by the per-item fallback for
-                # failure isolation; doc_edges SQL reads named keys only.
-                for rel in extracted.relationships:
-                    batch_relations.append({
-                        "_chunk_id": chunk_id,
-                        "source": rel.source,
-                        "target": rel.target,
-                        "type": rel.type,
-                        "org_id": org_id,
-                        "source_type": "code",
-                        "target_type": "doc",
-                    })
-
-                # Collect procedure patterns for the batch-level flush below.
-                for proc in extracted.procedures:
-                    batch_candidates.append(
-                        MemoryCandidate(
-                            org_id=org_id,
-                            candidate_type="procedure_pattern",
-                            payload=proc.model_dump(),
-                            source_type="document_chunk",
-                            source_id=chunk_id,
-                            evidence=[chunk.get("content", "")[:200]],
-                            confidence=0.6,
-                        )
-                    )
-            except Exception as exc:
-                logger.warning(
-                    "knowledge_extraction_collect_failed chunk=%s err=%s",
-                    chunk_id, exc,
-                )
-                result.failed_chunks.append(chunk_id)
-
-        # Flush relationships + candidates once per batch. Real services
-        # (production) take the batch path; mock contexts take per-item.
-        from draftly.memory.candidates.service import CandidateService
-        from draftly.memory.docgraph.service import DocGraphService
-
-        if batch_relations:
+        if relations:
             if isinstance(context.docgraph, DocGraphService):
                 try:
-                    result.relationship_count += await context.docgraph.link_batch(
-                        batch_relations
-                    )
+                    result.relationship_count += await context.docgraph.link_batch(relations)
                 except Exception as exc:
                     logger.warning(
-                        "knowledge_link_batch_failed count=%d err=%s",
-                        len(batch_relations), exc,
+                        "knowledge_link_batch_failed count=%d err=%s", len(relations), exc
                     )
-                    result.failed_chunks.extend(
-                        chunk.get("id", "unknown") for chunk in batch
-                    )
+                    result.failed_chunks.extend(batch_ids)
             else:
-                # Per-item fallback with per-chunk failure isolation.
-                for rel_def in batch_relations:
+                for rel in relations:
                     try:
                         await context.docgraph.link(
-                            source_key=rel_def["source"],
-                            target_key=rel_def["target"],
-                            relation_type=rel_def["type"],
-                            org_id=org_id,
+                            source_key=rel["source"], target_key=rel["target"],
+                            relation_type=rel["type"], org_id=org_id,
                         )
                         result.relationship_count += 1
                     except Exception as exc:
-                        logger.warning(
-                            "knowledge_link_failed err=%s", exc,
-                        )
-                        result.failed_chunks.append(rel_def.get("_chunk_id"))
-
-        if batch_candidates:
+                        logger.warning("knowledge_link_failed err=%s", exc)
+                        result.failed_chunks.append(rel["_chunk_id"])
+        if candidates:
             if isinstance(context.candidates, CandidateService):
                 try:
-                    result.candidate_count += await context.candidates.enqueue_batch(
-                        batch_candidates
-                    )
+                    result.candidate_count += await context.candidates.enqueue_batch(candidates)
                 except Exception as exc:
                     logger.warning(
-                        "knowledge_enqueue_batch_failed count=%d err=%s",
-                        len(batch_candidates), exc,
+                        "knowledge_enqueue_batch_failed count=%d err=%s", len(candidates), exc
                     )
-                    result.failed_chunks.extend(
-                        chunk.get("id", "unknown") for chunk in batch
-                    )
+                    result.failed_chunks.extend(batch_ids)
             else:
-                for cand in batch_candidates:
+                for candidate in candidates:
                     try:
-                        await context.candidates.enqueue(cand)
+                        await context.candidates.enqueue(candidate)
                         result.candidate_count += 1
                     except Exception as exc:
-                        # cand.source_id is the chunk id (document_chunk).
                         logger.warning("knowledge_enqueue_failed err=%s", exc)
-                        result.failed_chunks.append(cand.source_id)
-
-
-        # Store all facts of this batch in one call (single embed_batch +
-        # single transaction per batch). A store failure marks the batch's
-        # chunks failed rather than losing the count silently.
+                        result.failed_chunks.append(candidate.source_id)
         if facts:
             try:
                 await _bounded(context.memory.store_batch(facts))
                 result.knowledge_count += len(facts)
             except TimeoutError:
-                # TimeoutError subclasses Exception on 3.11+, so the specific
-                # clause must precede the generic one. A hung embedder stalls
-                # the store; record its chunks failed and keep going.
-                logger.warning(
-                    "knowledge_batch_store_timeout count=%d", len(facts)
-                )
-                result.failed_chunks.extend(
-                    chunk.get("id", "unknown") for chunk in batch
-                )
+                logger.warning("knowledge_batch_store_timeout count=%d", len(facts))
+                result.failed_chunks.extend(batch_ids)
             except Exception as exc:
-                logger.warning(
-                    "knowledge_fact_store_failed count=%d err=%s", len(facts), exc
-                )
-                result.failed_chunks.extend(
-                    chunk.get("id", "unknown") for chunk in batch
-                )
+                logger.warning("knowledge_fact_store_failed count=%d err=%s", len(facts), exc)
+                result.failed_chunks.extend(batch_ids)
+        persistence_ms += (time.monotonic() - started_persist) * 1000.0
 
-        processed = min(i + CHUNK_BATCH_SIZE, total)
+    producer = asyncio.create_task(_produce())
+    workers = [asyncio.create_task(_worker()) for _ in range(LLM_MAX_CONCURRENCY)]
+    pending: list[tuple[dict, ExtractionOutput | None]] = []
+    pending_groups = 0
+    completed_groups = 0
+    processed = 0
+    last_emitted = 0
+
+    async def _flush() -> None:
+        nonlocal pending_groups, last_emitted
+        if not pending:
+            return
+        await _persist(pending)
+        pending.clear()
+        pending_groups = 0
         await publish("tool_progress", {
-            "name": "knowledge_extraction",
-            "processed": processed,
-            "total": total,
+            "name": "knowledge_extraction", "processed": processed, "total": total,
             "knowledge_count": result.knowledge_count,
             "relationship_count": result.relationship_count,
         })
-        # Granular stage progress so the UI bar animates during slow LLM
-        # extraction. Band keeps values above the start (10) emitted in
-        # initialize.py and below the closing 100 emitted after this returns.
-        # Guarded by the tick budget so large corpora don't flood the stream.
-        if processed == total or processed % emit_every == 0:
-            pct = processed / total
+        if processed == total or processed - last_emitted >= emit_every:
+            last_emitted = processed
             await publish("stage_progress", {
                 "stage": "knowledge_construction",
-                "progress": min(int(10 + pct * 85), 95),
+                "progress": min(int(10 + processed / total * 85), 95),
             })
-            logger.info(
-                "knowledge_construction_progress",
-                stage="knowledge_construction",
-                done=processed,
-                total=total,
-            )
+            logger.info("knowledge_construction_progress", stage="knowledge_construction",
+                        done=processed, total=total)
+
+    try:
+        while completed_groups < len(groups):
+            try:
+                if pending:
+                    extracted = await asyncio.wait_for(completed_queue.get(), timeout=0.05)
+                else:
+                    extracted = await completed_queue.get()
+            except TimeoutError:
+                await _flush()
+                continue
+            completed_groups += 1
+            processed += len(extracted)
+            pending.extend(extracted)
+            pending_groups += 1
+            if pending_groups >= min(EXTRACTION_PERSIST_GROUPS, CHUNK_BATCH_SIZE):
+                await _flush()
+        await _flush()
+        await producer
+        await asyncio.gather(*workers)
+    finally:
+        producer.cancel()
+        for worker in workers:
+            worker.cancel()
+        await asyncio.gather(producer, *workers, return_exceptions=True)
 
     logger.info(
-        "knowledge_construction_done",
-        stage="knowledge_construction",
-        org_id=org_id,
-        facts=result.knowledge_count,
-        rels=result.relationship_count,
-        procs=result.candidate_count,
-        failed=len(result.failed_chunks),
+        "knowledge_construction_done", stage="knowledge_construction", org_id=org_id,
+        facts=result.knowledge_count, rels=result.relationship_count,
+        procs=result.candidate_count, failed=len(result.failed_chunks),
+        chunks=total, groups=len(groups), requests=request_count,
+        throttled=throttled_count, persistence_ms=round(persistence_ms),
+        duration_ms=round((time.monotonic() - started) * 1000),
     )
     await recorder.flush()
     return result

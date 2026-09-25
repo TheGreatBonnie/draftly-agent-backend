@@ -11,7 +11,7 @@ import os
 
 import pytest
 
-from draftly.models.factory import build_model_router
+from draftly.models.factory import build_embedding_router, build_model_router
 from draftly.models.router import NoCandidateError
 from draftly.models.schemas import RoutingRequest, TaskType
 
@@ -112,8 +112,8 @@ class TestEnvEnabledProviders:
             "nebius_token_factory",
         }
 
-    def test_explicit_param_beats_env(self) -> None:
-        os.environ[ENABLED_PROVIDERS_ENV] = "openrouter"
+    def test_explicit_param_beats_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv(ENABLED_PROVIDERS_ENV, "openrouter")
         decision = _route({"mantle"})
 
         assert decision.provider == "mantle"
@@ -129,3 +129,73 @@ class TestEnabledProvidersRegistryUnchanged:
         assert "requesty" in providers
         assert "orcarouter" in providers
         assert "openrouter" in providers
+
+
+class TestEmbeddingProviderGating:
+    """build_embedding_router honors the same provider gate as route().
+
+    Unlike the chat registry (which keeps every provider registered and
+    filters at route time), the embedding registry only registers enabled
+    providers: ``EmbeddingRouter`` iterates ``list_embedding_models()``
+    directly with no separate filter.
+    """
+
+    EMBEDDING_KEYS = (
+        "REQUESTY_API_KEY",
+        "ORCAROUTER_API_KEY",
+        "OPENROUTER_API_KEY",
+        "NEBIUS_TOKEN_FACTORY_API_KEY",
+    )
+
+    @pytest.fixture(autouse=True)
+    def _embedding_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        for var in self.EMBEDDING_KEYS:
+            monkeypatch.setenv(var, "test-key")
+        monkeypatch.delenv(ENABLED_PROVIDERS_ENV, raising=False)
+        monkeypatch.delenv("EMBEDDING_MODEL_ID", raising=False)
+
+    def test_param_restricts_to_enabled_provider(self) -> None:
+        ranked = build_embedding_router(
+            enabled_providers={"nebius_token_factory"}
+        ).registry.list_embedding_models()
+
+        assert [m.provider for m in ranked] == ["nebius_token_factory"]
+
+    def test_env_flag_restricts_embedding_providers(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv(ENABLED_PROVIDERS_ENV, "nebius_token_factory")
+
+        ranked = build_embedding_router().registry.list_embedding_models()
+
+        assert [m.provider for m in ranked] == ["nebius_token_factory"]
+
+    def test_param_keeps_multiple_enabled_providers(self) -> None:
+        ranked = build_embedding_router(
+            enabled_providers={"requesty", "orcarouter"}
+        ).registry.list_embedding_models()
+
+        assert {m.provider for m in ranked} == {"requesty", "orcarouter"}
+
+    def test_explicit_param_beats_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv(ENABLED_PROVIDERS_ENV, "nebius_token_factory")
+
+        ranked = build_embedding_router(
+            enabled_providers={"openrouter"}
+        ).registry.list_embedding_models()
+
+        assert [m.provider for m in ranked] == ["openrouter"]
+
+    def test_gate_excluding_every_embedder_raises(self) -> None:
+        with pytest.raises(RuntimeError, match="No embedding provider is enabled"):
+            build_embedding_router(enabled_providers={"mantle"})
+
+    def test_no_gate_registers_all_embedding_providers(self) -> None:
+        ranked = build_embedding_router().registry.list_embedding_models()
+
+        assert {m.provider for m in ranked} == {
+            "openrouter",
+            "requesty",
+            "orcarouter",
+            "nebius_token_factory",
+        }

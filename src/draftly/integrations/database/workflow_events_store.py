@@ -23,12 +23,34 @@ class WorkflowEventsStore:
             ts = datetime.fromisoformat(raw_ts).astimezone(UTC).replace(tzinfo=None)
         else:
             ts = datetime.now(UTC).replace(tzinfo=None)
-        await self.client.execute(
-            """
+        node_event = envelope.get("type") in {"node_start", "node_stop"} and bool(
+            envelope.get("node_id")
+        )
+        insert = """
             INSERT INTO workflow_events (run_id, seq, ts, type, node_id, payload)
             VALUES ($1, $2, $3, $4, $5, $6::jsonb)
             ON CONFLICT (run_id, seq) DO NOTHING
-            """,
+        """
+        query = (
+            """
+            WITH inserted AS (
+            """ + insert + """
+                RETURNING run_id, type, node_id, payload
+            )
+            UPDATE workflow_runs AS run
+            SET current_stage = inserted.node_id,
+                stage_states = jsonb_set(
+                    COALESCE(run.stage_states, '{}'::jsonb), ARRAY[inserted.node_id],
+                    to_jsonb(CASE WHEN inserted.type = 'node_start' THEN 'running'
+                        WHEN inserted.payload->>'status' = 'COMPLETED' THEN 'completed'
+                        ELSE 'failed' END), true),
+                updated_at = now()
+            FROM inserted WHERE run.id = inserted.run_id
+            """
+            if node_event else insert
+        )
+        await self.client.execute(
+            query,
             envelope.get("run_id", ""),
             int(envelope.get("seq", 0)),
             ts,

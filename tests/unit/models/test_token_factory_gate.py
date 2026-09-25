@@ -84,6 +84,7 @@ class TestTokenFactoryEmbeddingGate:
     ) -> None:
         for var in ("REQUESTY_API_KEY", "ORCAROUTER_API_KEY", "OPENROUTER_API_KEY"):
             monkeypatch.delenv(var, raising=False)
+        monkeypatch.delenv("DRAFTLY_ENABLED_PROVIDERS", raising=False)
         monkeypatch.setenv("NEBIUS_TOKEN_FACTORY_API_KEY", "test-key")
         monkeypatch.setenv("EMBEDDING_MODEL_ID", "Qwen/Qwen3-Embedding-8B")
 

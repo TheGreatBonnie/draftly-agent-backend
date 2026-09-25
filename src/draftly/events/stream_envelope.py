@@ -266,16 +266,22 @@ def filter_graph_event(
         return None
 
     if kind == "multiagent_node_stop":
-        node_result = _as_dict(event.get("node_result"))
-        duration = node_result.get("duration")
-        duration_ms = int(float(duration) * 1000) if duration is not None else None
+        raw_result = event.get("node_result")
+        node_result = _as_dict(raw_result)
+        if node_result:
+            status = str(node_result.get("status", "UNKNOWN"))
+            duration = node_result.get("duration")
+            duration_ms = int(float(duration) * 1000) if duration is not None else None
+        else:
+            status = _status_name(raw_result)
+            duration_ms = getattr(raw_result, "execution_time", None)
         return StreamEnvelope(
             type="node_stop",
             run_id=run_id,
             surface=surface,
             node_id=node_str,
             payload={
-                "status": str(node_result.get("status", "UNKNOWN")),
+                "status": status,
                 "duration_ms": duration_ms,
             },
         )

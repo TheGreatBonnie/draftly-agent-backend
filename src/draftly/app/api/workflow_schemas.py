@@ -165,6 +165,7 @@ class WorkflowRunResponse(_WorkflowModel):
     status: RunStatus = "queued"
     current_stage: str | None
     stage_states: dict[str, Any]
+    stage_sequence: list[str] = Field(default_factory=list)
     input: dict[str, Any] | None
     output: dict[str, Any] | None
     error: str | None

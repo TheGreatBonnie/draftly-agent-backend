@@ -58,6 +58,28 @@ IMPACT_NO_EVIDENCE = {
     ],
 }
 
+IMPACT_SLUG_ID = {
+    "action": "update",
+    "affected_documents": ["docs/how-to/oauth-authorization-url.md"],
+    "rationale": "behavior changed",
+    "tasks": [
+        {
+            # The LLM planner may emit a slug id ("task1") alongside the real
+            # repo path. The page workflow must canonicalize id -> path at
+            # seed time so pages, drafts, and review share one key.
+            "id": "task1",
+            "path": "docs/how-to/oauth-authorization-url.md",
+            "action": "update",
+            "evidence": [
+                {
+                    "id": "src/oauth.py",
+                    "topic": "authorization-code exchange",
+                }
+            ],
+        }
+    ],
+}
+
 IMPACT_EMPTY = {
     "action": "update",
     "affected_documents": [],
@@ -185,6 +207,65 @@ async def test_fresh_run_seeds_tasks_and_reports_passed_pages() -> None:
     } <= task_ids
     assert any(t.startswith("cross-page-review:") for t in task_ids)
     assert len(task_ids) == 3
+
+
+async def test_slug_plan_id_is_canonicalized_to_path_at_seed() -> None:
+    """LLM plan ids (task1) must never leak into page / draft / review keying.
+
+    The planner may emit an id that is a slug ("task1") while ``path`` names
+    the real repository file. The page workflow keys pages, writer invocation
+    state, draft scope, and the cross-page review invariant by page id; when
+    the id differs from the path, the draft tools' ``start_draft`` guard
+    rejects the writer's own path ("outside assigned page") and the review
+    rejects the state ("page path must match canonical page ID"). Seed-time
+    canonicalization (``task.id = task.path``) puts every layer on one key.
+    """
+    node, pages, writer_recorder, review_recorder = _wired_node()
+    result = await _invoke(
+        node,
+        IMPACT_SLUG_ID,
+        [{"id": "src/oauth.py", "topic": "authorization-code exchange"}],
+        "run-slug",
+    )
+
+    assert result.status == Status.COMPLETED
+    report = node_data(result, "document")["result"]
+    assert report["passed"] is True
+    assert report["passed_page_ids"] == ["docs/how-to/oauth-authorization-url.md"]
+    assert writer_recorder == [("docs/how-to/oauth-authorization-url.md", 1)]
+    assert len(review_recorder) == 1
+    tasks = await pages.get_tasks(run_id="run-slug")
+    task_ids = {t.task_id for t in tasks}
+    assert "write:docs/how-to/oauth-authorization-url.md:1" in task_ids
+    assert "evaluate:docs/how-to/oauth-authorization-url.md:1" in task_ids
+
+
+async def test_seed_threads_repository_into_write_tasks() -> None:
+    """The event repository name must reach the write task's input_data.
+
+    The writer handler hydrates the current repo file body from the documents
+    store on first writes; it needs the repository from the original PR event
+    threaded through the seed so update prompts carry real current content.
+    """
+    node, pages, writer_recorder, review_recorder = _wired_node()
+    sections = [
+        'Original Task: {"event_id": "e-1", "event_type": "pull_request.opened", '
+        '"repository": "TheGreatBonnie/authly"}',
+        "Inputs from previous nodes:",
+        "From impact:",
+        "  - Agent: " + json.dumps(IMPACT_WITH_EVIDENCE),
+        "From research:",
+        '  - Agent: ' + json.dumps({"items": [{"id": "docs/widgets.md", "topic": "widgets"}]}),
+    ]
+    result = await node.invoke_async(
+        [{"text": "\n".join(sections)}],
+        invocation_state={"run_id": "run-repo", "project_id": "org-1"},
+    )
+
+    assert result.status == Status.COMPLETED
+    tasks = await pages.get_tasks(run_id="run-repo")
+    write = next(task for task in tasks if task.task_type == "write")
+    assert write.input_data.get("repository") == "TheGreatBonnie/authly"
 
 
 async def test_reentry_is_idempotent_and_reuses_sealed_artifacts() -> None:

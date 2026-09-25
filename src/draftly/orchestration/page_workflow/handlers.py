@@ -200,7 +200,9 @@ def _document_task(workflow_task: WorkflowTask) -> DocumentationTask:
     if workflow_task.page_id is None:
         raise ValueError(f"task {workflow_task.task_id!r} is missing page_id")
     _canonical_page_id(workflow_task.page_id)
-    if page.id != workflow_task.page_id or page.path != workflow_task.page_id:
+    # Task rows are keyed by the plan id (a slug such as ``update-oauth-howto``)
+    # while ``page.path`` names the repository file; only the id must match.
+    if page.id != workflow_task.page_id:
         raise ValueError(
             f"task {workflow_task.task_id!r} page plan does not match page_id "
             f"{workflow_task.page_id!r}"
@@ -258,12 +260,57 @@ class PageWriterHandler:
         writer_factory: WriterFactory,
         drafts_repo: DraftRepository,
         page_repository: PageWorkflowRepository,
+        documents_repo: Any | None = None,
         limits: Any = None,
     ) -> None:
         self.writer_factory = writer_factory
         self.drafts_repo = drafts_repo
         self.page_repository = page_repository
+        #: Optional documents store (org/repo/path -> current file body). First
+        #: writes for ``update`` pages hydrate this body into the prompt.
+        self.documents_repo = documents_repo
         self.limits = limits
+
+    async def _current_repo_content(
+        self,
+        workflow_task: WorkflowTask,
+        page: DocumentationTask,
+    ) -> str | None:
+        """Best-effort body of the repository file an update task rewrites.
+
+        First writes have no draft-store bytes yet (artifact version 1), so the
+        only source of the file's current content is the documents store keyed
+        by (org, repository, path). Returns a prompt section or ``None`` when
+        the store is unwired, the action is ``create``, or the lookup fails —
+        hydration is an enhancement, never a run-failing dependency.
+        """
+        if page.action != "update" or self.documents_repo is None:
+            return None
+        repository = str(workflow_task.input_data.get("repository") or "")
+        if not repository:
+            return None
+        try:
+            row = await self.documents_repo.get_by_org_repository_path(
+                org_id=workflow_task.org_id,
+                repository=repository,
+                path=page.path,
+            )
+        except Exception:  # noqa: BLE001 - hydration must not fail the write
+            logger.warning(
+                "existing_content_hydration_failed",
+                run_id=workflow_task.run_id,
+                page_id=page.id,
+                repository=repository,
+                exc_info=True,
+            )
+            return None
+        content = (row or {}).get("content") if isinstance(row, dict) else None
+        if not isinstance(content, str) or not content.strip():
+            return None
+        return (
+            f"EXISTING CONTENT of {page.path!r} (rewrite in place; preserve "
+            f"anything still accurate):\n\n{content}"
+        )
 
     async def __call__(self, workflow_task: WorkflowTask) -> dict[str, Any]:
         page = _document_task(workflow_task)
@@ -322,6 +369,9 @@ class PageWriterHandler:
             )
         else:
             prompt = render_task_prompt(page)
+            existing = await self._current_repo_content(workflow_task, page)
+            if existing is not None:
+                prompt = f"{prompt}\n\n{existing}"
 
         agent = self.writer_factory.create(page)
         invocation_state = {

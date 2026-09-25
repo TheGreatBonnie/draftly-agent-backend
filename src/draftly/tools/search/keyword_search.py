@@ -8,7 +8,7 @@ import time
 import structlog
 from strands.tools import tool
 
-from draftly.tools._guard import require_nonempty
+from draftly.tools._guard import coerce_string
 
 logger = structlog.get_logger(__name__)
 
@@ -48,8 +48,8 @@ async def keyword_search(
     limit: int = 10,
 ) -> list[dict]:
     """Search memory items by keyword in a namespace."""
-    require_nonempty(query, "query", "keyword_search")
-    require_nonempty(namespace, "namespace", "keyword_search")
+    query = coerce_string(query, "query", "keyword_search")
+    namespace = coerce_string(namespace, "namespace", "keyword_search")
 
     from draftly.integrations.database.client import DatabaseClient
     from draftly.memory.scope import current_memory_scope

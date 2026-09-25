@@ -16,6 +16,7 @@ from draftly.app.api.routes import (
     github,
     health,
     interventions,
+    integrations,
     jobs,
     knowledge,
     metrics,
@@ -70,6 +71,10 @@ def create_api_app() -> FastAPI:
         prefix="/api",
     )
 
+    # Bare /health mount so infra probes (e.g. docker HEALTHCHECK, curl
+    # localhost:8000/health) hit the liveness endpoint without the /api prefix.
+    app.include_router(health.router)
+
     app.include_router(
         github.router,
         prefix="/api",
@@ -84,6 +89,8 @@ def create_api_app() -> FastAPI:
         discord.router,
         prefix="/api",
     )
+
+    app.include_router(integrations.router, prefix="/api")
 
     app.include_router(
         documentation.router,

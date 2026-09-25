@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import json
+from urllib.parse import urlencode
 
+import httpx
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 from pydantic import BaseModel
 
-from draftly.app.api.auth import get_verified_token
+from draftly.app.api.auth import get_verified_token, require_admin_role, require_workflow_editor
+from draftly.app.api.integration_oauth import consume_state, create_state
 from draftly.app.config import get_settings
 
 logger = structlog.get_logger(__name__)
@@ -176,26 +179,111 @@ class TriggerChannelsRequest(BaseModel):
 
 
 @router.get("/invite-url")
-async def discord_invite_url() -> dict:
+async def discord_invite_url(
+    request: Request,
+    token: dict = Depends(require_admin_role),
+) -> dict:
     """Return the Discord bot invite URL with required permissions."""
     app_id = settings.discord_app_id
     if not app_id:
         raise HTTPException(status_code=500, detail="Discord app ID not configured")
+    if not settings.discord_client_secret:
+        raise HTTPException(status_code=503, detail="Discord OAuth is not configured")
+    org_id = token.get("org_id")
+    if not org_id:
+        raise HTTPException(status_code=400, detail="No organization selected")
+    db = request.app.state.draftly.dependencies.integrations.database
+    nonce = await create_state(db, "discord", org_id, token["user_id"], "/integrations/discord")
     # Permissions: View Channels + Send Messages + Send Messages in Threads + Add Reactions
     permissions = 4 + 2048 + 32768 + 64 + 2048  # 36932
-    invite_url = (
-        f"https://discord.com/api/oauth2/authorize"
-        f"?client_id={app_id}"
-        f"&permissions={permissions}"
-        f"&scope=bot"
+    invite_url = "https://discord.com/oauth2/authorize?" + urlencode(
+        {
+            "client_id": app_id,
+            "permissions": permissions,
+            "scope": "bot identify guilds",
+            "response_type": "code",
+            "redirect_uri": f"{settings.public_api_url.rstrip('/')}/api/discord/oauth/callback",
+            "state": nonce,
+        }
     )
     return {"invite_url": invite_url}
+
+
+@router.get("/oauth/callback")
+async def discord_oauth_callback(
+    request: Request,
+    code: str,
+    state: str,
+    guild_id: str,
+) -> RedirectResponse:
+    db = request.app.state.draftly.dependencies.integrations.database
+    pending = await db.fetch_one(
+        """SELECT nonce FROM integration_oauth_states
+           WHERE nonce = $1 AND provider = 'discord' AND expires_at > now()""",
+        state,
+    )
+    if not pending:
+        raise HTTPException(status_code=400, detail="Invalid Discord authorization state")
+    redirect_uri = f"{settings.public_api_url.rstrip('/')}/api/discord/oauth/callback"
+    async with httpx.AsyncClient(timeout=10) as client:
+        response = await client.post(
+            "https://discord.com/api/v10/oauth2/token",
+            data={
+                "client_id": settings.discord_app_id,
+                "client_secret": settings.discord_client_secret,
+                "grant_type": "authorization_code",
+                "code": code,
+                "redirect_uri": redirect_uri,
+            },
+        )
+        response.raise_for_status()
+        access_token = response.json().get("access_token")
+        if not access_token:
+            raise HTTPException(status_code=400, detail="Discord authorization failed")
+        guilds_response = await client.get(
+            "https://discord.com/api/v10/users/@me/guilds",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        guilds_response.raise_for_status()
+        allowed = any(
+            str(guild.get("id")) == guild_id and int(guild.get("permissions") or 0) & 8
+            for guild in guilds_response.json()
+        )
+        if not allowed:
+            raise HTTPException(
+                status_code=403, detail="Discord server administrator permission required"
+            )
+        bot_response = await client.get(
+            f"https://discord.com/api/v10/guilds/{guild_id}",
+            headers={"Authorization": f"Bot {settings.discord_bot_token}"},
+        )
+        if bot_response.status_code != 200:
+            raise HTTPException(status_code=403, detail="Draftly bot is not in this server")
+    oauth_state = await consume_state(db, "discord", state)
+    claimed = await db.fetch_one(
+        "SELECT clerk_org_id FROM organizations WHERE discord_guild_id = $1 AND clerk_org_id <> $2",
+        guild_id,
+        oauth_state["org_id"],
+    )
+    if claimed:
+        raise HTTPException(
+            status_code=409, detail="Discord server is connected to another organization"
+        )
+    await db.execute(
+        "UPDATE organizations SET discord_guild_id = $1 WHERE clerk_org_id = $2",
+        guild_id,
+        oauth_state["org_id"],
+    )
+    bus = getattr(request.app.state, "dashboard_broadcaster", None)
+    if bus is not None:
+        await bus.broadcast(oauth_state["org_id"], "integration:changed", {"provider": "discord"})
+    return RedirectResponse(url=f"{settings.frontend_url}{oauth_state['return_to']}")
 
 
 @router.post("/link")
 async def link_discord(
     request: LinkDiscordRequest,
-    token: dict = Depends(get_verified_token),
+    token: dict = Depends(require_admin_role),
 ) -> dict:
     """Link a Discord guild to the current Clerk organization."""
     org_id = token.get("org_id")
@@ -208,12 +296,12 @@ async def link_discord(
     deps = build_dependencies(settings=settings)
     db = deps.integrations.database
 
-    await db.execute(
-        "UPDATE organizations SET discord_guild_id = $1 WHERE clerk_org_id = $2",
-        request.guild_id,
+    row = await db.fetch_one(
+        "SELECT discord_guild_id FROM organizations WHERE clerk_org_id = $1",
         org_id,
     )
-
+    if not row or row["discord_guild_id"] != request.guild_id:
+        raise HTTPException(status_code=403, detail="Complete Discord authorization first")
     return {"status": "linked", "guild_id": request.guild_id}
 
 
@@ -313,7 +401,7 @@ async def get_trigger_channels(token: dict = Depends(get_verified_token)) -> dic
 @router.post("/trigger-channels")
 async def set_trigger_channels(
     request: TriggerChannelsRequest,
-    token: dict = Depends(get_verified_token),
+    token: dict = Depends(require_workflow_editor),
 ) -> dict:
     """Set the trigger channels for the current org."""
     import json
@@ -338,7 +426,7 @@ async def set_trigger_channels(
 
 
 @router.delete("/link")
-async def unlink_discord(token: dict = Depends(get_verified_token)) -> dict[str, str]:
+async def unlink_discord(token: dict = Depends(require_admin_role)) -> dict[str, str]:
     """Remove the Discord guild link from the current organization."""
     org_id = token.get("org_id")
     if not org_id:

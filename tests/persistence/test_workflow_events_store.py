@@ -47,6 +47,18 @@ async def test_append_executes_insert() -> None:
     assert params[1] == 1
     # payload persisted as a JSON string (asyncpg jsonb binding)
     assert json.loads(params[-1]) == {"node_type": "agent"}
+    assert "UPDATE workflow_runs" in sql
+    assert "stage_states" in sql
+    assert "current_stage" in sql
+
+
+async def test_non_node_event_does_not_change_run_progress() -> None:
+    client = FakeClient()
+    await WorkflowEventsStore(client=client).append({
+        "run_id": "r1", "seq": 2, "type": "text_delta", "node_id": "write",
+        "payload": {"text": "hello"},
+    })
+    assert "UPDATE workflow_runs" not in client.executed[0][0]
 
 
 async def test_list_after_selects_seq_gt_and_decodes_payload() -> None:

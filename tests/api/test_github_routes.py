@@ -1,123 +1,96 @@
-"""Tests for GitHub App setup-redirect routing (return-to cookie handshake)."""
+"""Tests for organization-bound GitHub installation setup."""
+
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from draftly.app.api.auth import get_verified_token
 from draftly.app.api.routes import github
 
 
 @pytest.fixture()
-def client() -> TestClient:
-    app = FastAPI()
-    app.include_router(github.router)
-    from draftly.app.api.auth import get_verified_token
-
-    app.dependency_overrides[get_verified_token] = lambda: {
-        "sub": "tester",
-        "org_id": "test-org",
+def app():
+    api = FastAPI()
+    api.include_router(github.router)
+    api.dependency_overrides[get_verified_token] = lambda: {
+        "user_id": "user_1",
+        "org_id": "org_1",
+        "org_role": "admin",
     }
-    return TestClient(app)
+    state = MagicMock()
+    state.dependencies.integrations.database.fetch_one = AsyncMock(
+        return_value={"nonce": "state_1"}
+    )
+    state.dependencies.integrations.database.execute = AsyncMock()
+    state.dependencies.repositories.github_installations.list_by_org = AsyncMock(return_value=[])
+    api.state.draftly = state
+    return api
 
 
 @pytest.fixture()
 def pinned_settings(monkeypatch):
-    """Pin Settings attributes on the module-level object the route reads."""
     monkeypatch.setattr(github.settings, "github_app_slug", "draftly")
-    monkeypatch.setattr(github.settings, "frontend_url", "http://testfrontend")
+    monkeypatch.setattr(github.settings, "github_client_id", "client_1")
+    monkeypatch.setattr(github.settings, "github_client_secret", "secret_1")
 
 
-class TestInstallUrl:
-    def test_returns_documented_request_page_url(self, client, pinned_settings):
-        res = client.get("/github/install-url")
-        assert res.status_code == 200
-        assert res.json()["install_url"] == (
-            "https://github.com/apps/draftly/installations/new"
-        )
-
-    def test_valid_return_to_plants_cookie(self, client, pinned_settings):
-        res = client.get("/github/install-url?return_to=/onboarding/github")
-        assert res.status_code == 200
-        cookie = res.headers["set-cookie"]
-        assert 'gh_install_return_to="/onboarding/github"' in cookie
-        assert "HttpOnly" in cookie
-        assert "SameSite=lax" in cookie
-        assert "Path=/api" in cookie
-        assert "Max-Age=600" in cookie
-
-    def test_no_return_to_means_no_cookie(self, client, pinned_settings):
-        res = client.get("/github/install-url")
-        assert res.status_code == 200
-        assert "set-cookie" not in res.headers
-
-    def test_off_allowlist_return_to_rejected(self, client, pinned_settings):
-        res = client.get("/github/install-url?return_to=https://evil.example")
-        assert res.status_code == 400
+def test_install_url_uses_server_side_one_time_state(app, pinned_settings):
+    with TestClient(app) as client:
+        response = client.get("/github/install-url?return_to=/integrations/github")
+    assert response.status_code == 200
+    assert "/github/setup-start?state=" in response.json()["install_url"]
+    db = app.state.draftly.dependencies.integrations.database
+    assert db.execute.await_args.args[3:6] == ("org_1", "user_1", "/integrations/github")
 
 
-class TestSetupCallback:
-    COOKIE = {"cookies": {"gh_install_return_to": "/onboarding/github"}}
+def test_install_url_rejects_external_return_path(app, pinned_settings):
+    with TestClient(app) as client:
+        response = client.get("/github/install-url?return_to=https://evil.example")
+    assert response.status_code == 400
 
-    def test_cookie_routes_back_to_onboarding_with_installation_id(
-        self, client, pinned_settings
-    ):
-        res = client.get(
+
+def test_setup_start_sets_backend_cookie(app, pinned_settings):
+    with TestClient(app) as client:
+        response = client.get("/github/setup-start?state=state_1", follow_redirects=False)
+    assert response.status_code == 307
+    assert response.headers["location"] == "https://github.com/apps/draftly/installations/new"
+    assert "github_setup_state=state_1" in response.headers["set-cookie"]
+    assert "HttpOnly" in response.headers["set-cookie"]
+
+
+def test_setup_callback_rejects_unbound_installation(app, pinned_settings):
+    with TestClient(app) as client:
+        response = client.get(
             "/github/setup-callback?installation_id=42&setup_action=install",
             follow_redirects=False,
-            **self.COOKIE,
         )
-        assert res.status_code == 307
-        location = res.headers["location"]
-        assert location == (
-            "http://testfrontend/onboarding/github?installation_id=42"
-        )
-        # Cookie consumed after use (Starlette sets empty value + Max-Age=0).
-        set_cookie = res.headers.get("set-cookie", "")
-        assert "gh_install_return_to=" in set_cookie
-        assert "Max-Age=0" in set_cookie
+    assert response.status_code == 400
 
-    def test_missing_cookie_falls_back_to_integrations(self, client, pinned_settings):
-        res = client.get(
-            "/github/setup-callback?installation_id=42",
+
+def test_setup_callback_requires_user_authorization(app, pinned_settings):
+    with TestClient(app) as client:
+        client.cookies.set("github_setup_state", "state_1")
+        response = client.get(
+            "/github/setup-callback?installation_id=42&setup_action=install",
             follow_redirects=False,
         )
-        assert res.status_code == 307
-        assert res.headers["location"] == (
-            "http://testfrontend/integrations/github?installation_id=42"
-        )
-
-    def test_unknown_cookie_value_falls_back(self, client, pinned_settings):
-        res = client.get(
-            "/github/setup-callback",
-            cookies={"gh_install_return_to": "/somewhere/else"},
-            follow_redirects=False,
-        )
-        assert res.status_code == 307
-        assert res.headers["location"] == "http://testfrontend/integrations/github"
+    assert response.status_code == 307
+    assert response.headers["location"].startswith("https://github.com/login/oauth/authorize?")
+    assert "state=state_1" in response.headers["location"]
+    db = app.state.draftly.dependencies.integrations.database
+    db.execute.assert_awaited_with(
+        "UPDATE integration_oauth_states SET installation_id = $1 WHERE nonce = $2",
+        42,
+        "state_1",
+    )
 
 
-class TestInstallations:
-    def test_lists_only_caller_org_installations(self, monkeypatch):
-        from unittest.mock import AsyncMock, MagicMock
-
-        app = FastAPI()
-        app.include_router(github.router)
-        from draftly.app.api.auth import get_verified_token
-
-        app.dependency_overrides[get_verified_token] = lambda: {
-            "sub": "tester",
-            "org_id": "org_2abc",
-        }
-        state = MagicMock()
-        repos = state.dependencies.repositories
-        repos.github_installations.list_by_org = AsyncMock(
-            return_value=[{"installation_id": 42, "github_org": "acme"}]
-        )
-        app.state.draftly = state
-        client = TestClient(app)
-
-        res = client.get("/github/installations")
-
-        assert res.status_code == 200
-        assert res.json() == [{"installation_id": 42, "github_org": "acme"}]
-        repos.github_installations.list_by_org.assert_awaited_once_with("org_2abc")
+def test_lists_only_caller_org_installations(app):
+    repos = app.state.draftly.dependencies.repositories
+    repos.github_installations.list_by_org = AsyncMock(return_value=[{"installation_id": 42}])
+    with TestClient(app) as client:
+        response = client.get("/github/installations")
+    assert response.status_code == 200
+    repos.github_installations.list_by_org.assert_awaited_once_with("org_1")

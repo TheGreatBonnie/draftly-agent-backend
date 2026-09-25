@@ -5,7 +5,8 @@ from fastapi.responses import RedirectResponse, Response
 from pydantic import BaseModel
 from slack_bolt.adapter.fastapi.async_handler import AsyncSlackRequestHandler
 
-from draftly.app.api.auth import get_verified_token
+from draftly.app.api.auth import get_verified_token, require_admin_role
+from draftly.app.api.integration_oauth import consume_state, create_state
 from draftly.app.config import get_settings
 from draftly.integrations.database.client import DatabaseClient
 from draftly.integrations.slack.app import SlackAppDeps, build_slack_app, register_handlers
@@ -46,56 +47,76 @@ settings = get_settings()
 
 
 @router.get("/install-url")
-async def slack_install_url(token: dict = Depends(get_verified_token)) -> dict[str, str]:
+async def slack_install_url(
+    request: Request, token: dict = Depends(require_admin_role)
+) -> dict[str, str]:
     if not settings.slack_client_id or not settings.slack_redirect_uri:
         raise HTTPException(status_code=500, detail="Slack OAuth not configured")
+    org_id = token.get("org_id")
+    if not org_id:
+        raise HTTPException(status_code=400, detail="No organization selected")
+    db = request.app.state.draftly.dependencies.integrations.database
+    nonce = await create_state(db, "slack", org_id, token["user_id"], "/integrations/slack")
+    from urllib.parse import urlencode
+
     scopes = "chat:write,channels:history,channels:read,groups:read,im:history,mpim:history"
-    install_url = (
-        f"https://slack.com/oauth/v2/authorize"
-        f"?client_id={settings.slack_client_id}"
-        f"&scope={scopes}"
-        f"&redirect_uri={settings.slack_redirect_uri}"
-    )
+    params = {
+        "client_id": settings.slack_client_id,
+        "scope": scopes,
+        "redirect_uri": settings.slack_redirect_uri,
+        "state": nonce,
+    }
+    install_url = f"https://slack.com/oauth/v2/authorize?{urlencode(params)}"
     return {"install_url": install_url}
 
 
 @router.post("/link")
 async def link_slack(
     request: LinkSlackRequest,
-    token: dict = Depends(get_verified_token),
+    token: dict = Depends(require_admin_role),
 ) -> dict[str, str]:
     """Link a Slack installation to the current Clerk organization."""
     org_id = token.get("org_id")
     if not org_id:
         raise HTTPException(status_code=400, detail="No organization selected")
 
-    from draftly.persistence.repositories.slack import link_slack_installation
-
-    await link_slack_installation(team_id=request.team_id, org_id=org_id)
+    db = DatabaseClient(database_url=settings.database_url)
+    existing = await db.fetch_one(
+        "SELECT org_id FROM slack_installations WHERE team_id = $1", request.team_id
+    )
+    if not existing or existing["org_id"] != org_id:
+        raise HTTPException(status_code=404, detail="Connection not found")
     return {"status": "linked", "team_id": request.team_id}
 
 
 @router.delete("/installations/{team_id}")
 async def delete_slack_installation(
     team_id: str,
-    token: dict = Depends(get_verified_token),
+    token: dict = Depends(require_admin_role),
 ) -> dict[str, str]:
-    from draftly.persistence.repositories.slack import remove_slack_installation
-
-    await remove_slack_installation(team_id=team_id)
+    db = DatabaseClient(database_url=settings.database_url)
+    result = await db.fetch_one(
+        "DELETE FROM slack_installations WHERE team_id = $1 AND org_id = $2 RETURNING team_id",
+        team_id,
+        token.get("org_id") or "",
+    )
+    if not result:
+        raise HTTPException(status_code=404, detail="Connection not found")
     return {"status": "disconnected"}
 
 
 @router.get("/oauth/callback")
-async def slack_oauth_callback(code: str, state: str = "") -> RedirectResponse:
+async def slack_oauth_callback(request: Request, code: str, state: str = "") -> RedirectResponse:
     """Exchange authorization code for tokens and save installation."""
     from slack_sdk.oauth.installation_store.models.installation import Installation
 
-    from draftly.integrations.database.client import DatabaseClient
     from draftly.integrations.slack.installation_store import SlackInstallationStore
 
     if not settings.slack_client_id or not settings.slack_client_secret:
         raise HTTPException(status_code=500, detail="Slack OAuth not configured")
+
+    db = request.app.state.draftly.dependencies.integrations.database
+    oauth_state = await consume_state(db, "slack", state)
 
     async with httpx.AsyncClient() as client:
         resp = await client.post(
@@ -104,6 +125,7 @@ async def slack_oauth_callback(code: str, state: str = "") -> RedirectResponse:
                 "code": code,
                 "client_id": settings.slack_client_id,
                 "client_secret": settings.slack_client_secret,
+                "redirect_uri": settings.slack_redirect_uri,
             },
         )
         resp.raise_for_status()
@@ -128,22 +150,39 @@ async def slack_oauth_callback(code: str, state: str = "") -> RedirectResponse:
         token_type="bot",
     )
 
-    db = DatabaseClient(database_url=settings.database_url)
-    await db.start()
     store = SlackInstallationStore(db)
-    await store.async_save(installation)
+    owner = await db.fetch_one(
+        "SELECT org_id FROM slack_installations WHERE team_id = $1", team["id"]
+    )
+    if owner and owner["org_id"] and owner["org_id"] != oauth_state["org_id"]:
+        raise HTTPException(
+            status_code=409, detail="Workspace is connected to another organization"
+        )
+    await store.async_save(installation, org_id=oauth_state["org_id"])
+    bus = getattr(request.app.state, "dashboard_broadcaster", None)
+    if bus is not None:
+        await bus.broadcast(oauth_state["org_id"], "integration:changed", {"provider": "slack"})
 
     logger.info("slack_oauth_success", team_id=team["id"], team_name=team["name"])
 
-    frontend_url = f"{settings.frontend_url}/integrations/slack?team_id={team['id']}"
+    frontend_url = f"{settings.frontend_url}/integrations/slack"
     return RedirectResponse(url=frontend_url)
 
 
 @router.get("/installations")
-async def slack_installations(token: dict = Depends(get_verified_token)) -> list[dict]:
-    from draftly.persistence.repositories.slack import list_slack_installations
-
-    return await list_slack_installations()
+async def slack_installations(
+    request: Request, token: dict = Depends(get_verified_token)
+) -> list[dict]:
+    org_id = token.get("org_id")
+    if not org_id:
+        raise HTTPException(status_code=400, detail="No organization selected")
+    db = request.app.state.draftly.dependencies.integrations.database
+    rows = await db.fetch_all(
+        """SELECT id::text, team_id, team_name, bot_user_id, installed_at, updated_at
+           FROM slack_installations WHERE org_id = $1 ORDER BY installed_at DESC""",
+        org_id,
+    )
+    return [dict(row) for row in rows]
 
 
 @router.post("/events")

@@ -13,6 +13,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from draftly.integrations.database.client import DatabaseClient
+from draftly.persistence.repositories.workflow_progress import project_progress
 
 MAX_PAGE_SIZE = 200
 DEFAULT_PAGE_SIZE = 50
@@ -452,6 +453,33 @@ class WorkflowRunsRepository:
             org_id,
         )
         return _row_dict(row) if row is not None else None
+
+    async def with_progress(self, runs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Attach ordered node progress using one event query for a run page."""
+        if not runs:
+            return []
+        ids = [str(run["id"]) for run in runs]
+        rows = await self._database().fetch_all(
+            """
+            SELECT run_id, seq, type, node_id, payload FROM workflow_events
+            WHERE run_id = ANY($1::TEXT[]) AND type IN ('node_start', 'node_stop')
+            ORDER BY run_id, seq
+            """,
+            ids,
+        )
+        by_run: dict[str, list[dict[str, Any]]] = {run_id: [] for run_id in ids}
+        for row in rows:
+            item = dict(row)
+            by_run.get(str(item["run_id"]), []).append(item)
+        output: list[dict[str, Any]] = []
+        for run in runs:
+            projected = project_progress(by_run[str(run["id"])])
+            if projected["stage_sequence"]:
+                output.append({**run, **projected})
+            else:
+                states = run.get("stage_states") or {}
+                output.append({**run, "stage_sequence": list(states)})
+        return output
 
     async def list(
         self,

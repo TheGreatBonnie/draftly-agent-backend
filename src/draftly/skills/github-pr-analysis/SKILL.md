@@ -33,6 +33,13 @@ tools (`repo_dir=<local checkout path>`) and never call the GitHub API. Read
    `api_change`, `breaking_change`, or `deprecation`.
 3. Identify affected product areas and map each to the documentation that
    covers it (via `semantic_search` / `keyword_search` / `hybrid_search`).
+   Call the search tools with SCALAR arguments only —
+   `{"query": "<plain string>", "namespace": "<plain string>", "limit": <int>}`.
+   A JSON array for `query`/`namespace` is rejected at tool binding. If
+   searches return no coverage, enumerate the repository docs tree with your
+   repo tooling (`github_get_tree` / `list_directory`, `github_read_file` /
+   `read_file`) and map each changed symbol/area onto the ACTUAL pages found.
+   Never name a documentation path you did not observe in the tree.
 4. Produce an `ImpactAnalysis`:
    - `update`: affected docs exist and must change.
    - `create`: docs are missing entirely.
@@ -43,6 +50,10 @@ tools (`repo_dir=<local checkout path>`) and never call the GitHub API. Read
 
 - API changes and breaking changes are HIGH urgency — recommend review.
 - Never guess the impact of files you cannot inspect; fetch the diff.
+- A search-tool binding error (e.g. a list passed where a string is required)
+  means the call was malformed — re-issue it with scalar args; it is not a
+  "no results" signal. Empty/absent results mean the topic is unindexed —
+  fall back to repo-tree enumeration, not to guessing doc paths.
 - In LOCAL mode, never call GitHub web tools — the API is unavailable; use the
   task-context diff and repo tooling (see `references/local-mode.md`).
 - Cite concrete file paths and doc ids in `evidence`.

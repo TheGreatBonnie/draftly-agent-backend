@@ -29,7 +29,11 @@ from strands.multiagent.base import (
 
 from draftly.agents.documentation.planning import plan_tasks
 from draftly.agents.schemas import DocumentationTask, EvidenceBundle, ImpactAnalysis
-from draftly.orchestration.nodes.base import agent_result, parse_node_input
+from draftly.orchestration.nodes.base import (
+    agent_result,
+    original_task,
+    parse_node_input,
+)
 from draftly.orchestration.page_workflow.executor import (
     DeadlockedWorkflowError,
     PageWorkflowExecutor,
@@ -166,7 +170,12 @@ class DocumentationWorkflowNode(MultiAgentBase):
             return self._vacuous_pass()
 
         try:
-            await self._seed(run_id, org_id, tasks)
+            # The writer handler hydrates an update task's first write with the
+            # repository's current file body from the documents store; the repo
+            # name comes from the original PR event (never from the plan).
+            event = original_task(task)
+            repository = str(event.get("repository") or "") or None
+            await self._seed(run_id, org_id, tasks, repository=repository)
             executor = PageWorkflowExecutor(
                 repository=self.repository,
                 handlers=self.handlers,
@@ -484,8 +493,25 @@ class DocumentationWorkflowNode(MultiAgentBase):
         run_id: str,
         org_id: str,
         tasks: list[DocumentationTask],
+        repository: str | None = None,
     ) -> None:
-        """Pin v1 tasks: ``write`` then ``evaluate`` per planned page."""
+        """Pin v1 tasks: ``write`` then ``evaluate`` per planned page.
+
+        Task ids are canonicalized to their real repo path (``id = path``) at
+        this single choke point. The planner may emit a slug id ("task1")
+        alongside the real file path; the page workflow keys pages, writer
+        invocation state, draft scope, and the cross-page review invariant by
+        page id, so every layer must share one key (the path) or the draft
+        tools' ``start_draft`` guard and the ``path == page_id`` review check
+        reject the writer's own plan.
+
+        ``repository`` (taken from the original event) rides along in the
+        write task's input so the writer handler can hydrate current content.
+        """
+        tasks = [
+            task if task.id == task.path else task.model_copy(update={"id": task.path})
+            for task in tasks
+        ]
         await self.repository.create_pages(
             run_id=run_id,
             org_id=org_id,
@@ -498,6 +524,8 @@ class DocumentationWorkflowNode(MultiAgentBase):
             write_id = f"write:{task.id}:1"
             evaluate_id = f"evaluate:{task.id}:1"
             write_input: dict[str, Any] = {"task": task.model_dump(mode="json")}
+            if repository:
+                write_input["repository"] = repository
             evaluate_input: dict[str, Any] = {
                 "task": task.model_dump(mode="json"),
                 "evidence": [e.model_dump(mode="json") for e in task.evidence],

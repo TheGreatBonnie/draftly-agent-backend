@@ -31,6 +31,7 @@ def _state(selected: dict, state: str = "GITHUB_CONNECTED") -> MagicMock:
     )
     repos.onboarding.upsert = AsyncMock(return_value={})
     repos.onboarding.mark_step = AsyncMock(return_value={})
+    repos.jobs.upsert_on_conflict = AsyncMock(return_value={})
     repos.repository_config.upsert = AsyncMock(return_value={})
     return st
 
@@ -57,6 +58,18 @@ def _client(state: MagicMock, settings: SimpleNamespace) -> TestClient:
         "org_id": "test-org",
     }
     state.settings = settings
+    # Worker + Redis + tickets wiring so POST /onboarding/initialize can run
+    # (mirrors the client fixture in test_onboarding_routes.py).
+    state.worker = MagicMock()
+    state.worker.task_runner.has_task = MagicMock(return_value=True)
+    state.worker.run_task = AsyncMock(return_value={"state": "COMPLETED"})
+    redis_mock = MagicMock()
+    native_mock = AsyncMock()
+    native_mock.set.return_value = True
+    native_mock.get.return_value = None
+    redis_mock.native = native_mock
+    state.redis_client = redis_mock
+    app.state.redis_tickets = MagicMock(issue=AsyncMock(return_value="test-ticket"))
     app.state.draftly = state
     return TestClient(app)
 
@@ -203,3 +216,56 @@ def test_confirm_sources_public_persists_config(settings: SimpleNamespace) -> No
     assert saved["documentation_config"]["exclude_paths"] == ["/internal/.*"]
     # no repositories-table row for public sources (no migration)
     state.dependencies.repositories.repository_config.upsert.assert_not_called()
+
+
+def _public_selected_bare(**overrides) -> dict:
+    """Selected-repository shape matching production public-docs rows.
+
+    ``full_name`` is a bare origin (e.g. "thegreatbonnie.github.io") — never
+    the GitHub "owner/repo" shape, so it contains no ``/``.
+    """
+    selected = {
+        "full_name": "docs.example.com",
+        "source_type": "public_documentation",
+        "documentation_config": {"root_url": ROOT + "/"},
+    }
+    selected.update(overrides)
+    return selected
+
+
+def test_initialize_public_source_allows_bare_origin_full_name(
+    settings: SimpleNamespace,
+) -> None:
+    """Regression: POST /initialize 409'd for public_documentation sources whose
+    full_name is a bare origin — the guard demanded the GitHub owner/repo shape
+    (``"/" in full_name``) even though the public workflow keys ingestion off
+    documentation_config.root_url and never calls GitHub. See incident log
+    2026-09-24T20:31 (POST /api/onboarding/initialize 409 x2 + stale-lock
+    recovery)."""
+    state = _state(_public_selected_bare(), state="PREFERENCES_CONFIGURED")
+    client = _client(state, settings)
+
+    resp = client.post("/onboarding/initialize")
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["state"] == "INITIALIZING"
+    assert body["run_id"]
+    assert body["ticket"] == "test-ticket"
+
+
+def test_initialize_public_source_requires_root_url(
+    settings: SimpleNamespace,
+) -> None:
+    """Public initialize preflight rejects a corpus with no root_url up front
+    (409) instead of enqueueing a job that dies inside the Tavily sync."""
+    state = _state(
+        _public_selected_bare(documentation_config={}),
+        state="PREFERENCES_CONFIGURED",
+    )
+    client = _client(state, settings)
+
+    resp = client.post("/onboarding/initialize")
+
+    assert resp.status_code == 409
+    assert "documentation corpus" in resp.json()["detail"]

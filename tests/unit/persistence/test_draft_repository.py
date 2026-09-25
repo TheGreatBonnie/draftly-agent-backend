@@ -176,9 +176,23 @@ async def test_append_after_finalize_raises(repo: DraftRepository) -> None:
     revision = await repo.create_revision(
         run_id="run-1", org_id="org-1", generation=1, path="docs/guide.md", action="update"
     )
+    await repo.append_chunk(revision.id, "content")
     await repo.finalize(revision.id)
     with pytest.raises(ValueError, match="sealed"):
         await repo.append_chunk(revision.id, "more")
+
+
+async def test_finalize_empty_draft_keeps_it_open(repo: DraftRepository) -> None:
+    revision = await repo.create_revision(
+        run_id="run-1", org_id="org-1", generation=1, path="docs/guide.md", action="update"
+    )
+    await repo.append_chunk(revision.id, "  \n")
+    with pytest.raises(ValueError, match="empty"):
+        await repo.finalize(revision.id)
+    assert (await repo._get_revision(revision.id)).sealed is False
+    await repo.append_chunk(revision.id, "# Guide")
+    sealed = await repo.finalize(revision.id)
+    assert sealed.sealed is True
 
 
 async def test_append_unknown_draft_raises(repo: DraftRepository) -> None:

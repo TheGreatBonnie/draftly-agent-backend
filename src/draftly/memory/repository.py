@@ -6,11 +6,18 @@ persistence layer's dict records.
 
 from __future__ import annotations
 
+import time
 from collections.abc import Sequence
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+import structlog
 
 from draftly.memory.embeddings import EmbeddingService
-from draftly.persistence.repositories.memory import MemoryRepository
+
+logger = structlog.get_logger(__name__)
+
+if TYPE_CHECKING:
+    from draftly.persistence.repositories.memory import MemoryRepository
 
 
 class MemoryNamespaces:
@@ -34,7 +41,16 @@ class DomainMemoryRepository:
         repository: MemoryRepository | None = None,
         embeddings: EmbeddingService | None = None,
     ) -> None:
-        self.repository = repository or MemoryRepository()
+        if repository is None:
+            # Lazy import: ``MemoryRepository`` sits under the eagerly-loaded
+            # ``persistence.repositories`` package (feedback/delivery/discord
+            # chain). Importing it at module scope makes ``memory.repository``
+            # participate in an import cycle whenever it loads first, so defer
+            # the resolution to first use.
+            from draftly.persistence.repositories.memory import MemoryRepository
+
+            repository = MemoryRepository()
+        self.repository = repository
         self.embeddings = embeddings or EmbeddingService()
 
     async def store(self, item: Any) -> dict[str, Any]:
@@ -127,7 +143,9 @@ class DomainMemoryRepository:
         """Persist many MemoryItems with a single embed_batch call."""
         if not items:
             return []
+        started = time.monotonic()
         embeddings = await self.embeddings.embed_batch([item.content for item in items])
+        embedded_at = time.monotonic()
         records = []
         for item, embedding in zip(items, embeddings):
             records.append(
@@ -142,7 +160,13 @@ class DomainMemoryRepository:
                     "org_id": item.org_id,
                 }
             )
-        return await self.repository.create_batch(items=records)
+        stored = await self.repository.create_batch(items=records)
+        logger.info(
+            "memory_store_batch_timing", count=len(items),
+            embedding_ms=round((embedded_at - started) * 1000),
+            database_ms=round((time.monotonic() - embedded_at) * 1000),
+        )
+        return stored
 
     async def list_namespace(self, namespace: str) -> list[dict[str, Any]]:
         return await self.repository.list_namespace(namespace=namespace)

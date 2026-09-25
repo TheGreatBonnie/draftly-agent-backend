@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from strands.multiagent.base import Status
 
 from draftly.events.stream_envelope import StreamEnvelope, filter_graph_event
 
@@ -66,6 +67,13 @@ class TestFilterMapping:
         env = filter_graph_event(node_stop(), **KW)
         assert env is not None
         assert env.type == "node_stop"
+        assert env.payload == {"status": "COMPLETED", "duration_ms": 1250}
+
+    def test_node_stop_accepts_real_node_result_shape(self) -> None:
+        raw = {"type": "multiagent_node_stop", "node_id": "writer",
+               "node_result": SimpleNamespace(status=Status.COMPLETED, execution_time=1250)}
+        env = filter_graph_event(raw, **KW)
+        assert env is not None
         assert env.payload == {"status": "COMPLETED", "duration_ms": 1250}
 
     def test_handoff_maps(self) -> None:
