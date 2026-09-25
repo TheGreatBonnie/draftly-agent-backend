@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path
 
@@ -156,6 +157,39 @@ def test_agent_registry_contains_all_active_graph_factories() -> None:
     }
     assert required <= set(registry.__dataclass_fields__)
     assert all(callable(getattr(registry, name)) for name in required)
+
+
+def test_writer_prompt_enumerates_every_registered_tool(stub_model: StubModel) -> None:
+    """The writer must be handed the CLOSED list of registry names.
+
+    Run e1e96f90: 19 writer calls went to names that were never registered
+    (``read_file`` x10, ``bash`` x6, ``github_get_file`` x2,
+    ``get_pull_request_diff`` x1). Each rejected call costs a whole model turn
+    because the prompt described the toolset only in the abstract.
+    """
+    from draftly.agents.documentation.writer import build_writer_agent
+
+    tools = build_tools()
+    group = tools.documentation_engineer
+    agent = build_writer_agent(stub_model, group)
+    prompt = agent.system_prompt
+
+    names = [
+        getattr(tool, "name", None)
+        or getattr(getattr(tool, "fn", None), "__name__", None)
+        or getattr(tool, "__name__", None)
+        for tool in group
+    ]
+    registered = sorted({name for name in names if name})
+    assert registered, "the documentation_engineer group must not be empty"
+    missing = [name for name in registered if name not in prompt]
+    assert not missing, f"writer prompt omits registered tools: {missing}"
+
+    # ...and it must not teach names that are registered in NO grounding.
+    for phantom in ("bash", "github_get_file", "get_pull_request_diff"):
+        assert not re.search(rf"\b{phantom}\b", prompt), (
+            f"phantom tool {phantom!r} leaked into the writer prompt"
+        )
 
 
 def test_writer_agent_registers_authoring_skills(stub_model: StubModel) -> None:

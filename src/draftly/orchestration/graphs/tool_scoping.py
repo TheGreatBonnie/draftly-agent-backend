@@ -72,3 +72,18 @@ def repo_tool_hint(tools: list[Any]) -> str:
     registered = {tool_name(tool) for tool in tools}
     present = [name for name in REPO_TOOL_HINT_NAMES if name in registered]
     return ", ".join(present) if present else FALLBACK_REPO_HINT
+
+
+def render_tool_names(tools: list[Any]) -> str:
+    """Render the run's registered tool names as an inline backticked list.
+
+    The writer prompt states the CLOSED list of callable names. Run e1e96f90
+    spent 19 turns on calls to names that were never registered (``read_file``,
+    ``bash``, ``github_get_file``, ``get_pull_request_diff``) because the prompt
+    described the toolset only in the abstract; a model with a coding-agent prior
+    fills that gap with plausible names, and every miss costs a whole turn.
+    """
+    names = sorted({name for tool in tools if (name := tool_name(tool))})
+    if not names:
+        return "(no tools are registered for this run)"
+    return ", ".join(f"`{name}`" for name in names)

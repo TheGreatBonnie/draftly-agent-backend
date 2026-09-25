@@ -106,6 +106,54 @@ def test_pr_analysis_skill_text_names_no_local_tools_as_github_alternatives() ->
         )
 
 
+def _tool_references(text: str) -> set[str]:
+    """Tool names referenced as inline code (`` `name` ``) in skill markdown.
+
+    Skills name tools as inline code; fenced examples legitimately contain shell
+    text (``bash``, ``curl``), so scanning bare words would flag code samples.
+    """
+    return set(re.findall(r"`([A-Za-z_][A-Za-z0-9_.]*)`", text))
+
+
+def test_writer_skills_name_no_grounding_specific_tool() -> None:
+    """The writer's skills must not name tools whose registration depends on the
+    run's grounding.
+
+    ``documentation-update``/``documentation-generation`` are attached to every
+    writer run, but ``read_file``/``list_directory`` exist only in LOCAL
+    grounding while ``github_read_file``/``github_get_tree`` exist only in GITHUB
+    grounding. Run e1e96f90: the skill's "``read_file`` … does not exist for you"
+    line kept the phantom name in front of the model, which called it 10 times
+    (and invented ``bash``) instead of drafting. Skills must describe the run's
+    registered tools without naming any of them.
+    """
+    grounding_specific = {
+        "read_file",
+        "write_file",
+        "list_directory",
+        "file_exists",
+        "code_search",
+        "git_diff",
+        "git_log",
+        "git_status",
+        "github_read_file",
+        "github_get_tree",
+        "github_search_code",
+        "bash",
+    }
+    for name in ("documentation-update", "documentation-generation"):
+        text = _markdown(name)
+        references = SKILLS_DIR / name / "references"
+        if references.is_dir():
+            for reference in sorted(references.glob("*.md")):
+                text += "\n" + reference.read_text(encoding="utf-8")
+        named = _tool_references(text) & grounding_specific
+        assert not named, (
+            f"{name} names grounding-specific tools {sorted(named)}; describe "
+            "the run's registered tools instead"
+        )
+
+
 def test_github_delivery_skill_commits_to_source_pr() -> None:
     """When the run is attached to a source PR (pull_request.head.ref), the
     github-delivery skill must push to that branch instead of opening a fresh

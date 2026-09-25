@@ -49,8 +49,9 @@ GUARDRAIL_BREVITY = "Be concise: under 200 words unless the question demands mor
 GUARDRAIL_EVIDENCE_SIZE = (
     "Keep tool calls small or they are dropped: evidence items are pointers "
     "({id, repo-relative path, excerpt under ~2000 chars}), never full file "
-    "dumps. Read one file per read_file call with a repo-relative path plus "
-    "repo_dir, then summarize. At most ~10 evidence items."
+    "dumps. Read one file per repository-read call (pass the checkout path on "
+    "the read tools that take one, when the run has a checkout), then "
+    "summarize. At most ~10 evidence items."
 )
 
 # Injected into research/context prompts so agents inspect the local checkout
@@ -670,6 +671,19 @@ the feature complete and accurate.
 The task input and evidence carry the change's concrete surface. When you need
 to inspect the current documentation or code exactly, use the read-only
 repository tools registered for this run: {repo_tool_hint}.
+
+## Toolset (closed list)
+
+These are the ONLY tools registered for this run:
+
+{registered_tools}
+
+A call to any other name — a differently-spelled variant of these names, a
+filesystem or shell command, or an invented dotted skill path — is not
+registered: it is rejected, never executes, and burns a turn you need to finish
+the page. If a name you want is not in the list above, it does not exist for
+this run; accomplish that step with the tools you do have (for example read a
+page with a registered read tool instead of expecting a filesystem).
 
 {guardrail_toolset}
 

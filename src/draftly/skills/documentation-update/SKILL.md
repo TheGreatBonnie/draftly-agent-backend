@@ -34,14 +34,15 @@ Modify existing documentation to stay accurate with the codebase.
 
 ## Repository context (important)
 
-- You only have the tools listed under `allowed-tools` above plus the
-  run-scoped read tools (PR surface tools like `get_diff` / `get_files` /
-  `affected_docs`, and `github_read_file` in GitHub runs). **Never call tools
-  that are not registered** — the call fails and only wastes your turn budget.
-- In pull-request (GitHub) runs there is **no local checkout**: `read_file`,
-  `write_file`, and `list_directory` do not exist for you. Read the current
-  page content with the run's registered tools (e.g. `github_read_file` in
-  GitHub runs) instead of expecting a filesystem.
+- Your callable tools are exactly those listed in your task's toolset list:
+  this skill's `allowed-tools`, the run's registered read-only repository
+  tools, the PR surface tools the run registers (`get_diff`, `get_files`,
+  `affected_docs`) and the draft tools. **Never call a tool that is not
+  registered** — the call fails and only wastes your turn budget.
+- Do not assume a filesystem. A pull-request run has no local checkout, while an
+  evaluation run reads a checkout; both expose their repository reads through
+  the read tools named in your toolset list. Decide what exists from that list,
+  never from this skill, and read the current page content with it.
 - Emit tool calls in **small batches (at most 6 per response)**. A very large
   batch of tool calls in one response gets cut off mid-JSON by the model's
   per-response output cap, and the interrupted calls are discarded.

@@ -10,7 +10,7 @@ from strands.vended_plugins.skills import AgentSkills
 from draftly.agents.factory import build_draftly_agent
 from draftly.agents.prompts import WRITER_PROMPT, build_prompt, load_skills
 from draftly.agents.schemas import DocChangePlan, DocumentationTask
-from draftly.orchestration.graphs.tool_scoping import repo_tool_hint
+from draftly.orchestration.graphs.tool_scoping import render_tool_names, repo_tool_hint
 from draftly.steering.context import SteeringRuntime
 from draftly.steering.decisions import AgentRole
 
@@ -34,7 +34,9 @@ def build_writer_agent(
             writing_style="writing_style",
             repository_rules="repository_rules",
             security_rules="security_rules",
-        ).replace("{repo_tool_hint}", repo_tool_hint(tools)),
+        )
+        .replace("{repo_tool_hint}", repo_tool_hint(tools))
+        .replace("{registered_tools}", render_tool_names(tools)),
         model=model,
         tools=tools,
         structured_output_model=DocChangePlan,

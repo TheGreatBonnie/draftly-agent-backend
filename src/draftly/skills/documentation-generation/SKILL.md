@@ -36,13 +36,15 @@ project's conventions.
 
 ## Repository context (important)
 
-- You only have the tools listed under `allowed-tools` above. **Never call
-  tools that are not in this list** — they are not registered in this run and
-  the call fails.
-- In pull-request (GitHub) runs there is **no local checkout**: `read_file`
-  and `list_directory` do not exist for you. Repository context arrives via
-  the PR surface tools the run registers (`get_diff`, `get_files`,
-  `affected_docs`); use them instead of expecting a filesystem.
+- Call only the tools named in your task's toolset list: this skill's
+  `allowed-tools`, the run's registered read-only repository tools, and — for
+  repository context — the PR surface tools the run registers (`get_diff`,
+  `get_files`, `affected_docs`). **Never call a tool that is missing from that
+  list** — it is not registered in this run and the call fails.
+- Do not assume a filesystem. A pull-request run has no local checkout, while an
+  evaluation run reads a checkout; both expose their repository reads through
+  the read tools named in your toolset list. Decide what exists from that list,
+  never from this skill.
 - Emit tool calls in **small batches (at most 6 per response)**. A very large
   batch of tool calls in one response gets cut off mid-JSON by the model's
   per-response output cap, and the interrupted calls are discarded.
