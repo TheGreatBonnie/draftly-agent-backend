@@ -52,9 +52,10 @@ Minimum evidence: 2 search results or 1 high-confidence match.
 Search covers the *indexed* documentation store — a repository's `docs/` tree
 may not be indexed yet. When searches return nothing or only binding errors,
 switch to the repository itself: enumerate the docs tree with your repo
-tooling (`github_get_tree` / `list_directory`, `github_read_file` /
-`read_file`), then map each changed symbol/area onto the pages that exist
-there. `affected_documents` must contain real paths observed in that tree.
+tooling — in GITHUB mode `github_get_tree` / `github_read_file`; in LOCAL
+mode your checkout repo tooling (see `references/local-mode.md`) — then map
+each changed symbol/area onto the pages that exist there.
+`affected_documents` must contain real paths observed in that tree.
 `create` only for a path that is genuinely absent — and then use the
 repository's real layout (e.g. `docs/how-to/...`, `docs/reference/...`), not
 an invented flat filename.

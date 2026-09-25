@@ -321,12 +321,18 @@ def build_documentation_graph(
     # Per-task routing: writer nodes resolve their own model when a
     # resolver is wired in; concrete/shared models pass through verbatim.
     writer_model = resolve_model_for_role(model, "documentation_engineer")
-    writer_tools = _dedupe(
-        filter_grounded_tools(
-            grounding, _scope_writer_tools(reg.documentation_engineer, reg.documentation)
-        ),
-        [start_draft, append_chunk, finalize_draft],
+    writer_repo_tools = filter_grounded_tools(
+        grounding, _scope_writer_tools(reg.documentation_engineer, reg.documentation)
     )
+    if grounding == GITHUB:
+        # PR runs have no local checkout: the writer must still read the docs
+        # it updates, so give it the read-only GitHub-API repo tools. Without a
+        # read path it looped calling unregistered read_file / list_files until
+        # the graph killed it (run d7cfb2a0).
+        writer_repo_tools = _dedupe(
+            writer_repo_tools, _scope_read_only_tools(reg.github_intelligence)
+        )
+    writer_tools = _dedupe(writer_repo_tools, [start_draft, append_chunk, finalize_draft])
     writer_builder = getattr(registry, "writer_agent", None) or build_writer_agent
     writer_factory = WriterFactory(
         model=writer_model,
@@ -399,11 +405,19 @@ def build_documentation_graph(
         node_id="deliver",
     )
     changelog_builder = getattr(registry, "changelog_agent", None) or build_changelog_agent
+    changelog_repo_tools = filter_grounded_tools(
+        grounding, _scope_writer_tools(reg.documentation_engineer, reg.documentation)
+    )
+    if grounding == GITHUB:
+        # Same PR-run read path as the writer: the changelog prompt asks for the
+        # existing CHANGELOG.md, which is unreadable with the stripped local
+        # tools — give it the GitHub-API repo tools.
+        changelog_repo_tools = _dedupe(
+            changelog_repo_tools, _scope_read_only_tools(reg.github_intelligence)
+        )
     changelog_agent = changelog_builder(
         writer_model,
-        filter_grounded_tools(
-            grounding, _scope_writer_tools(reg.documentation_engineer, reg.documentation)
-        ),
+        changelog_repo_tools,
         runtime=steering_runtime,
         agent_id="documentation.changelog",
         node_id="changelog",

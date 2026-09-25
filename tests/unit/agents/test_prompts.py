@@ -174,6 +174,15 @@ class TestGuardrailsPresent:
         assert "roles.list_for_user" in flat
         assert "if they appear verbatim" in flat
 
+    def test_answer_prompt_never_names_unregistered_repo_tools(self) -> None:
+        """The answer node registers only semantic/keyword search in every
+        grounding — the prompt must not teach the local-only ``read_file`` /
+        ``code_search`` it can never call (run d7cfb2a0 failure class)."""
+        rendered = build_prompt(ANSWER_WRITER_PROMPT, output_model=AnswerDraft)
+
+        assert "read_file" not in rendered.replace("github_read_file", "")
+        assert "code_search" not in rendered
+
     def test_writer_prompt_has_revision_feedback_block(self) -> None:
         rendered = build_prompt(WRITER_PROMPT, output_model=DocChangePlan)
 

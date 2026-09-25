@@ -9,6 +9,7 @@ from strands import Agent
 from draftly.agents.factory import build_draftly_agent
 from draftly.agents.prompts import CHANGELOG_PROMPT, build_prompt
 from draftly.agents.schemas import ChangelogEntry
+from draftly.orchestration.graphs.tool_scoping import repo_tool_hint
 from draftly.steering.context import SteeringRuntime
 from draftly.steering.decisions import AgentRole
 
@@ -31,7 +32,7 @@ def build_changelog_agent(
         system_prompt=build_prompt(
             CHANGELOG_PROMPT,
             output_model=ChangelogEntry,
-        ),
+        ).replace("{repo_tool_hint}", repo_tool_hint(tools)),
         model=model,
         tools=tools,
         structured_output_model=ChangelogEntry,

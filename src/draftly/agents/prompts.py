@@ -39,6 +39,12 @@ GUARDRAIL_PATHS = (
     "Only modify paths present in evidence or the repository tree. Never invent file paths."
 )
 GUARDRAIL_REFUSAL = 'If evidence is insufficient, choose action "none" rather than guessing.'
+GUARDRAIL_TOOLSET = (
+    "Call ONLY tools from your registered toolset. A call to any name that is "
+    "not registered (for example an invented dotted skill path like "
+    "skills.analysis.analyze_pr) is rejected on call and only wastes your turn "
+    "budget — it never executes."
+)
 GUARDRAIL_BREVITY = "Be concise: under 200 words unless the question demands more."
 GUARDRAIL_EVIDENCE_SIZE = (
     "Keep tool calls small or they are dropped: evidence items are pointers "
@@ -405,6 +411,7 @@ def build_prompt(
         guardrail_refusal=GUARDRAIL_REFUSAL,
         guardrail_brevity=GUARDRAIL_BREVITY,
         guardrail_evidence_size=GUARDRAIL_EVIDENCE_SIZE,
+        guardrail_toolset=GUARDRAIL_TOOLSET,
         local_repo_note=local_repo_note,
     )
     kwargs["output_contract"] = schema_contract(output_model) if output_model else ""
@@ -616,6 +623,8 @@ Prefer `update` for existing pages;
 `create` only for a path that is genuinely absent from the tree. Every entry
 in affected_documents must be a real path you observed.
 
+{guardrail_toolset}
+
 {guardrail_refusal}
 
 Output contract:
@@ -655,6 +664,14 @@ documents (one how-to that covers the full flow, one reference with the exact
 signatures) instead of spreading edits across many files. Do NOT touch every
 doc that merely mentions the topic — only the docs that must change to make
 the feature complete and accurate.
+
+## Repository access
+
+The task input and evidence carry the change's concrete surface. When you need
+to inspect the current documentation or code exactly, use the read-only
+repository tools registered for this run: {repo_tool_hint}.
+
+{guardrail_toolset}
 
 {guardrail_paths}
 
@@ -803,8 +820,8 @@ ANSWER_WRITER_PROMPT = """You write an accurate answer for a developer support q
 
 Method names, class names, and function calls are ONLY allowed if they appear
 verbatim (exact spelling, exact module/namespace prefix) in the documentation
-or code excerpts provided to you (task context, evidence items, or the files
-you actually read with read_file/code_search). Copy them character-for-character.
+or code excerpts provided to you (task context, evidence items, or content
+returned by your registered search tools). Copy them character-for-character.
 
 - Use `permissions.list_for_user()` only if that exact symbol appears in the
   evidence — never rename it, "correct" it, or substitute a sibling module
@@ -1114,7 +1131,8 @@ produce a Keep a Changelog v2.0.0 entry for CHANGELOG.md.
 
 ## Steps
 
-1. Read the existing CHANGELOG.md via read_file. If it doesn't exist, start with
+1. Read the existing CHANGELOG.md with a registered read tool ({repo_tool_hint}).
+   If it doesn't exist, start with
    the standard preamble:
    ```
    # Changelog
@@ -1149,6 +1167,8 @@ produce a Keep a Changelog v2.0.0 entry for CHANGELOG.md.
 - The six categories are: Added, Changed, Deprecated, Removed, Fixed, Security.
   Do not invent new categories.
 - Write plainly. Many readers are not native speakers.
+
+{guardrail_toolset}
 
 Output contract:
 {output_contract}

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from draftly.agents.prompts import load_skills
@@ -45,6 +46,64 @@ def test_impact_agent_loads_pr_analysis_and_research_skills() -> None:
         "github-pr-analysis",
         "documentation-research",
     }
+
+
+_LOCAL_ONLY_TOOL_NAMES = {
+    "read_file",
+    "list_directory",
+    "write_file",
+    "update_frontmatter",
+    "file_exists",
+    "code_search",
+    "git_diff",
+    "git_log",
+    "git_status",
+}
+
+
+def _allowed_tools(name: str) -> set[str]:
+    text = (SKILLS_DIR / name / "SKILL.md").read_text(encoding="utf-8")
+    matches = re.findall(r"^allowed-tools:\s*(.+)$", text, re.M)
+    assert matches, f"{name}/SKILL.md missing allowed-tools frontmatter"
+    return set(matches[0].split())
+
+
+def test_documentation_research_skill_advertises_no_local_repo_tools() -> None:
+    """``documentation-research`` is loaded by the impact and context agents,
+    which never have ``read_file`` (impact has no read tool in ANY grounding;
+    context only in local runs). Its allowed-tools must stay inside the search
+    tools every consumer registers, and its steps must not teach ``read_file``
+    (the same phantom-tool class as the writer's documentation-update skill in
+    run d7cfb2a0)."""
+    allowed = _allowed_tools("documentation-research")
+    assert not (allowed & _LOCAL_ONLY_TOOL_NAMES), (
+        f"documentation-research advertises local-only tools consumers never "
+        f"register: {allowed & _LOCAL_ONLY_TOOL_NAMES}"
+    )
+    assert allowed <= {"semantic_search", "keyword_search", "hybrid_search"}
+
+    text = (SKILLS_DIR / "documentation-research" / "SKILL.md").read_text(
+        encoding="utf-8"
+    )
+    assert "read_file" not in text.replace("github_read_file", ""), (
+        "documentation-research steps must not name read_file"
+    )
+
+
+def test_pr_analysis_skill_text_names_no_local_tools_as_github_alternatives() -> None:
+    """``github-pr-analysis`` (loaded by the impact agent) must not pair
+    local-checkout tool names as alternatives to the GitHub-API tools — in
+    GITHUB mode the local names are never registered, so teaching them teaches
+    phantom calls."""
+    for rel in (
+        "github-pr-analysis/SKILL.md",
+        "github-pr-analysis/references/documentation-impact.md",
+    ):
+        text = (SKILLS_DIR / rel).read_text(encoding="utf-8")
+        assert "list_directory" not in text, f"{rel} names local-only list_directory"
+        assert "read_file" not in text.replace("github_read_file", ""), (
+            f"{rel} names local-only read_file"
+        )
 
 
 def test_github_delivery_skill_commits_to_source_pr() -> None:

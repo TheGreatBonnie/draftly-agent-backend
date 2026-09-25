@@ -37,8 +37,9 @@ tools (`repo_dir=<local checkout path>`) and never call the GitHub API. Read
    `{"query": "<plain string>", "namespace": "<plain string>", "limit": <int>}`.
    A JSON array for `query`/`namespace` is rejected at tool binding. If
    searches return no coverage, enumerate the repository docs tree with your
-   repo tooling (`github_get_tree` / `list_directory`, `github_read_file` /
-   `read_file`) and map each changed symbol/area onto the ACTUAL pages found.
+   repo tooling — in GITHUB mode `github_get_tree` / `github_read_file`; in
+   LOCAL mode your checkout repo tooling (see `references/local-mode.md`) —
+   and map each changed symbol/area onto the ACTUAL pages found.
    Never name a documentation path you did not observe in the tree.
 4. Produce an `ImpactAnalysis`:
    - `update`: affected docs exist and must change.

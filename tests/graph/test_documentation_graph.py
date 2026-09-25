@@ -403,6 +403,40 @@ def test_deliver_agent_gets_drafted_docs_read_tool(model, tools, tmp_sessions) -
     assert "get_drafted_docs" not in changelog_names
 
 
+def test_github_grounding_changelog_prompt_names_only_registered_read_tools(
+    model, tools, tmp_sessions
+) -> None:
+    """The changelog prompt must name only read tools actually registered: in
+    github grounding that is the GitHub API suite, never the local
+    ``read_file`` the old prompt told it to call."""
+    from draftly.agents.documentation.changelog import build_changelog_agent
+
+    captured: dict = {}
+
+    def changelog_builder(agent_model, agent_tools, **kwargs):
+        agent = build_changelog_agent(agent_model, agent_tools, **kwargs)
+        captured["prompt"] = agent.system_prompt
+        captured["tools"] = agent_tools
+        return agent
+
+    build_graph_for_run(
+        "github-changelog-prompt-1",
+        surface="pull_request",
+        tools_registry=tools,
+        model=model,
+        storage_dir=tmp_sessions,
+        grounding="github",
+        agents=SimpleNamespace(changelog_agent=changelog_builder),
+    )
+
+    assert "github_read_file" in _tool_names(captured["tools"])
+    prompt = captured["prompt"]
+    assert "github_read_file" in prompt
+    assert "read_file" not in prompt.replace("github_read_file", "")
+    assert "list_directory" not in prompt
+    assert "registered toolset" in prompt
+
+
 def test_writer_limits_forwarded_to_page_writer_handler(
     model, tools, tmp_sessions
 ) -> None:
@@ -429,25 +463,18 @@ def test_writer_limits_forwarded_to_page_writer_handler(
     assert write_handler.limits == {"turns": 3, "output_tokens": 500}
 
 
-def test_documentation_generation_skill_lists_only_registered_writer_tools(
+def test_doc_writer_skills_list_only_registered_writer_tools(
     model, tools, tmp_sessions
 ) -> None:
-    """The documentation-generation SKILL must only advertise tools the writer
-    actually registers in github grounding.
+    """Both doc-writing SKILLs must only advertise tools the writer actually
+    registers in github grounding.
 
-    ``read_file`` is a local-checkout tool the GitHub-mode writer never
-    receives; advertising it teaches the model to emit names the registry
-    rejects (the ``list_directory``/``glob`` tool-not-found failures in run
-    3ef0d570).
+    ``documentation-update`` used to advertise ``read_file``/``write_file``/
+    ``update_frontmatter`` — none of which the GitHub-mode writer registers.
+    Teaching the model those names produced the repeated read_file /
+    list_files tool-not-found loop in run d7cfb2a0.
     """
-    skill_path = (
-        Path(__file__).resolve().parents[2]
-        / "src/draftly/skills/documentation-generation/SKILL.md"
-    )
-    text = skill_path.read_text(encoding="utf-8")
-    allowed = set(re.findall(r"^allowed-tools:\s*(.+)$", text, re.M)[0].split())
-    assert "read_file" not in allowed, "SKILL must not advertise local-only tools"
-
+    skills_root = Path(__file__).resolve().parents[2] / "src/draftly/skills"
     wiring = docs_workflow_wiring()
     graph = build_graph_for_run(
         "skill-writer-tools-1",
@@ -463,8 +490,135 @@ def test_documentation_generation_skill_lists_only_registered_writer_tools(
     writer_names = _tool_names(
         graph.nodes["document"].executor.handlers["write"].writer_factory.tools
     )
-    unregistered = allowed - writer_names
-    assert not unregistered, f"skill advertises unregistered writer tools: {unregistered}"
+    for skill_name in ("documentation-generation", "documentation-update"):
+        text = (skills_root / skill_name / "SKILL.md").read_text(encoding="utf-8")
+        allowed = set(re.findall(r"^allowed-tools:\s*(.+)$", text, re.M)[0].split())
+        assert "read_file" not in allowed, (
+            f"{skill_name} must not advertise local-only read_file"
+        )
+        unregistered = allowed - writer_names
+        assert not unregistered, (
+            f"{skill_name} advertises unregistered writer tools: {unregistered}"
+        )
+
+
+def test_github_grounding_docs_skills_advertise_only_registered_tools(
+    model,
+    tools,
+    tmp_sessions,
+) -> None:
+    """Skills attached to PR-workflow agents (impact, context) may only
+    advertise tools those agents actually register in github grounding.
+
+    ``documentation-research`` advertised local-only ``read_file`` to an
+    impact/context agent that never has it — the same phantom-tool failure
+    class as the writer's ``documentation-update`` skill (run d7cfb2a0).
+    """
+    from draftly.agents.documentation.analyzer import build_impact_agent
+    from draftly.agents.documentation.context import build_doc_context_agent
+
+    skills_root = Path(__file__).resolve().parents[2] / "src/draftly/skills"
+    captured: dict = {}
+
+    def impact_builder(agent_model, agent_tools, **kwargs):
+        captured["impact_tools"] = agent_tools
+        return build_impact_agent(agent_model, agent_tools, **kwargs)
+
+    def context_builder(agent_model, agent_tools, **kwargs):
+        captured["context_tools"] = agent_tools
+        return build_doc_context_agent(agent_model, agent_tools, **kwargs)
+
+    build_graph_for_run(
+        "github-skills-1",
+        surface="pull_request",
+        tools_registry=tools,
+        model=model,
+        agents=SimpleNamespace(
+            impact_agent=impact_builder,
+            documentation_context=context_builder,
+        ),
+        storage_dir=tmp_sessions,
+        grounding="github",
+    )
+
+    local_only = {
+        "read_file",
+        "list_directory",
+        "write_file",
+        "update_frontmatter",
+        "file_exists",
+        "code_search",
+        "git_diff",
+        "git_log",
+        "git_status",
+    }
+    expectations = {
+        "impact": (
+            captured["impact_tools"],
+            ("documentation-research", "github-pr-analysis"),
+        ),
+        "context": (
+            captured["context_tools"],
+            ("documentation-research", "documentation-gap-detection"),
+        ),
+    }
+    for agent_label, (registered, skill_names) in expectations.items():
+        registered_names = _tool_names(registered)
+        for skill_name in skill_names:
+            text = (skills_root / skill_name / "SKILL.md").read_text(encoding="utf-8")
+            allowed = set(re.findall(r"^allowed-tools:\s*(.+)$", text, re.M)[0].split())
+            bad = allowed & local_only
+            assert not bad, (
+                f"{skill_name} advertises local-only tools the {agent_label} "
+                f"agent never registers in github grounding: {bad}"
+            )
+            unregistered = allowed - registered_names
+            assert not unregistered, (
+                f"{skill_name} advertises tools the {agent_label} agent never "
+                f"registers in github grounding: {unregistered}"
+            )
+
+
+def test_github_grounding_writer_and_changelog_use_api_repo_tools(
+    model, tools, tmp_sessions
+) -> None:
+    """PR (github) runs have no local checkout: the writer and changelog must
+    still be able to read current docs, so both get the read-only GitHub-API
+    repo tools.
+
+    Without a read path the writer looped calling unregistered ``read_file`` /
+    ``list_files`` until the graph killed it (run d7cfb2a0).
+    """
+    wiring = docs_workflow_wiring()
+    graph = build_graph_for_run(
+        "github-writer-tools-1",
+        surface="pull_request",
+        tools_registry=tools,
+        model=model,
+        storage_dir=tmp_sessions,
+        grounding="github",
+        page_workflow=wiring["page_workflow"],
+        drafts_repo=wiring["drafts_repo"],
+        agents=wiring["agents"],
+    )
+    writer_names = _tool_names(
+        graph.nodes["document"].executor.handlers["write"].writer_factory.tools
+    )
+    changelog_names = set(graph.nodes["changelog"].executor.tool_names)
+    expected_github = {"github_read_file", "github_get_tree", "github_search_code"}
+    for label, names in (("writer", writer_names), ("changelog", changelog_names)):
+        assert expected_github <= names, (
+            f"{label} missing GitHub API read tools in github grounding"
+        )
+        assert not names & {
+            "read_file",
+            "list_directory",
+            "git_diff",
+            "git_status",
+        }, f"{label} still has local-checkout tools in github grounding"
+    # draft persistence stays writer-only
+    assert {"start_draft", "append_chunk", "finalize_draft"} <= writer_names
+    assert not {"start_draft", "append_chunk", "finalize_draft"} & changelog_names
 
 
 def test_draft_generation_hook_registered_as_provider(
@@ -790,6 +944,9 @@ def test_github_grounding_impact_prompt_names_only_registered_tools(
     assert "github_read_file" in prompt
     assert "list_directory" not in prompt
     assert "list_directory, github_read_file, read_file" not in prompt
+    # guardrail: never invent tool names (run-level skills.analysis.analyze_pr
+    # hallucination) — only registered tools may be called
+    assert "registered toolset" in prompt
 
 
 def test_default_local_grounding_has_no_github_tools_in_impact_prompt(
@@ -823,6 +980,76 @@ def test_default_local_grounding_has_no_github_tools_in_impact_prompt(
     # the run's actual repo tools are named instead
     assert "get_files" in prompt
     assert "code_search" in prompt
+
+
+def test_github_grounding_writer_prompt_names_only_registered_tools(
+    model, tools, tmp_sessions
+) -> None:
+    """The writer system prompt must name only repo tools registered for the
+    run: in github grounding the read hint is the GitHub-API suite, never the
+    local checkout names the writer does not have (run d7cfb2a0 looped because
+    the model was taught read_file that was never registered)."""
+    from draftly.agents.documentation.writer import build_writer_agent
+
+    wiring = docs_workflow_wiring()
+    graph = build_graph_for_run(
+        "github-writer-prompt-1",
+        surface="pull_request",
+        tools_registry=tools,
+        model=model,
+        storage_dir=tmp_sessions,
+        grounding="github",
+        page_workflow=wiring["page_workflow"],
+        drafts_repo=wiring["drafts_repo"],
+        agents=wiring["agents"],
+    )
+    factory = graph.nodes["document"].executor.handlers["write"].writer_factory
+    agent = build_writer_agent(
+        factory.model,
+        factory.tools,
+        runtime=factory.runtime,
+        agent_id="documentation.writer",
+        node_id="document",
+    )
+    prompt = agent.system_prompt
+    assert "github_get_tree" in prompt
+    assert "github_read_file" in prompt
+    assert "read_file" not in prompt.replace("github_read_file", "")
+    assert "list_directory" not in prompt
+    assert "registered toolset" in prompt
+
+
+def test_default_local_grounding_writer_prompt_names_checkout_tools(
+    model, tools, tmp_sessions
+) -> None:
+    """Local-first runs instruct the writer with the actual checkout tools and
+    must not name GitHub-API tools that are not registered."""
+    from draftly.agents.documentation.writer import build_writer_agent
+
+    wiring = docs_workflow_wiring()
+    graph = build_graph_for_run(
+        "local-writer-prompt-1",
+        surface="pull_request",
+        tools_registry=tools,
+        model=model,
+        storage_dir=tmp_sessions,
+        page_workflow=wiring["page_workflow"],
+        drafts_repo=wiring["drafts_repo"],
+        agents=wiring["agents"],
+    )
+    factory = graph.nodes["document"].executor.handlers["write"].writer_factory
+    agent = build_writer_agent(
+        factory.model,
+        factory.tools,
+        runtime=factory.runtime,
+        agent_id="documentation.writer",
+        node_id="document",
+    )
+    prompt = agent.system_prompt
+    assert "read_file" in prompt
+    assert "list_directory" in prompt
+    assert "github_read_file" not in prompt
+    assert "registered toolset" in prompt
 
 
 def test_default_local_grounding_keeps_checkout_tools(

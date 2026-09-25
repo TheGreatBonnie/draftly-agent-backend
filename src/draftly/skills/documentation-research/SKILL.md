@@ -1,7 +1,7 @@
 ---
 name: documentation-research
 description: Researches documentation coverage, existing content, and gaps using semantic and keyword search. Use before generating or updating docs to establish what exists.
-allowed-tools: semantic_search keyword_search hybrid_search read_file
+allowed-tools: semantic_search keyword_search hybrid_search
 metadata:
   references: 4
   assets: 0
@@ -17,7 +17,8 @@ Determine what the documentation already covers and where the gaps are.
 
 1. Run `semantic_search` on the topic — it embeds the query internally.
 2. Cross-check with `keyword_search` and `hybrid_search` for robustness.
-3. Read the top matches with `read_file` and summarize coverage.
+3. Inspect the top matches and summarize coverage — use the excerpts the
+   search tools return, or a registered repo read tool when one is available.
 4. Report missing topics, stale sections, and broken links.
 
 ## Guidelines
@@ -27,7 +28,8 @@ Determine what the documentation already covers and where the gaps are.
 - If search returns nothing, the topic is likely undocumented.
 - Zero hits are not proof of a gap — retry with synonyms and product-area
   keywords before declaring a topic missing.
-- Verify top search hits with `read_file`; an index can be stale.
+- Verify top search hits by inspecting the matched content — the search
+  excerpts, or a registered read tool when available; an index can be stale.
 
 ## Output
 
@@ -40,7 +42,7 @@ when it is empty, but an explicit topic matches prose reliably.
 
 ## References
 
-Read on demand with your file tools — load only when needed:
+Read on demand with a registered read tool when available — load only when needed:
 
 - `references/repository-analysis.md` — codebase extraction guide; load when the repo must be inspected to judge coverage
 - `references/evidence-policy.md` — evidence hierarchy and citation rules; load when weighing search results as evidence
