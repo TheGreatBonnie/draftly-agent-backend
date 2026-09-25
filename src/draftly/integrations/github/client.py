@@ -21,6 +21,48 @@ from .runtime import current_installation_id
 logger = structlog.get_logger(__name__)
 
 
+def _tree_entry_matches_prefix(path: str, prefix: str) -> bool:
+    """True when a tree entry lives at or under ``prefix`` (no leading slash)."""
+    return path == prefix or path.startswith(prefix + "/")
+
+
+def _filter_tree_entries(
+    entries: list[dict[str, Any]], path_prefix: str | None
+) -> list[dict[str, Any]]:
+    """Keep only the entries inside ``path_prefix`` (all entries when unset)."""
+    prefix = (path_prefix or "").strip("/")
+    if not prefix:
+        return list(entries)
+    return [
+        entry
+        for entry in entries
+        if _tree_entry_matches_prefix(str(entry.get("path", "")), prefix)
+    ]
+
+
+def _subtree_can_contribute(path: str, path_prefix: str | None) -> bool:
+    """True when walking ``path``'s subtree can still yield ``path_prefix`` hits."""
+    prefix = (path_prefix or "").strip("/")
+    if not prefix:
+        return True
+    root = prefix.split("/")[0]
+    return bool(root) and _tree_entry_matches_prefix(path, root)
+
+
+def _entry_budget_spent(
+    entries: list[dict[str, Any]], path_prefix: str | None, max_entries: int | None
+) -> bool:
+    """True when the walk already holds ``max_entries`` matching entries.
+
+    Every returned entry (directory or file) counts: the budget exists to keep
+    one tool result inside the model's per-turn output budget, so it must bound
+    the whole payload, not just the files.
+    """
+    if max_entries is None:
+        return False
+    return len(_filter_tree_entries(entries, path_prefix)) >= max_entries
+
+
 class GitHubClient:
     """
     Low-level GitHub API client.
@@ -407,10 +449,32 @@ class GitHubClient:
         ref: str,
         token: str | None = None,
     ) -> list[dict[str, Any]]:
-        """Get recursive Git tree for a repository ref.
+        """Get recursive Git tree for a repository ref."""
+        page = await self.get_tree_bounded(owner, repo, ref, token)
+        return page["entries"]
 
-        A truncated recursive response cannot be paginated, so fall back to
-        walking each root directory's subtree by sha.
+    async def get_tree_bounded(
+        self,
+        owner: str,
+        repo: str,
+        ref: str,
+        token: str | None = None,
+        *,
+        path_prefix: str | None = None,
+        max_entries: int | None = None,
+    ) -> dict[str, Any]:
+        """Recursive tree listing bounded by ``max_entries``, with metadata.
+
+        A truncated recursive response cannot be paginated, so this completes it
+        by walking the remaining subtrees — but the walk stops as soon as the
+        caller's entry budget is spent, directories that cannot contribute to
+        ``path_prefix`` are never fetched, and the result reports ``truncated``
+        so callers never mistake a partial listing for a complete one.
+
+        An un-bounded listing is what starved the PR writer in run e1e96f90:
+        each ``github_get_tree`` result exceeded the model's per-response budget,
+        Strands replaced it with a max-tokens error, and the writer retried the
+        same call — 18 times — before running out of turns.
         """
         data = await self._request(
             "GET",
@@ -419,26 +483,44 @@ class GitHubClient:
             token=token,
         )
 
-        if not data.get("truncated", False):
-            return list(data.get("tree", []))
-
-        logger.warning(
-            "github_tree_truncated owner=%s repo=%s ref=%s", owner, repo, ref
-        )
-        all_entries: list[dict[str, Any]] = []
-        pending = [
-            entry for entry in data.get("tree", []) if entry.get("type") == "tree"
-        ]
-        while pending:
-            entry = pending.pop(0)
-            subtree = await self._request(
-                "GET",
-                f"/repos/{owner}/{repo}/git/trees/{entry['sha']}",
-                params={"recursive": "1"},
-                token=token,
+        entries: list[dict[str, Any]] = list(data.get("tree", []))
+        walk_cut_short = False
+        if data.get("truncated", False):
+            logger.warning(
+                "github_tree_truncated owner=%s repo=%s ref=%s", owner, repo, ref
             )
-            all_entries.extend(subtree.get("tree", []))
-        return all_entries
+            pending = [
+                entry
+                for entry in entries
+                if entry.get("type") == "tree"
+                and _subtree_can_contribute(str(entry.get("path", "")), path_prefix)
+            ]
+            while pending:
+                if _entry_budget_spent(entries, path_prefix, max_entries):
+                    walk_cut_short = True
+                    break
+                entry = pending.pop(0)
+                subtree = await self._request(
+                    "GET",
+                    f"/repos/{owner}/{repo}/git/trees/{entry['sha']}",
+                    params={"recursive": "1"},
+                    token=token,
+                )
+                children: list[dict[str, Any]] = list(subtree.get("tree", []))
+                entries.extend(children)
+                pending.extend(
+                    child
+                    for child in children
+                    if child.get("type") == "tree"
+                    and _subtree_can_contribute(
+                        str(child.get("path", "")), path_prefix
+                    )
+                )
+
+        selected = _filter_tree_entries(entries, path_prefix)
+        if max_entries is not None and len(selected) > max_entries:
+            return {"entries": selected[:max_entries], "truncated": True}
+        return {"entries": selected, "truncated": walk_cut_short}
 
     async def get_file_contents(
         self,

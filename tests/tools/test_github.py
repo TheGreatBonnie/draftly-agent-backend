@@ -161,5 +161,55 @@ async def test_github_get_tree_round_trip(fake_github: FakeGitHubClient) -> None
 
     result = await github_get_tree("acme", "widget", "main")
 
-    assert result[0]["path"] == "auth.py"
-    assert ("get_tree", "acme", "widget", "main") in fake_github.calls
+    assert [entry["path"] for entry in result["entries"]] == ["auth.py", "docs/"]
+    assert result["returned"] == 2
+    assert result["truncated"] is False
+    assert ("get_tree_bounded", "acme", "widget", "main") in fake_github.calls
+
+
+async def test_github_get_tree_reports_truncation_when_the_budget_is_hit(
+    fake_github: FakeGitHubClient,
+) -> None:
+    """A capped listing must tell the model it is PARTIAL — otherwise the writer
+    concludes a path does not exist and loops on read attempts."""
+    from draftly.tools.github.get_tree import github_get_tree
+
+    result = await github_get_tree("acme", "widget", "main", max_entries=1)
+
+    assert [entry["path"] for entry in result["entries"]] == ["auth.py"]
+    assert result["truncated"] is True
+    assert "truncated" in str(result["hint"]).lower()
+
+
+async def test_github_get_tree_clamps_a_model_supplied_budget(
+    fake_github: FakeGitHubClient,
+) -> None:
+    """A model asking for a huge listing still gets the bounded ceiling."""
+    from draftly.tools.github.get_tree import MAX_TREE_ENTRIES, github_get_tree
+
+    result = await github_get_tree("acme", "widget", "main", max_entries=10**9)
+
+    assert result["returned"] <= MAX_TREE_ENTRIES
+
+
+async def test_github_get_tree_narrows_by_path_prefix(
+    fake_github: FakeGitHubClient,
+) -> None:
+    from draftly.tools.github.get_tree import github_get_tree
+
+    result = await github_get_tree("acme", "widget", "main", path_prefix="docs")
+
+    assert [entry["path"] for entry in result["entries"]] == ["docs/"]
+
+
+async def test_github_get_tree_tolerates_weak_model_arguments(
+    fake_github: FakeGitHubClient,
+) -> None:
+    """Non-int / blank arguments (a known weak-model failure mode) must not crash
+    the tool or defeat the budget."""
+    from draftly.tools.github.get_tree import github_get_tree
+
+    result = await github_get_tree("acme", "widget", "main", max_entries=[], path_prefix="")
+
+    assert result["returned"] == 2
+    assert result["truncated"] is False

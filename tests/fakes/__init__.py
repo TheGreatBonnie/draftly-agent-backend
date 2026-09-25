@@ -31,6 +31,12 @@ class FakeGitHubClient:
     pull_request: dict = field(default_factory=lambda: {"number": 1})
     comments: list[dict] = field(default_factory=list)
     calls: list[tuple] = field(default_factory=list)
+    tree_entries: list[dict] = field(
+        default_factory=lambda: [
+            {"path": "auth.py", "type": "blob", "sha": "abc"},
+            {"path": "docs/", "type": "tree", "sha": "def"},
+        ]
+    )
 
     async def get_pull_request_diff(self, repo: str, number: int) -> str:
         self.calls.append(("get_pull_request_diff", repo, number))
@@ -98,11 +104,32 @@ class FakeGitHubClient:
     async def get_tree(
         self, owner: str, repo: str, ref: str, token: str | None = None
     ) -> list[dict]:
-        self.calls.append(("get_tree", owner, repo, ref))
-        return [
-            {"path": "auth.py", "type": "blob", "sha": "abc"},
-            {"path": "docs/", "type": "tree", "sha": "def"},
-        ]
+        page = await self.get_tree_bounded(owner, repo, ref, token)
+        return page["entries"]
+
+    async def get_tree_bounded(
+        self,
+        owner: str,
+        repo: str,
+        ref: str,
+        token: str | None = None,
+        *,
+        path_prefix: str | None = None,
+        max_entries: int | None = None,
+    ) -> dict:
+        self.calls.append(("get_tree_bounded", owner, repo, ref))
+        entries = list(self.tree_entries)
+        if path_prefix:
+            prefix = path_prefix.strip("/")
+            entries = [
+                entry
+                for entry in entries
+                if entry.get("path") == prefix
+                or str(entry.get("path", "")).startswith(prefix + "/")
+            ]
+        if max_entries is not None and len(entries) > max_entries:
+            return {"entries": entries[:max_entries], "truncated": True}
+        return {"entries": entries, "truncated": False}
 
 
 @dataclass

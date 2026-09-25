@@ -38,6 +38,135 @@ async def test_get_tree_returns_recursive_entries():
 
 
 @pytest.mark.asyncio
+async def test_get_tree_bounded_bounds_entries_and_flags_truncation():
+    """An oversized tree must never come back whole: the model cannot fit it in
+    one turn (run e1e96f90: 18 ``github_get_tree`` results were replaced with a
+    max-tokens error and the writer never learned the repo layout)."""
+    client = _client()
+    tree = {
+        "tree": [
+            {"path": f"docs/page-{index}.md", "type": "blob", "sha": f"s{index}"}
+            for index in range(10)
+        ],
+        "truncated": False,
+    }
+
+    with patch.object(client, "_request", new_callable=AsyncMock, return_value=tree):
+        page = await client.get_tree_bounded("owner", "repo", "main", max_entries=3)
+
+    assert [entry["path"] for entry in page["entries"]] == [
+        "docs/page-0.md",
+        "docs/page-1.md",
+        "docs/page-2.md",
+    ]
+    assert page["truncated"] is True
+
+
+@pytest.mark.asyncio
+async def test_get_tree_bounded_filters_by_path_prefix():
+    """``path_prefix`` narrows the listing to one subtree instead of the repo."""
+    client = _client()
+    tree = {
+        "tree": [
+            {"path": "README.md", "type": "blob", "sha": "a"},
+            {"path": "docs/guide.md", "type": "blob", "sha": "b"},
+            {"path": "docs/api/oauth.md", "type": "blob", "sha": "c"},
+            {"path": "src/app.py", "type": "blob", "sha": "d"},
+        ],
+        "truncated": False,
+    }
+
+    with patch.object(client, "_request", new_callable=AsyncMock, return_value=tree):
+        page = await client.get_tree_bounded("owner", "repo", "main", path_prefix="docs")
+
+    assert [entry["path"] for entry in page["entries"]] == [
+        "docs/guide.md",
+        "docs/api/oauth.md",
+    ]
+    assert page["truncated"] is False
+
+
+@pytest.mark.asyncio
+async def test_get_tree_bounded_walk_prunes_and_caps_within_the_prefix():
+    """A truncated recursive response is completed by walking subtrees, but only
+    the subtrees that can contribute to ``path_prefix``, and the result stays
+    inside the entry budget."""
+    client = _client()
+    root = {
+        "tree": [
+            {"path": "docs", "type": "tree", "sha": "t1"},
+            {"path": "src", "type": "tree", "sha": "t2"},
+        ],
+        "truncated": True,
+    }
+    docs = {
+        "tree": [
+            {"path": "docs/guide.md", "type": "blob", "sha": "b1"},
+            {"path": "docs/api/oauth.md", "type": "blob", "sha": "b2"},
+        ],
+        "truncated": False,
+    }
+    requests: list[str] = []
+
+    async def fake_request(method: str, path: str, **kwargs: object) -> dict:
+        requests.append(path)
+        return root if path.endswith("/trees/main") else docs
+
+    with patch.object(client, "_request", side_effect=fake_request):
+        page = await client.get_tree_bounded(
+            "owner", "repo", "main", path_prefix="docs", max_entries=2
+        )
+
+    assert page["entries"] == [
+        {"path": "docs", "type": "tree", "sha": "t1"},
+        {"path": "docs/guide.md", "type": "blob", "sha": "b1"},
+    ]
+    assert page["truncated"] is True
+    # The src subtree is never fetched: it cannot contribute to "docs".
+    assert not any(path.endswith("/trees/t2") for path in requests)
+
+
+@pytest.mark.asyncio
+async def test_get_tree_bounded_does_not_walk_once_the_budget_is_spent():
+    """The entry budget also stops the subtree walk itself — an already-spent
+    budget must not trigger more GitHub requests."""
+    client = _client()
+    root = {
+        "tree": [
+            {"path": "docs", "type": "tree", "sha": "t1"},
+            {"path": "src", "type": "tree", "sha": "t2"},
+        ],
+        "truncated": True,
+    }
+    requests: list[str] = []
+
+    async def fake_request(method: str, path: str, **kwargs: object) -> dict:
+        requests.append(path)
+        return root
+
+    with patch.object(client, "_request", side_effect=fake_request):
+        page = await client.get_tree_bounded(
+            "owner", "repo", "main", path_prefix="docs", max_entries=1
+        )
+
+    assert page["entries"] == [{"path": "docs", "type": "tree", "sha": "t1"}]
+    assert page["truncated"] is True
+    assert requests == ["/repos/owner/repo/git/trees/main"]
+
+
+@pytest.mark.asyncio
+async def test_get_tree_still_returns_a_plain_list_for_existing_callers():
+    """``get_tree`` keeps its unbounded list contract (sync service, onboarding)."""
+    client = _client()
+    tree = {"tree": [{"path": "README.md", "type": "blob", "sha": "a"}], "truncated": False}
+
+    with patch.object(client, "_request", new_callable=AsyncMock, return_value=tree):
+        result = await client.get_tree("owner", "repo", "main", "token123")
+
+    assert result == [{"path": "README.md", "type": "blob", "sha": "a"}]
+
+
+@pytest.mark.asyncio
 async def test_get_file_contents_returns_decoded_string():
     client = _client()
     import base64
