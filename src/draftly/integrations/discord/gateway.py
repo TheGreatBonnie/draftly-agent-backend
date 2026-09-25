@@ -93,6 +93,7 @@ class DiscordGateway:
                 self._heartbeat_task = asyncio.create_task(
                     self._heartbeat_loop(ws, heartbeat_interval)
                 )
+                self._heartbeat_task.add_done_callback(self._heartbeat_done)
                 # Send Identify
                 await self._send_identify(ws)
 
@@ -146,13 +147,40 @@ class DiscordGateway:
         ws: ClientConnection,
         interval: float,
     ) -> None:
-        """Send heartbeats at the interval specified by the Gateway."""
+        """Send heartbeats at the interval specified by the Gateway.
+
+        A heartbeat that dies on a closed socket must not die **silently**: run
+        e1e96f90 logged a full ``ConnectionClosedError`` traceback under
+        "Task exception was never retrieved" because only ``CancelledError``
+        was handled and nobody ever awaited the task.
+        """
         try:
             while self._running:
                 await asyncio.sleep(interval - HEARTBEAT_INTERVAL_BUFFER)
                 await self._send_heartbeat(ws)
         except asyncio.CancelledError:
             pass
+        except ConnectionClosed as e:
+            logger.warning(
+                "discord_heartbeat_stopped code=%s reason=%s",
+                getattr(e, "code", None),
+                getattr(e, "reason", ""),
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.error("discord_heartbeat_failed error=%s", str(e))
+
+    def _heartbeat_done(self, task: asyncio.Task[None]) -> None:
+        """Retrieve (and log) exceptions from a finished heartbeat task.
+
+        Belt-and-braces: even if a future edit adds a new failure mode to
+        ``_heartbeat_loop``, this callback guarantees asyncio never prints
+        "Task exception was never retrieved" — the exception is always consumed.
+        """
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is not None:
+            logger.warning("discord_heartbeat_task_exception error=%s", str(exc))
 
     async def _send_heartbeat(self, ws: ClientConnection) -> None:
         """Send a heartbeat payload."""
