@@ -29,7 +29,10 @@ from draftly.orchestration.page_workflow.repository import PageWorkflowRepositor
 from draftly.persistence.repositories.drafts import DraftRepository
 from tests.unit.orchestration.page_workflow.test_repository import FakeClient
 
-ORIGINAL_TASK = '{"event_id": "e-1", "event_type": "pull_request.opened"}'
+ORIGINAL_TASK = (
+    '{"event_id": "e-1", "event_type": "pull_request.opened", '
+    '"repository": "acme/api", "pull_request": {"head": {"sha": "abc123"}}}'
+)
 
 IMPACT_WITH_EVIDENCE = {
     "action": "update",
@@ -250,12 +253,13 @@ async def test_seed_threads_repository_into_write_tasks() -> None:
     node, pages, writer_recorder, review_recorder = _wired_node()
     sections = [
         'Original Task: {"event_id": "e-1", "event_type": "pull_request.opened", '
-        '"repository": "TheGreatBonnie/authly"}',
+        '"repository": "TheGreatBonnie/authly", '
+        '"pull_request": {"head": {"sha": "abc123"}}}',
         "Inputs from previous nodes:",
         "From impact:",
         "  - Agent: " + json.dumps(IMPACT_WITH_EVIDENCE),
         "From research:",
-        '  - Agent: ' + json.dumps({"items": [{"id": "docs/widgets.md", "topic": "widgets"}]}),
+        "  - Agent: " + json.dumps({"items": [{"id": "docs/widgets.md", "topic": "widgets"}]}),
     ]
     result = await node.invoke_async(
         [{"text": "\n".join(sections)}],
@@ -266,6 +270,66 @@ async def test_seed_threads_repository_into_write_tasks() -> None:
     tasks = await pages.get_tasks(run_id="run-repo")
     write = next(task for task in tasks if task.task_type == "write")
     assert write.input_data.get("repository") == "TheGreatBonnie/authly"
+
+
+@pytest.mark.parametrize(
+    "repository,head_sha",
+    [("", "abc123"), ("acme/api", "")],
+)
+async def test_pr_writer_rejects_incomplete_source_assignment(
+    repository: str, head_sha: str
+) -> None:
+    node, pages, writer_recorder, _ = _wired_node()
+    event = {
+        "event_id": "e-1",
+        "event_type": "pull_request.opened",
+        "repository": repository,
+        "pull_request": {"head": {"sha": head_sha}},
+    }
+    sections = [
+        "Original Task: " + json.dumps(event),
+        "Inputs from previous nodes:",
+        "From impact:",
+        "  - Agent: " + json.dumps(IMPACT_WITH_EVIDENCE),
+        "From research:",
+        "  - Agent: " + json.dumps({"items": [{"id": "docs/widgets.md", "topic": "widgets"}]}),
+    ]
+
+    result = await node.invoke_async(
+        [{"text": "\n".join(sections)}],
+        invocation_state={"run_id": "run-invalid", "project_id": "org-1"},
+    )
+
+    assert result.status == Status.FAILED
+    assert await pages.get_tasks(run_id="run-invalid") == []
+    assert writer_recorder == []
+
+
+async def test_seed_pins_source_pr_repository_and_sha_in_page_assignment() -> None:
+    node, pages, _, _ = _wired_node()
+    sections = [
+        'Original Task: {"event_id": "e-1", "event_type": "pull_request.opened", '
+        '"repository": "TheGreatBonnie/authly", '
+        '"pull_request": {"head": {"sha": "abc123"}}}',
+        "Inputs from previous nodes:",
+        "From impact:",
+        "  - Agent: " + json.dumps(IMPACT_WITH_EVIDENCE),
+        "From research:",
+        "  - Agent: " + json.dumps({"items": [{"id": "docs/widgets.md", "topic": "widgets"}]}),
+    ]
+    result = await node.invoke_async(
+        [{"text": "\n".join(sections)}],
+        invocation_state={"run_id": "run-pinned", "project_id": "org-1"},
+    )
+
+    assert result.status == Status.COMPLETED
+    tasks = await pages.get_tasks(run_id="run-pinned")
+    for workflow_task in tasks:
+        if workflow_task.task_type not in {"write", "evaluate"}:
+            continue
+        assignment = workflow_task.input_data["task"]
+        assert assignment["repository"] == "TheGreatBonnie/authly"
+        assert assignment["head_sha"] == "abc123"
 
 
 async def test_reentry_is_idempotent_and_reuses_sealed_artifacts() -> None:
@@ -366,12 +430,11 @@ async def test_invalid_impact_fails() -> None:
 
 # -- resume ----------------------------------------------------------------
 
+
 async def test_resume_approve_marks_escalated_pages_passed() -> None:
     node, _, _, _ = _wired_node()
     escalated = await _invoke(node, IMPACT_NO_EVIDENCE, [], "run-h")
-    assert node_data(escalated, "document")["result"]["escalated_page_ids"] == [
-        "docs/widgets.md"
-    ]
+    assert node_data(escalated, "document")["result"]["escalated_page_ids"] == ["docs/widgets.md"]
 
     report = await node.resume("run-h", "approve", "reviewed, looks good")
 

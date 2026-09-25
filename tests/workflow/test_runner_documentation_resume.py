@@ -35,7 +35,8 @@ EVENT = {
     "event_type": "pull_request.opened",
     "source": "github",
     "project_id": "org-1",
-    "pull_request": {"number": 1},
+    "repository": "acme/api",
+    "pull_request": {"number": 1, "head": {"sha": "abc123"}},
 }
 
 
@@ -105,9 +106,7 @@ class _DocReviewGraph:
             _is_new_session=False,
             session_id="draftly-run-1",
             session_repository=SimpleNamespace(
-                read_multi_agent=lambda session_id, graph_id: {
-                    "next_nodes_to_execute": ["review"]
-                }
+                read_multi_agent=lambda session_id, graph_id: {"next_nodes_to_execute": ["review"]}
             ),
         )
         self.invoke_status = invoke_status
@@ -129,9 +128,7 @@ class _PlainGraph:
             _is_new_session=False,
             session_id="draftly-run-1",
             session_repository=SimpleNamespace(
-                read_multi_agent=lambda session_id, graph_id: {
-                    "next_nodes_to_execute": ["review"]
-                }
+                read_multi_agent=lambda session_id, graph_id: {"next_nodes_to_execute": ["review"]}
             ),
         )
 
@@ -154,14 +151,10 @@ async def test_resume_review_approve_delegates_before_outer_resume() -> None:
 
     runner = runner_mod.WorkflowRunner(
         WorkflowContext(),
-        graph_factory=lambda run_id, surface: _RecordingGraph(
-            node, Status.INTERRUPTED
-        ),
+        graph_factory=lambda run_id, surface: _RecordingGraph(node, Status.INTERRUPTED),
         publisher=None,
     )
-    await runner.resume_review(
-        event=dict(EVENT), interrupt_id="int-1", response={"approved": True}
-    )
+    await runner.resume_review(event=dict(EVENT), interrupt_id="int-1", response={"approved": True})
 
     # Delegation ran before the graph resume and accepted the artifacts.
     assert calls == ["graph"]
@@ -174,9 +167,7 @@ async def test_resume_review_reject_delegates_and_fails_pages() -> None:
     await _invoke(node, IMPACT_NO_EVIDENCE, "run-1")
     runner = runner_mod.WorkflowRunner(
         WorkflowContext(),
-        graph_factory=lambda run_id, surface: _DocReviewGraph(
-            node, Status.INTERRUPTED
-        ),
+        graph_factory=lambda run_id, surface: _DocReviewGraph(node, Status.INTERRUPTED),
         publisher=None,
     )
     await runner.resume_review(
@@ -218,9 +209,7 @@ async def test_resume_documentation_request_changes_schedules_revision() -> None
     )
     assert result.passed is False
     tasks = await pages.get_tasks(run_id="run-3")
-    assert any(
-        t.input_data.get("human_guided") and t.artifact_version == 2 for t in tasks
-    )
+    assert any(t.input_data.get("human_guided") and t.artifact_version == 2 for t in tasks)
 
 
 async def test_resume_documentation_is_a_noop_without_escalation() -> None:

@@ -198,6 +198,11 @@ class RolePolicy:
         tool_name: str,
         tool_use: Mapping[str, Any],
     ) -> SteeringDecision:
+        if self.role is AgentRole.WRITER:
+            writer_failure = self._check_writer_assignment(tool_name, tool_use)
+            if writer_failure is not None:
+                rule, reason = writer_failure
+                return _guide(runtime, rule=rule, reason=reason)
         if tool_name in self._all_side_effect_tools:
             failure = self._check_side_effect_scope(runtime, tool_name, tool_use)
             if failure is not None:
@@ -236,6 +241,85 @@ class RolePolicy:
             role=self.role,
             rule="policy:ok",
         )
+
+    @staticmethod
+    def _check_writer_assignment(
+        tool_name: str, tool_use: Mapping[str, Any]
+    ) -> tuple[str, str] | None:
+        # Import lazily: draftly.agents imports the steering factory at package
+        # initialization, so a module-level import would form a cycle.
+        from draftly.agents.documentation.draft_scope import current_draft_scope
+
+        scope = current_draft_scope()
+        if scope is None or scope.assigned_page_id is None:
+            return None
+        expected_repo = scope.repository
+        expected_ref = scope.head_sha
+        github_reads = {"github_read_file", "github_get_tree", "github_search_code"}
+        if tool_name in github_reads:
+            if not expected_repo:
+                return (
+                    "writer:repository",
+                    "This page has no assigned repository. Stop GitHub reads "
+                    "and report the missing assignment.",
+                )
+            actual_repo = f"{tool_use.get('owner')}/{tool_use.get('repo')}"
+            if actual_repo != expected_repo:
+                return (
+                    "writer:repository",
+                    f"This page belongs to {expected_repo} at PR head SHA "
+                    f"{expected_ref or '(unavailable)'}. Retry that repository only.",
+                )
+            if tool_name == "github_search_code":
+                return (
+                    "writer:unpinned-search",
+                    f"GitHub code search cannot target pinned SHA {expected_ref}; "
+                    "read exact files or a narrow tree instead.",
+                )
+            if (
+                tool_name != "github_search_code"
+                and expected_ref
+                and tool_use.get("ref") != expected_ref
+            ):
+                return (
+                    "writer:ref",
+                    f"Read {expected_repo} at PR head SHA {expected_ref}, not a branch.",
+                )
+            budget = scope.read_budget
+            if budget is not None:
+                if tool_name == "github_read_file":
+                    parts = (
+                        tool_use.get("owner"),
+                        tool_use.get("repo"),
+                        tool_use.get("path"),
+                        tool_use.get("ref"),
+                    )
+                elif tool_name == "github_get_tree":
+                    prefix = tool_use.get("path_prefix")
+                    prefix = prefix.strip().strip("/") or None if isinstance(prefix, str) else None
+                    parts = (
+                        tool_use.get("owner"),
+                        tool_use.get("repo"),
+                        tool_use.get("ref"),
+                        prefix,
+                    )
+                else:
+                    parts = (tool_use.get("owner"), tool_use.get("repo"), tool_use.get("query"))
+                failure = budget.failure((tool_name, *(str(part) for part in parts)))
+                if failure:
+                    return "writer:read-budget", failure
+        if tool_name == "start_draft":
+            if expected_repo and tool_use.get("repository") != expected_repo:
+                return (
+                    "writer:draft-repository",
+                    f"Start the draft for assigned repository {expected_repo}.",
+                )
+            if tool_use.get("path") != scope.assigned_page_id:
+                return (
+                    "writer:draft-path",
+                    f"Draft only assigned page {scope.assigned_page_id}.",
+                )
+        return None
 
     def _evaluate_model(
         self,

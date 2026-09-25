@@ -11,7 +11,7 @@ Layout (plan §6.1)::
                              │                              │ ▲
                              └─(escalated)──► deliver         └─(changelog_needs_revision)─┘
     impact ─(none + release)─► changelog ─────────────────────┘
-    impact ─(pull_request_opened)─► notify ─► notify_post                 (parallel branch)
+    impact ─(pull_request_opened)─► notify_post                           (parallel branch)
 
 Deviations from the plan, forced by strands-agents behavior and the durable
 page workflow:
@@ -54,6 +54,7 @@ from draftly.orchestration.graphs.tool_scoping import (
 from draftly.orchestration.graphs.tool_scoping import (
     scope_writer_tools as _scope_writer_tools,
 )
+from draftly.orchestration.graphs.tool_scoping import tool_name as _tool_name
 from draftly.orchestration.hooks.audit import RunAuditLogger
 from draftly.orchestration.hooks.draft_generation import NextGenerationHook
 from draftly.orchestration.hooks.review_gate import ReviewGate
@@ -174,7 +175,6 @@ def build_documentation_graph(
     from draftly.agents.documentation.research_swarm import build_doc_research_swarm
     from draftly.agents.documentation.reviewer import build_review_agent
     from draftly.agents.documentation.writer import WriterFactory, build_writer_agent
-    from draftly.agents.notify import build_notify_agent
     from draftly.agents.shared.classifier import build_classifier
     from draftly.agents.shared.delivery import build_delivery_agent
     from draftly.agents.support.answer_writer import build_answer_writer
@@ -300,15 +300,6 @@ def build_documentation_graph(
         agent_id="documentation.impact",
         node_id="impact",
     )
-    notify_model = resolve_model_for_role(model, "notify")
-    notify_builder = getattr(registry, "notify_agent", None) or build_notify_agent
-    notify_agent = notify_builder(
-        notify_model,
-        [],
-        runtime=steering_runtime,
-        agent_id="documentation.notify",
-        node_id="notify",
-    )
     answer_builder = getattr(registry, "answer_writer", None) or build_answer_writer
     answer_agent = answer_builder(
         support_model,
@@ -329,9 +320,26 @@ def build_documentation_graph(
         # it updates, so give it the read-only GitHub-API repo tools. Without a
         # read path it looped calling unregistered read_file / list_files until
         # the graph killed it (run d7cfb2a0).
-        writer_repo_tools = _dedupe(
-            writer_repo_tools, _scope_read_only_tools(reg.github_intelligence)
-        )
+        # Research and impact already gathered diff/search evidence. Keep the
+        # page writer focused on reading exact files at the pinned PR commit;
+        # a broad search tool let one response request hundreds of searches.
+        allowed_writer_reads = {
+            "analyze_structure",
+            "extract_frontmatter",
+            "extract_links",
+            "find_section",
+            "generate_toc",
+            "markdown_to_text",
+            "split_sections",
+            "validate_links",
+            "github_read_file",
+            "github_get_tree",
+        }
+        writer_repo_tools = [
+            tool
+            for tool in _dedupe(writer_repo_tools, _scope_read_only_tools(reg.github_intelligence))
+            if _tool_name(tool) in allowed_writer_reads
+        ]
     writer_tools = _dedupe(writer_repo_tools, [start_draft, append_chunk, finalize_draft])
     writer_builder = getattr(registry, "writer_agent", None) or build_writer_agent
     writer_factory = WriterFactory(
@@ -386,9 +394,7 @@ def build_documentation_graph(
     else:
         # Offline fixtures: no durable workflow. The node fails fast rather
         # than reporting phantom sealed pages.
-        document_node = DocumentationWorkflowNode(
-            "document", repository=None, handlers=None
-        )
+        document_node = DocumentationWorkflowNode("document", repository=None, handlers=None)
 
     delivery_builder = getattr(registry, "delivery_agent", None) or build_delivery_agent
     delivery_agent = delivery_builder(
@@ -453,9 +459,7 @@ def build_documentation_graph(
     builder.add_node(research_swarm, "research")
     builder.add_edge("context", "research")
 
-    research_failed = bool(
-        research_plan is not None and getattr(research_plan, "failure", None)
-    )
+    research_failed = bool(research_plan is not None and getattr(research_plan, "failure", None))
 
     # Impact analysis. When research fails fast (missing mandatory capability)
     # the research edge is omitted: impact then has no in-edges and is never
@@ -475,18 +479,14 @@ def build_documentation_graph(
     # is only ever scheduled on a write.
     builder.add_edge("research", "document", condition=route_to_write)
 
-    # PR notify: a parallel branch off impact. The notify LLM composes the
-    # comment (draft-only, no tools); the deterministic notify_post node posts
-    # it. Runs for pull_request.opened events only — releases that route to
-    # this graph are excluded by the condition.
+    # PR notify: post the impact result directly so the comment cannot drift
+    # from the actual page plan. Runs only for pull_request.opened events.
     notify_post = NotifyPostNode(
         "notify_post",
         comment_factory=comment_factory,
     )
-    builder.add_node(notify_agent, "notify")
     builder.add_node(notify_post, "notify_post")
-    builder.add_edge("impact", "notify", condition=pull_request_opened)
-    builder.add_edge("notify", "notify_post")
+    builder.add_edge("impact", "notify_post", condition=pull_request_opened)
 
     # Answer quality gate with a bounded revision loop. The unconditional
     # answer edge schedules the gate; research supplies the evidence the

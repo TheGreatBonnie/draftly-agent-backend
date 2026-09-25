@@ -7,12 +7,7 @@ from pathlib import Path
 
 from draftly.agents.prompts import load_skills
 
-SKILLS_DIR = (
-    Path(__file__).resolve().parents[3]
-    / "src"
-    / "draftly"
-    / "skills"
-)
+SKILLS_DIR = Path(__file__).resolve().parents[3] / "src" / "draftly" / "skills"
 
 
 def _markdown(name: str) -> str:
@@ -32,15 +27,14 @@ def test_github_pr_analysis_mentions_local_mode() -> None:
     assert "local mode" in flat or "LOCAL mode" in flat
     assert "task context" in flat  # diff already provided in local mode
 
+
 def test_impact_agent_loads_pr_analysis_and_research_skills() -> None:
     from draftly.agents.documentation.analyzer import build_impact_agent
     from draftly.app.composition.tools import build_tools
     from tests.stub_model import StubModel
 
     tools = build_tools()
-    agent = build_impact_agent(
-        StubModel(), [tools.semantic_search, tools.keyword_search]
-    )
+    agent = build_impact_agent(StubModel(), [tools.semantic_search, tools.keyword_search])
 
     assert _loaded_skill_names(agent) == {
         "github-pr-analysis",
@@ -82,9 +76,7 @@ def test_documentation_research_skill_advertises_no_local_repo_tools() -> None:
     )
     assert allowed <= {"semantic_search", "keyword_search", "hybrid_search"}
 
-    text = (SKILLS_DIR / "documentation-research" / "SKILL.md").read_text(
-        encoding="utf-8"
-    )
+    text = (SKILLS_DIR / "documentation-research" / "SKILL.md").read_text(encoding="utf-8")
     assert "read_file" not in text.replace("github_read_file", ""), (
         "documentation-research steps must not name read_file"
     )
@@ -152,6 +144,17 @@ def test_writer_skills_name_no_grounding_specific_tool() -> None:
             f"{name} names grounding-specific tools {sorted(named)}; describe "
             "the run's registered tools instead"
         )
+
+
+def test_writer_skills_match_page_scoped_draft_contract() -> None:
+    for name in ("documentation-update", "documentation-generation"):
+        text = _markdown(name)
+        output = text.split("## Output", 1)[1].split("## References", 1)[0]
+        assert "one assigned page" in output
+        assert "metadata only" in output
+        assert "append_chunk" in output
+        assert "finalize_draft" in output
+        assert "files[{path, content" not in output
 
 
 def test_github_delivery_skill_commits_to_source_pr() -> None:

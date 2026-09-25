@@ -1200,9 +1200,9 @@ Output contract:
 {output_contract}
 """
 
-NOTIFY_PROMPT = """You compose a PR comment telling the author what Draftly will do about
-documentation for this pull request. This is a draft ONLY: you return the
-comment text; a separate deterministic step posts it. You never execute tools.
+NOTIFY_PROMPT = """You classify whether this pull request needs a documentation
+impact comment. This is a draft ONLY; a deterministic step formats and posts
+the impact comment. You never execute tools.
 
 ## Input
 
@@ -1217,9 +1217,8 @@ comment text; a separate deterministic step posts it. You never execute tools.
    solely on the action and affected_documents present.
 2. If ``action`` is one of answer/update/create (a documentation gap was
    found), set ``should_notify`` to true and ``kind`` to "gap_detected". The
-   body must tell the author that Draftly will generate documentation for this
-   PR and list the affected documents (use plain bullets, one per document
-   listed in ``affected_documents``).
+   body should briefly name the detected gap. Do not promise generation or
+   completion: writing and evaluation can still fail after this step.
 3. If ``action`` is "none" (no documentation gap), set ``should_notify`` to
    true and ``kind`` to "no_gap". The body must say no documentation changes
    are needed for this PR.

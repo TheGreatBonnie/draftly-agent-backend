@@ -137,13 +137,9 @@ async def test_start_draft_returns_draft_id(repo: _FakeRepo, scoped_run: None) -
 async def test_start_draft_persists_page_workflow_artifact_version(
     repo: _FakeRepo,
 ) -> None:
-    token = set_draft_scope(
-        DraftScope(run_id="run-1", org_id="org-1", generation=2, version=4)
-    )
+    token = set_draft_scope(DraftScope(run_id="run-1", org_id="org-1", generation=2, version=4))
     try:
-        result = await start_draft(
-            repository="acme/api", path="docs/a.md", action="update"
-        )
+        result = await start_draft(repository="acme/api", path="docs/a.md", action="update")
     finally:
         reset_draft_scope(token)
 
@@ -162,9 +158,70 @@ async def test_page_scoped_start_draft_rejects_sibling_path(repo: _FakeRepo) -> 
     )
     try:
         with pytest.raises(ValueError, match="assigned page"):
-            await start_draft(
-                repository="acme/api", path="docs/b.md", action="update"
-            )
+            await start_draft(repository="acme/api", path="docs/b.md", action="update")
+    finally:
+        reset_draft_scope(token)
+
+
+async def test_page_scoped_start_draft_rejects_other_repository(repo: _FakeRepo) -> None:
+    token = set_draft_scope(
+        DraftScope(
+            run_id="run-1",
+            org_id="org-1",
+            generation=1,
+            assigned_page_id="docs/a.md",
+            repository="acme/api",
+        )
+    )
+    try:
+        with pytest.raises(ValueError, match="acme/api"):
+            await start_draft(repository="acme/other", path="docs/a.md", action="update")
+    finally:
+        reset_draft_scope(token)
+    assert not repo.revisions
+
+
+async def test_page_scoped_start_draft_rejects_missing_repository_assignment(
+    repo: _FakeRepo,
+) -> None:
+    token = set_draft_scope(
+        DraftScope(
+            run_id="run-1",
+            org_id="org-1",
+            generation=1,
+            assigned_page_id="docs/a.md",
+        )
+    )
+    try:
+        with pytest.raises(ValueError, match="no assigned repository"):
+            await start_draft(repository="acme/api", path="docs/a.md", action="update")
+    finally:
+        reset_draft_scope(token)
+    assert not repo.revisions
+
+
+async def test_draft_tools_track_progress_for_writer_resume(repo: _FakeRepo) -> None:
+    from draftly.agents.documentation.draft_scope import DraftProgress
+
+    progress = DraftProgress()
+    token = set_draft_scope(
+        DraftScope(
+            run_id="run-1",
+            org_id="org-1",
+            generation=1,
+            assigned_page_id="docs/a.md",
+            repository="acme/api",
+            progress=progress,
+        )
+    )
+    try:
+        started = await start_draft("acme/api", "docs/a.md", "create")
+        assert progress.draft_id == started["draft_id"]
+        assert progress.chunks == 0
+        await append_chunk(started["draft_id"], "# OAuth\n\nGrounded content")
+        assert progress.chunks == 1
+        await finalize_draft(started["draft_id"])
+        assert progress.sealed is True
     finally:
         reset_draft_scope(token)
 
@@ -172,13 +229,9 @@ async def test_page_scoped_start_draft_rejects_sibling_path(repo: _FakeRepo) -> 
 async def test_page_scoped_append_and_finalize_reject_sibling_draft(
     repo: _FakeRepo,
 ) -> None:
-    legacy_token = set_draft_scope(
-        DraftScope(run_id="run-1", org_id="org-1", generation=1)
-    )
+    legacy_token = set_draft_scope(DraftScope(run_id="run-1", org_id="org-1", generation=1))
     try:
-        sibling = await start_draft(
-            repository="acme/api", path="docs/b.md", action="update"
-        )
+        sibling = await start_draft(repository="acme/api", path="docs/b.md", action="update")
     finally:
         reset_draft_scope(legacy_token)
 
@@ -245,26 +298,20 @@ async def test_append_chunk_rejects_empty(repo: _FakeRepo, scoped_run: None) -> 
         await append_chunk(started["draft_id"], "")
 
 
-async def test_append_chunk_rejects_empty_draft_id(
-    repo: _FakeRepo, scoped_run: None
-) -> None:
+async def test_append_chunk_rejects_empty_draft_id(repo: _FakeRepo, scoped_run: None) -> None:
     """Strands parse-drops truncated tool JSON to {} — the draft_id arrives ""."""
     with pytest.raises(ValueError, match="draft_id"):
         await append_chunk("", "content")
 
 
-async def test_start_draft_rejects_empty_repository(
-    repo: _FakeRepo, scoped_run: None
-) -> None:
+async def test_start_draft_rejects_empty_repository(repo: _FakeRepo, scoped_run: None) -> None:
     from draftly.tools._guard import EmptyToolInputError
 
     with pytest.raises(EmptyToolInputError, match="repository"):
         await start_draft(repository="", path="docs/a.md", action="update")
 
 
-async def test_append_chunk_rejects_chunk_size_mismatch(
-    repo: _FakeRepo, scoped_run: None
-) -> None:
+async def test_append_chunk_rejects_chunk_size_mismatch(repo: _FakeRepo, scoped_run: None) -> None:
     started = await start_draft(repository="acme/api", path="docs/a.md", action="update")
     with pytest.raises(ValueError, match="chunk_size"):
         await append_chunk(started["draft_id"], "hello", chunk_size=4)
@@ -294,9 +341,7 @@ async def test_finalize_unknown_draft(repo: _FakeRepo, scoped_run: None) -> None
         await finalize_draft("nope")
 
 
-async def test_finalize_rejects_empty_draft_id(
-    repo: _FakeRepo, scoped_run: None
-) -> None:
+async def test_finalize_rejects_empty_draft_id(repo: _FakeRepo, scoped_run: None) -> None:
     with pytest.raises(ValueError, match="draft_id"):
         await finalize_draft("")
 

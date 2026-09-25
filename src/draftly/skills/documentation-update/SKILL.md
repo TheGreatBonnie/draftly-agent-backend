@@ -20,7 +20,8 @@ Modify existing documentation to stay accurate with the codebase.
    (see Repository context below).
 3. Apply minimal, surgical edits — do not rewrite untouched sections.
 4. Re-validate frontmatter and links afterward.
-5. Produce a `DocChangePlan` with the modified files.
+5. Stream the assigned page through `start_draft`, `append_chunk`, and
+   `finalize_draft`; then produce a `DocChangePlan` describing that page.
 
 ## Guidelines
 
@@ -34,16 +35,15 @@ Modify existing documentation to stay accurate with the codebase.
   for the same path, then write the content the task requires. Do not retry the
   read, do not guess the file's previous contents, and do not return an empty
   plan.
-- When several pages are affected, produce one plan with multiple files and a
-  single commit message — not one plan per page.
+- Each writer invocation owns one page. Do not draft sibling pages.
 
 ## Repository context (important)
 
-- Your callable tools are exactly those listed in your task's toolset list:
-  this skill's `allowed-tools`, the run's registered read-only repository
-  tools, the PR surface tools the run registers (`get_diff`, `get_files`,
-  `affected_docs`) and the draft tools. **Never call a tool that is not
-  registered** — the call fails and only wastes your turn budget.
+- Your callable tools are exactly those listed in your task's toolset list.
+  **Never call a tool that is not registered** — the call fails and wastes
+  the budget needed to finish the page.
+- For a pull request, read only the assigned repository at its stated PR head
+  SHA. Use the supplied evidence before requesting another repository read.
 - Do not assume a filesystem. A pull-request run has no local checkout, while an
   evaluation run reads a checkout; both expose their repository reads through
   the read tools named in your toolset list. Decide what exists from that list,
@@ -54,9 +54,9 @@ Modify existing documentation to stay accurate with the codebase.
 
 ## Output
 
-A `DocChangePlan` (`repository`, `branch`, `files[{path, content,
-action: "update"}]`, `commit_message`, `summary`) limited to the sections
-that actually changed.
+Produce a `DocChangePlan` for one assigned page. Its `files` entry is metadata only:
+`{path, action}`. Put the Markdown body only through `append_chunk` and call
+`finalize_draft` before returning the plan. Never inline file content in the plan.
 
 ## References
 

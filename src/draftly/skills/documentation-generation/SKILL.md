@@ -22,7 +22,8 @@ project's conventions.
    body sections, and related links.
 4. Validate frontmatter with `extract_frontmatter` and links with
    `validate_links`.
-5. Produce a `DocChangePlan` with the file path, content, and commit message.
+5. Stream the assigned page through the draft tools, then produce a
+   `DocChangePlan` with its path and action.
 
 ## Guidelines
 
@@ -36,11 +37,10 @@ project's conventions.
 
 ## Repository context (important)
 
-- Call only the tools named in your task's toolset list: this skill's
-  `allowed-tools`, the run's registered read-only repository tools, and — for
-  repository context — the PR surface tools the run registers (`get_diff`,
-  `get_files`, `affected_docs`). **Never call a tool that is missing from that
-  list** — it is not registered in this run and the call fails.
+- Call only the tools named in your task's toolset list. **Never call a tool
+  missing from that list** — it is not registered in this run and the call fails.
+- For a pull request, read only the assigned repository at its stated PR head
+  SHA. Use the supplied evidence before requesting another repository read.
 - Do not assume a filesystem. A pull-request run has no local checkout, while an
   evaluation run reads a checkout; both expose their repository reads through
   the read tools named in your toolset list. Decide what exists from that list,
@@ -61,9 +61,9 @@ project's conventions.
 
 ## Output
 
-A `DocChangePlan` (`repository`, `branch`, `files[{path, content,
-action: "create"}]`, `commit_message`, `summary`) — one plan per topic, even
-if it creates multiple files.
+Produce a `DocChangePlan` for one assigned page. Its `files` entry is metadata only:
+`{path, action}`. Put the Markdown body only through `append_chunk` and call
+`finalize_draft` before returning the plan. Never inline file content in the plan.
 
 ## References
 

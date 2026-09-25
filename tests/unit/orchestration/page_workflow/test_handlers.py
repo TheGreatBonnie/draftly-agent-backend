@@ -135,8 +135,7 @@ class _Drafts:
 
     async def get_latest(self, *, run_id: str) -> list[Any]:
         return [
-            await self.get_path_latest(run_id=run_id, path=path)
-            for path in sorted(self.artifacts)
+            await self.get_path_latest(run_id=run_id, path=path) for path in sorted(self.artifacts)
         ]
 
 
@@ -391,6 +390,58 @@ async def test_initial_writer_receives_one_page_and_only_its_evidence() -> None:
     ]
 
 
+async def test_writer_prompt_names_pinned_repository_and_sha() -> None:
+    page = _page_task().model_copy(
+        update={"repository": "TheGreatBonnie/authly", "head_sha": "abc123"}
+    )
+    drafts = _Drafts([_artifact()])
+    pages = _Pages([_state(page.id)])
+    factory = _WriterFactory()
+    handler = PageWriterHandler(writer_factory=factory, drafts_repo=drafts, page_repository=pages)
+
+    await handler(_task(task_type="write", input_data={"task": page.model_dump()}))
+
+    prompt = factory.agents[0].prompts[0]
+    assert "TheGreatBonnie/authly" in prompt
+    assert "abc123" in prompt
+
+
+async def test_writer_invocation_scopes_github_target_and_read_budget() -> None:
+    from draftly.agents.documentation.draft_scope import current_draft_scope
+
+    class _ScopedAgent(_Agent):
+        observed: tuple[str | None, str | None, int | None] | None = None
+
+        async def invoke_async(self, prompt: str, invocation_state=None, **kwargs):
+            scope = current_draft_scope()
+            self.observed = (
+                scope.repository,
+                scope.head_sha,
+                scope.read_budget.max_calls if scope.read_budget else None,
+            )
+            return await super().invoke_async(prompt, invocation_state, **kwargs)
+
+    class _ScopedFactory(_WriterFactory):
+        def create(self, task: DocumentationTask) -> _Agent:
+            self.created_for.append(task)
+            agent = _ScopedAgent()
+            self.agents.append(agent)
+            return agent
+
+    page = _page_task().model_copy(update={"repository": "acme/api", "head_sha": "abc123"})
+    factory = _ScopedFactory()
+    handler = PageWriterHandler(
+        writer_factory=factory,
+        drafts_repo=_Drafts([_artifact()]),
+        page_repository=_Pages([_state(page.id)]),
+    )
+
+    await handler(_task(task_type="write", input_data={"task": page.model_dump()}))
+
+    assert factory.agents[0].observed == ("acme/api", "abc123", 8)
+    assert current_draft_scope() is None
+
+
 async def test_writer_forwards_strands_limits_to_invoke_async() -> None:
     """The handler must surface configured Strands limits to the writer agent
     so an unbounded loop stops at a deterministic cap instead of relying on
@@ -407,9 +458,7 @@ async def test_writer_forwards_strands_limits_to_invoke_async() -> None:
         limits={"turns": 3, "output_tokens": 500},
     )
 
-    await handler(
-        _task(task_type="write", input_data={"task": page.model_dump()})
-    )
+    await handler(_task(task_type="write", input_data={"task": page.model_dump()}))
 
     assert factory.agents[0].kwargs[0]["limits"] == {
         "turns": 3,
@@ -429,9 +478,7 @@ async def test_writer_omits_limits_kwarg_when_unset() -> None:
         page_repository=pages,
     )
 
-    await handler(
-        _task(task_type="write", input_data={"task": page.model_dump()})
-    )
+    await handler(_task(task_type="write", input_data={"task": page.model_dump()}))
 
     assert "limits" not in factory.agents[0].kwargs[0]
 
@@ -456,16 +503,29 @@ async def test_writer_resumes_once_after_a_max_tokens_truncation() -> None:
         page_repository=pages,
     )
 
-    output = await handler(
-        _task(task_type="write", input_data={"task": page.model_dump()})
-    )
+    output = await handler(_task(task_type="write", input_data={"task": page.model_dump()}))
 
     agent = factory.agents[0]
     assert len(agent.prompts) == 2, "the writer must be resumed exactly once"
     assert "cut off" in agent.prompts[1]
     assert page.path in agent.prompts[1]
+    assert "start_draft" in agent.prompts[1]
     assert output["artifact_id"] == artifact.artifact_id
     assert pages.recorded_artifacts[0]["artifact_id"] == artifact.artifact_id
+
+
+async def test_writer_resume_keeps_pinned_source_target() -> None:
+    page = _page_task().model_copy(update={"repository": "acme/api", "head_sha": "abc123"})
+    drafts = _Drafts([_artifact()])
+    pages = _Pages([_state(page.id)])
+    factory = _TruncatingFactory(failures=1)
+    handler = PageWriterHandler(writer_factory=factory, drafts_repo=drafts, page_repository=pages)
+
+    await handler(_task(task_type="write", input_data={"task": page.model_dump()}))
+
+    resume = factory.agents[0].prompts[1]
+    assert "acme/api" in resume
+    assert "abc123" in resume
 
 
 async def test_writer_resume_keeps_the_same_invocation_context_and_limits() -> None:
@@ -669,10 +729,9 @@ async def test_create_write_skips_existing_content_hydration() -> None:
 async def test_writer_replay_reuses_sealed_expected_artifact_without_agent_call() -> None:
     page = _page_task()
     artifact = _artifact()
+
     class _ReplayDrafts(_Drafts):
-        async def prepare_versioned_write(
-            self, *, run_id: str, path: str, version: int
-        ) -> Any:
+        async def prepare_versioned_write(self, *, run_id: str, path: str, version: int) -> Any:
             return await self.get_path_latest(run_id=run_id, path=path)
 
     drafts = _ReplayDrafts([artifact])
@@ -684,9 +743,7 @@ async def test_writer_replay_reuses_sealed_expected_artifact_without_agent_call(
         page_repository=pages,
     )
 
-    output = await handler(
-        _task(task_type="write", input_data={"task": page.model_dump()})
-    )
+    output = await handler(_task(task_type="write", input_data={"task": page.model_dump()}))
 
     assert factory.created_for == []
     assert output["artifact_id"] == artifact.artifact_id
@@ -813,18 +870,14 @@ async def test_newer_artifact_promotion_after_evaluation_cannot_be_overwritten()
                 status="evaluating",
             )
 
-    pages = _InterleavingPages(
-        [_state(page.id, status="evaluating", artifact=first)]
-    )
+    pages = _InterleavingPages([_state(page.id, status="evaluating", artifact=first)])
     handler = PageEvaluatorHandler(
         rubric_grader=_Grader(),
         drafts_repo=_Drafts([first]),
         page_repository=pages,
     )
 
-    await handler(
-        _task(task_type="evaluate", input_data=_evaluation_input(page, attempt=1))
-    )
+    await handler(_task(task_type="evaluate", input_data=_evaluation_input(page, attempt=1)))
 
     state = pages.states[page.id]
     assert state.latest_artifact_id == second.artifact_id
@@ -888,7 +941,7 @@ async def test_review_scheduling_replay_deduplicates_same_artifact_snapshot() ->
 
 
 async def test_failing_attempt_one_schedules_only_version_two_pair() -> None:
-    page = _page_task()
+    page = _page_task().model_copy(update={"repository": "acme/api", "head_sha": "abc123"})
     artifact = _artifact(content="# OAuth\n\nToo short.")
     pages = _Pages([_state(page.id, status="evaluating", artifact=artifact)])
     handler = PageEvaluatorHandler(
@@ -907,14 +960,14 @@ async def test_failing_attempt_one_schedules_only_version_two_pair() -> None:
         "evaluate:docs/oauth.md:2",
     ]
     assert pages.enqueued[1]["dependencies"] == ["write:docs/oauth.md:2"]
+    assert pages.enqueued[0]["input_data"]["task"]["repository"] == "acme/api"
+    assert pages.enqueued[0]["input_data"]["task"]["head_sha"] == "abc123"
 
 
 async def test_failing_attempt_three_escalates_without_automatic_write() -> None:
     page = _page_task()
     artifact = _artifact(version=3, content="# OAuth\n\nStill too short.")
-    pages = _Pages(
-        [_state(page.id, status="evaluating", artifact=artifact, attempt=2)]
-    )
+    pages = _Pages([_state(page.id, status="evaluating", artifact=artifact, attempt=2)])
     handler = PageEvaluatorHandler(
         rubric_grader=_Grader(["Still incomplete"]),
         drafts_repo=_Drafts([artifact]),
@@ -1089,16 +1142,12 @@ async def test_cross_page_review_schedules_only_implicated_pages() -> None:
         "write:docs/b.md:2",
         "evaluate:docs/b.md:2",
     ]
-    assert pages.enqueued[0]["input_data"]["reviewer_instructions"] == [
-        "Use one term consistently"
-    ]
+    assert pages.enqueued[0]["input_data"]["reviewer_instructions"] == ["Use one term consistently"]
 
 
 async def test_cross_page_review_replay_reuses_correction_pair() -> None:
     artifact = _artifact()
-    pages = _Pages(
-        [_state(artifact.page_id, status="passed", artifact=artifact, attempt=1)]
-    )
+    pages = _Pages([_state(artifact.page_id, status="passed", artifact=artifact, attempt=1)])
     reviewer = _Reviewer(
         ReviewVerdict(
             verdict="correct",
@@ -1152,9 +1201,7 @@ async def test_cross_page_review_validates_all_corrections_before_mutating() -> 
     verdict = SimpleNamespace(
         verdict="correct",
         corrections=[
-            SimpleNamespace(
-                task_id="docs/a.md", path="docs/a.md", instructions=["valid"]
-            ),
+            SimpleNamespace(task_id="docs/a.md", path="docs/a.md", instructions=["valid"]),
             SimpleNamespace(
                 task_id="docs/ghost.md",
                 path="docs/ghost.md",
@@ -1177,9 +1224,7 @@ async def test_cross_page_review_validates_all_corrections_before_mutating() -> 
 
 async def test_cross_page_correction_cannot_create_attempt_four() -> None:
     artifact = _artifact()
-    pages = _Pages(
-        [_state(artifact.page_id, status="passed", artifact=artifact, attempt=3)]
-    )
+    pages = _Pages([_state(artifact.page_id, status="passed", artifact=artifact, attempt=3)])
     reviewer = _Reviewer(
         ReviewVerdict(
             verdict="correct",

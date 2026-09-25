@@ -72,7 +72,6 @@ EXPECTED_ROLES: dict[str, set[str]] = {
         "github_delivery",
         "github_intelligence",
         "documentation_reviewer",
-        "notify",
     },
     "support": {
         "classifier",

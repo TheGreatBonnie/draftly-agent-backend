@@ -4,10 +4,16 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from draftly.steering.context import RuntimeScope, SteeringRuntime, SteeringRuntimeConfig
-from draftly.steering.decisions import AgentRole, DecisionKind, SteeringPhase
-from draftly.steering.policy import FailureMode, RolePolicy, policy_for
+from draftly.agents.documentation.draft_scope import (
+    DraftScope,
+    WriterReadBudget,
+    reset_draft_scope,
+    set_draft_scope,
+)
 from draftly.steering import policy as policy_module
+from draftly.steering.context import RuntimeScope, SteeringRuntime, SteeringRuntimeConfig
+from draftly.steering.decisions import AgentRole, DecisionKind
+from draftly.steering.policy import FailureMode, policy_for
 
 CHECKOUT = "/tmp/checkout"
 
@@ -145,6 +151,106 @@ def test_writer_proceeds_when_evidence_present():
     assert decision.kind is DecisionKind.PROCEED
 
 
+def test_writer_steering_guides_wrong_github_target() -> None:
+    runtime = _readonly_runtime(AgentRole.WRITER)
+    token = set_draft_scope(
+        DraftScope(
+            run_id="run-1",
+            org_id="org-1",
+            generation=1,
+            assigned_page_id="docs/oauth.md",
+            repository="acme/api",
+            head_sha="abc123",
+        )
+    )
+    try:
+        decision = policy_for(AgentRole.WRITER).evaluate_tool(
+            runtime=runtime,
+            tool_name="github_read_file",
+            tool_use={"owner": "acme", "repo": "other", "ref": "main", "path": "src/oauth.py"},
+        )
+    finally:
+        reset_draft_scope(token)
+    assert decision.kind is DecisionKind.GUIDE
+    assert "acme/api" in decision.reason
+    assert "abc123" in decision.reason
+
+
+def test_writer_steering_guides_wrong_draft_repository() -> None:
+    runtime = _readonly_runtime(AgentRole.WRITER)
+    token = set_draft_scope(
+        DraftScope(
+            run_id="run-1",
+            org_id="org-1",
+            generation=1,
+            assigned_page_id="docs/oauth.md",
+            repository="acme/api",
+            head_sha="abc123",
+        )
+    )
+    try:
+        decision = policy_for(AgentRole.WRITER).evaluate_tool(
+            runtime=runtime,
+            tool_name="start_draft",
+            tool_use={"repository": "acme/other", "path": "docs/oauth.md", "action": "create"},
+        )
+    finally:
+        reset_draft_scope(token)
+    assert decision.kind is DecisionKind.GUIDE
+    assert "acme/api" in decision.reason
+
+
+def test_writer_steering_guides_repeated_github_read() -> None:
+    runtime = _readonly_runtime(AgentRole.WRITER)
+    budget = WriterReadBudget(max_calls=2)
+    budget.reserve(("github_read_file", "acme", "api", "src/oauth.py", "abc123"))
+    token = set_draft_scope(
+        DraftScope(
+            run_id="run-1",
+            org_id="org-1",
+            generation=1,
+            assigned_page_id="docs/oauth.md",
+            repository="acme/api",
+            head_sha="abc123",
+            read_budget=budget,
+        )
+    )
+    try:
+        decision = policy_for(AgentRole.WRITER).evaluate_tool(
+            runtime=runtime,
+            tool_name="github_read_file",
+            tool_use={"owner": "acme", "repo": "api", "ref": "abc123", "path": "src/oauth.py"},
+        )
+    finally:
+        reset_draft_scope(token)
+    assert decision.kind is DecisionKind.GUIDE
+    assert "already read" in decision.reason
+
+
+def test_writer_steering_guides_unpinned_github_search() -> None:
+    runtime = _readonly_runtime(AgentRole.WRITER)
+    token = set_draft_scope(
+        DraftScope(
+            run_id="run-1",
+            org_id="org-1",
+            generation=1,
+            assigned_page_id="docs/oauth.md",
+            repository="acme/api",
+            head_sha="abc123",
+        )
+    )
+    try:
+        decision = policy_for(AgentRole.WRITER).evaluate_tool(
+            runtime=runtime,
+            tool_name="github_search_code",
+            tool_use={"owner": "acme", "repo": "api", "query": "OAuthClient"},
+        )
+    finally:
+        reset_draft_scope(token)
+    assert decision.kind is DecisionKind.GUIDE
+    assert "pinned" in decision.reason
+
+
 def test_model_guide_when_content_filtered():
     runtime = _readonly_runtime(AgentRole.WRITER)
     decision = policy_for(AgentRole.WRITER).evaluate_model(
@@ -229,14 +335,17 @@ def test_research_policy_is_read_only_with_open_failure():
 
 
 def _readonly_runtime(role: AgentRole) -> SteeringRuntime:
-    return SteeringRuntime(
-        scope=RuntimeScope(
-            run_id="run-2",
-            surface="pull_request",
-            org_id="org-1",
-            project_id="project-1",
-            repo_checkout_root=CHECKOUT,
-        ),
-        config=SteeringRuntimeConfig(enabled=True, enforcement_enabled=True),
-        attempts=FakeAttempts(),
-    ).for_agent(agent_id="agent-2", node_id="node-2", role=role) or None
+    return (
+        SteeringRuntime(
+            scope=RuntimeScope(
+                run_id="run-2",
+                surface="pull_request",
+                org_id="org-1",
+                project_id="project-1",
+                repo_checkout_root=CHECKOUT,
+            ),
+            config=SteeringRuntimeConfig(enabled=True, enforcement_enabled=True),
+            attempts=FakeAttempts(),
+        ).for_agent(agent_id="agent-2", node_id="node-2", role=role)
+        or None
+    )

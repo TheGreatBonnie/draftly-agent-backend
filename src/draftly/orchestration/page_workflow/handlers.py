@@ -18,7 +18,10 @@ import structlog
 from strands.types.exceptions import MaxTokensReachedException
 
 from draftly.agents.documentation.draft_scope import (
+    DraftProgress,
     DraftScope,
+    WriterReadBudget,
+    current_draft_scope,
     reset_draft_scope,
     set_draft_scope,
 )
@@ -60,10 +63,8 @@ MAX_WRITER_RESUMES = 1
 #: outstanding draft calls instead of restarting the page from scratch.
 WRITER_RESUME_PROMPT = (
     "Your previous response was cut off by the model's output limit before you "
-    "finished. CONTINUE exactly where it stopped for {path}: append the chunks "
-    "that are still missing, then finalize_draft. Do not restart the file, do "
-    "not repeat tool calls that already succeeded, and keep each append_chunk "
-    "small."
+    "finished. Continue the assigned page {path}. {next_step} "
+    "Do not repeat successful reads or draft tool calls. Keep each append_chunk small."
 )
 
 _FIRST_HEADING = re.compile(r"^#(?!#)\s+(.+)$", re.MULTILINE)
@@ -85,6 +86,10 @@ def render_task_prompt(task: DocumentationTask) -> str:
         f"Action: {task.action}",
         f"Reason: {task.reason or 'see evidence'}",
     ]
+    if task.repository:
+        lines.append(f"Authorized repository: {task.repository}")
+    if task.head_sha:
+        lines.append(f"Read source files at PR head SHA: {task.head_sha}")
     if task.related_symbols:
         lines.append("Related symbols: " + ", ".join(task.related_symbols))
     if task.requirements:
@@ -172,13 +177,13 @@ def render_revision_prompt(
         f"Current artifact (version {artifact.version}):",
         artifact.content,
     ]
+    if task.repository:
+        lines.append(f"Authorized repository: {task.repository}")
+    if task.head_sha:
+        lines.append(f"Read source files at PR head SHA: {task.head_sha}")
     if evaluation is not None:
         lines.extend(["", "Failed metrics:"])
-        failed = [
-            metric
-            for metric in evaluation.metrics
-            if metric.blocking and not metric.passed
-        ]
+        failed = [metric for metric in evaluation.metrics if metric.blocking and not metric.passed]
         lines.extend(
             f"- {metric.name}: {metric.score:.2f} "
             f"(threshold {metric.threshold:.2f}) — {metric.reason}"
@@ -377,8 +382,26 @@ class PageWriterHandler:
                     attempt=attempt,
                     error=str(exc),
                 )
-                prompt = WRITER_RESUME_PROMPT.replace("{path}", page.id)
-
+                scope = current_draft_scope()
+                progress = scope.progress if scope is not None else None
+                if progress is None or progress.draft_id is None:
+                    next_step = (
+                        "No draft was started. Stop searching, call start_draft for "
+                        "this page, append the required content, and finalize_draft."
+                    )
+                elif progress.sealed:
+                    next_step = "The draft is sealed. Emit the metadata-only DocChangePlan."
+                else:
+                    next_step = (
+                        f"Draft {progress.draft_id} has {progress.chunks} chunks. "
+                        "Append only missing content and call finalize_draft."
+                    )
+                source = ""
+                if page.repository:
+                    source = f" Authorized repository: {page.repository}."
+                if page.head_sha:
+                    source += f" Read ref: {page.head_sha}."
+                prompt = WRITER_RESUME_PROMPT.format(path=page.id, next_step=next_step + source)
 
     async def __call__(self, workflow_task: WorkflowTask) -> dict[str, Any]:
         page = _document_task(workflow_task)
@@ -425,9 +448,7 @@ class PageWriterHandler:
                 run_id=workflow_task.run_id,
                 page_id=page.id,
                 expected_version=evaluation.version if evaluation is not None else None,
-                expected_artifact_id=(
-                    evaluation.artifact_id if evaluation is not None else None
-                ),
+                expected_artifact_id=(evaluation.artifact_id if evaluation is not None else None),
             )
             prompt = render_revision_prompt(
                 page,
@@ -455,6 +476,10 @@ class PageWriterHandler:
                 generation=version,
                 version=version,
                 assigned_page_id=page.id,
+                repository=page.repository,
+                head_sha=page.head_sha,
+                read_budget=WriterReadBudget() if page.repository else None,
+                progress=DraftProgress(),
             )
         )
         try:
@@ -462,6 +487,23 @@ class PageWriterHandler:
             if self.limits is not None:
                 kwargs["limits"] = self.limits
             await self._invoke_writer(agent, prompt, invocation_state, kwargs, page)
+        except Exception as exc:
+            scope = current_draft_scope()
+            progress = scope.progress if scope is not None else None
+            logger.error(
+                "page_writer_failed",
+                run_id=workflow_task.run_id,
+                page_id=page.id,
+                artifact_version=version,
+                repository=page.repository,
+                head_sha=page.head_sha,
+                draft_id=progress.draft_id if progress else None,
+                chunks=progress.chunks if progress else 0,
+                sealed=progress.sealed if progress else False,
+                error_type=type(exc).__name__,
+                error=str(exc),
+            )
+            raise
         finally:
             reset_draft_scope(token)
 
@@ -523,18 +565,12 @@ class PageEvaluatorHandler:
         if not isinstance(evidence, list):
             raise ValueError("page evidence must be a list")
         normalized_evidence = [
-            item
-            for item in evidence
-            if isinstance(item, dict) and _evidence_has_signals(item)
+            item for item in evidence if isinstance(item, dict) and _evidence_has_signals(item)
         ]
         metrics = compute_page_metrics(normalized_evidence, artifact.content)
         quality = metrics[-1]
 
-        feedback = [
-            metric.reason
-            for metric in metrics
-            if metric.blocking and not metric.passed
-        ]
+        feedback = [metric.reason for metric in metrics if metric.blocking and not metric.passed]
         if not normalized_evidence:
             status = PageStatus.AWAITING_HUMAN_REVIEW.value
             feedback = ["No page-scoped evidence is available; human review required"]
@@ -616,9 +652,7 @@ class PageEvaluatorHandler:
         page: DocumentationTask,
         result: PageEvaluationResult,
     ) -> None:
-        reviewer_instructions = list(
-            workflow_task.input_data.get("reviewer_instructions") or []
-        )
+        reviewer_instructions = list(workflow_task.input_data.get("reviewer_instructions") or [])
         await self.page_repository.schedule_revisions(
             run_id=workflow_task.run_id,
             org_id=workflow_task.org_id,
@@ -651,10 +685,7 @@ class PageEvaluatorHandler:
         states = await self.page_repository.get_page_states(run_id=workflow_task.run_id)
         if not states or any(state.status != PageStatus.PASSED.value for state in states):
             return
-        if any(
-            state.latest_artifact_id is None or state.latest_version < 1
-            for state in states
-        ):
+        if any(state.latest_artifact_id is None or state.latest_version < 1 for state in states):
             raise ValueError("passed pages must have accepted artifact identities")
         snapshot = {
             state.page_id: {
@@ -717,8 +748,7 @@ class CrossPageReviewHandler:
             or (
                 state.status == PageStatus.REVISING.value
                 and isinstance(snapshot.get(state.page_id), dict)
-                and snapshot[state.page_id].get("artifact_id")
-                == state.latest_artifact_id
+                and snapshot[state.page_id].get("artifact_id") == state.latest_artifact_id
                 and snapshot[state.page_id].get("version") == state.latest_version
             )
             for state in states
@@ -728,13 +758,9 @@ class CrossPageReviewHandler:
         for state in states:
             _canonical_page_id(state.page_id)
             if state.path != state.page_id:
-                raise ValueError(
-                    f"page path must match canonical page ID {state.page_id!r}"
-                )
+                raise ValueError(f"page path must match canonical page ID {state.page_id!r}")
             if state.latest_artifact_id is None or state.latest_version < 1:
-                raise ValueError(
-                    f"passed page {state.page_id!r} has no accepted artifact identity"
-                )
+                raise ValueError(f"passed page {state.page_id!r} has no accepted artifact identity")
 
         artifacts: dict[str, DocumentArtifact] = {}
         for state in states:
@@ -750,9 +776,7 @@ class CrossPageReviewHandler:
                 None,
                 artifacts[state.page_id].content_hash,
             ):
-                raise ValueError(
-                    f"review snapshot for {state.page_id!r} is no longer current"
-                )
+                raise ValueError(f"review snapshot for {state.page_id!r} is no longer current")
         rows = [
             {
                 "task_id": state.page_id,
@@ -804,9 +828,7 @@ class CrossPageReviewHandler:
             state = known[page_id]
             next_attempt = state.evaluation_attempt + 1
             if next_attempt > self.max_attempts:
-                raise ValueError(
-                    f"automatic evaluation attempt cannot exceed {self.max_attempts}"
-                )
+                raise ValueError(f"automatic evaluation attempt cannot exceed {self.max_attempts}")
             validated.append(
                 (
                     state,

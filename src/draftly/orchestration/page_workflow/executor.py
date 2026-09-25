@@ -17,12 +17,15 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any, cast
 
+import structlog
+
 from draftly.orchestration.page_workflow.repository import (
     PageWorkflowRepository,
     WorkflowTask,
 )
 
 TaskHandler = Callable[[WorkflowTask], Awaitable[dict[str, Any]]]
+logger = structlog.get_logger(__name__)
 
 
 class DeadlockedWorkflowError(Exception):
@@ -116,6 +119,17 @@ class PageWorkflowExecutor:
                             run_id=run_id,
                             task_id=task.task_id,
                             owner=self.lease_owner,
+                            error=str(outcome) or type(outcome).__name__,
+                        )
+                        logger.error(
+                            "page_workflow_task_error",
+                            run_id=run_id,
+                            task_id=task.task_id,
+                            task_type=task.task_type,
+                            page_id=task.page_id,
+                            artifact_version=task.artifact_version,
+                            status=status,
+                            error_type=type(outcome).__name__,
                             error=str(outcome) or type(outcome).__name__,
                         )
                         if status == "failed":

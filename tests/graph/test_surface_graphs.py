@@ -59,6 +59,8 @@ def test_issue_and_support_writers_are_read_only(model, tools, tmp_sessions) -> 
                 for t in graph.nodes[node_id].executor.tool_names
             }
             assert not names & forbidden
+
+
 async def test_support_graph_runs_through_triage(model, tools, tmp_sessions) -> None:
     graph = build_graph_for_run(
         "support-1",
@@ -229,7 +231,7 @@ async def test_merged_pr_with_review_policy_always_interrupts_before_delivery(
     merged_task = (
         '{"event_id": "e-merged-1", "event_type": "pull_request.merged", '
         '"project_id": "proj-1", "repository": "acme/api", "actor": "dev", '
-        '"pull_request": {"number": 9, "title": "Add PKCE", "sha": "def", '
+        '"pull_request": {"number": 9, "title": "Add PKCE", "head": {"sha": "def"}, '
         '"merged": true, "changed_files": [{"path": "src/authly/oauth.py"}]}}'
     )
     wiring = docs_workflow_wiring()
@@ -253,14 +255,12 @@ async def test_merged_pr_with_review_policy_always_interrupts_before_delivery(
     assert "deliver" not in order
 
 
-async def test_merged_pr_with_no_doc_impact_authors_nothing(
-    model, tools, tmp_sessions
-) -> None:
+async def test_merged_pr_with_no_doc_impact_authors_nothing(model, tools, tmp_sessions) -> None:
     """Impact action 'none': no writer runs and nothing is delivered."""
     merged_task = (
         '{"event_id": "e-merged-2", "event_type": "pull_request.merged", '
         '"project_id": "proj-1", "repository": "acme/api", "actor": "dev", '
-        '"pull_request": {"number": 10, "title": "Internal refactor", "sha": "aaa", '
+        '"pull_request": {"number": 10, "title": "Internal refactor", "head": {"sha": "aaa"}, '
         '"merged": true}}'
     )
     graph = build_graph_for_run(

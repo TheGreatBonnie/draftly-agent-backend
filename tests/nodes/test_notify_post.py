@@ -1,10 +1,9 @@
-"""NotifyPostNode posts the notify agent's draft as a PR comment (draft-then-post)."""
+"""Impact-derived PR notifications."""
 
 from __future__ import annotations
 
 import json
 
-import pytest
 from strands.multiagent.base import Status
 
 from draftly.orchestration.nodes.notify_post import NotifyPostNode
@@ -17,140 +16,85 @@ EVENT = {
 
 
 class _FakeCommenter:
-    """Records create_comment calls; optionally raises."""
-
     def __init__(self, *, error: Exception | None = None) -> None:
-        self.calls: list[tuple] = []
+        self.calls: list[tuple[str, int, str]] = []
         self.error = error
 
-    async def create_comment(
-        self,
-        repository: str,
-        pull_request_number: int,
-        body: str,
-    ) -> dict:
-        if self.error is not None:
+    async def create_comment(self, repository: str, number: int, body: str) -> dict:
+        if self.error:
             raise self.error
-        self.calls.append((repository, pull_request_number, body))
-        return {"id": 1, "html_url": f"https://github/{repository}/pull/{pull_request_number}#issuecomment-1"}
+        self.calls.append((repository, number, body))
+        return {"id": 1}
 
 
-def _blocks(*, should_notify: bool = True, kind: str = "gap_detected", body: str = "draft") -> list[dict]:
-    receipt = {"should_notify": should_notify, "kind": kind, "body": body}
-    return [
-        {"text": f"Original Task: {json.dumps(EVENT)}"},
-        {"text": "\nInputs from previous nodes:"},
-        {"text": "\nFrom notify:"},
-        {"text": f"  - pr_notify: {json.dumps(receipt)}"},
-    ]
+def _blocks(impact: dict | None, event: dict = EVENT, notify: dict | None = None) -> list[dict]:
+    lines = [f"Original Task: {json.dumps(event)}", "Inputs from previous nodes:"]
+    if impact is not None:
+        lines.extend(["From impact:", "  - Agent: " + json.dumps(impact)])
+    if notify is not None:
+        lines.extend(["From notify:", "  - Agent: " + json.dumps(notify)])
+    return [{"text": "\n".join(lines)}]
 
 
 def _payload(result) -> dict:
-    """Extract the notify_post structured payload from its AgentResult message."""
     outer = result.results["notify_post"].result
-    return json.loads(outer.message.get("content")[0].get("text"))
+    return json.loads(outer.message["content"][0]["text"])
 
 
 class TestNotifyPostNode:
-    async def test_posts_when_should_notify(self) -> None:
+    async def test_posts_detected_paths_from_impact(self) -> None:
         commenter = _FakeCommenter()
-        node = NotifyPostNode("notify_post", comment_factory=lambda: commenter)
-        payload = {"should_notify": True, "kind": "gap_detected", "body": "Draftly will generate docs: docs/widgets.md"}
-
-        result = await node.invoke_async(_blocks(**payload), invocation_state={"run_id": "n-1"})
-
+        node = NotifyPostNode(comment_factory=lambda: commenter)
+        result = await node.invoke_async(
+            _blocks({"action": "update", "affected_documents": ["docs/widgets.md"]}),
+            invocation_state={"run_id": "n-1"},
+        )
         assert result.status == Status.COMPLETED
-        assert commenter.calls == [("acme/api", 7, payload["body"])]
+        assert commenter.calls == [
+            ("acme/api", 7, "Draftly detected documentation work for this PR:\n- docs/widgets.md")
+        ]
         assert _payload(result)["posted"] is True
 
-    async def test_skips_when_not_needed(self) -> None:
+    async def test_no_gap_comes_from_impact_even_if_notify_disagrees(self) -> None:
         commenter = _FakeCommenter()
-        node = NotifyPostNode("notify_post", comment_factory=lambda: commenter)
+        node = NotifyPostNode(comment_factory=lambda: commenter)
+        await node.invoke_async(
+            _blocks({"action": "none"}, notify={"kind": "gap_detected", "body": "wrong"})
+        )
+        assert commenter.calls[0][2] == "Draftly found no documentation changes needed for this PR."
 
-        result = await node.invoke_async(_blocks(should_notify=False), invocation_state={"run_id": "n-2"})
-
-        assert result.status == Status.COMPLETED
-        assert commenter.calls == []
-        assert _payload(result)["posted"] is False
-
-    async def test_skips_empty_body(self) -> None:
+    async def test_missing_impact_skips(self) -> None:
         commenter = _FakeCommenter()
-        node = NotifyPostNode("notify_post", comment_factory=lambda: commenter)
-
-        result = await node.invoke_async(_blocks(body=""), invocation_state={"run_id": "n-3"})
-
+        node = NotifyPostNode(comment_factory=lambda: commenter)
+        result = await node.invoke_async(_blocks(None))
         assert commenter.calls == []
-        assert _payload(result)["posted"] is False
+        assert _payload(result)["reason"] == "no_impact"
 
-    async def test_missing_repository_skips(self) -> None:
+    async def test_missing_target_skips(self) -> None:
         commenter = _FakeCommenter()
-        node = NotifyPostNode("notify_post", comment_factory=lambda: commenter)
-        event = {"event_type": "pull_request.opened", "pull_request": {"number": 7}}
-        blocks = [
-            {"text": f"Original Task: {json.dumps(event)}"},
-            {"text": "\nInputs from previous nodes:"},
-            {"text": "\nFrom notify:"},
-            {"text": "  - pr_notify: " + json.dumps({"should_notify": True, "kind": "gap_detected", "body": "d"})},
-        ]
-
-        result = await node.invoke_async(blocks, invocation_state={"run_id": "n-4"})
-
+        node = NotifyPostNode(comment_factory=lambda: commenter)
+        result = await node.invoke_async(
+            _blocks({"action": "create"}, {"pull_request": {"number": 7}})
+        )
         assert commenter.calls == []
-        assert result.status == Status.COMPLETED
-        assert _payload(result)["posted"] is False
+        assert _payload(result)["reason"] == "no_target"
 
-    async def test_missing_pr_number_skips(self) -> None:
-        commenter = _FakeCommenter()
-        node = NotifyPostNode("notify_post", comment_factory=lambda: commenter)
-        event = {"event_type": "pull_request.opened", "repository": "acme/api"}
-        blocks = [
-            {"text": f"Original Task: {json.dumps(event)}"},
-            {"text": "\nInputs from previous nodes:"},
-            {"text": "\nFrom notify:"},
-            {"text": "  - pr_notify: " + json.dumps({"should_notify": True, "kind": "gap_detected", "body": "d"})},
-        ]
-
-        result = await node.invoke_async(blocks, invocation_state={"run_id": "n-5"})
-
-        assert commenter.calls == []
-        assert result.status == Status.COMPLETED
-
-    async def test_no_receipt_payload_degrades(self) -> None:
-        commenter = _FakeCommenter()
-        node = NotifyPostNode("notify_post", comment_factory=lambda: commenter)
-        blocks = [
-            {"text": f"Original Task: {json.dumps(EVENT)}"},
-            {"text": "\nInputs from previous nodes:"},
-            {"text": "\nFrom impact:"},
-            {"text": '  - Agent: {"action": "none"}'},
-        ]
-
-        result = await node.invoke_async(blocks, invocation_state={"run_id": "n-6"})
-
-        assert commenter.calls == []
-        assert result.status == Status.COMPLETED
-        assert _payload(result)["posted"] is False
-
-    async def test_commenter_error_still_completed(self) -> None:
+    async def test_commenter_error_still_completes(self) -> None:
         commenter = _FakeCommenter(error=RuntimeError("api down"))
-        node = NotifyPostNode("notify_post", comment_factory=lambda: commenter)
-
-        result = await node.invoke_async(_blocks(), invocation_state={"run_id": "n-7"})
-
+        node = NotifyPostNode(comment_factory=lambda: commenter)
+        result = await node.invoke_async(_blocks({"action": "create"}))
         assert result.status == Status.COMPLETED
         assert _payload(result)["posted"] is False
 
     async def test_default_commenter_created_lazily(self) -> None:
-        """When no factory is injected, the node must build a commenter only
-        at invocation time (so the runner's installation context applies)."""
-        created: list = []
+        created: list[_FakeCommenter] = []
 
         def factory():
             instance = _FakeCommenter()
             created.append(instance)
             return instance
 
-        node = NotifyPostNode("notify_post", comment_factory=factory)
+        node = NotifyPostNode(comment_factory=factory)
         assert created == []
-        await node.invoke_async(_blocks(), invocation_state={"run_id": "n-8"})
+        await node.invoke_async(_blocks({"action": "create"}))
         assert len(created) == 1

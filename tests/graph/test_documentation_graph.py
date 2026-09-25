@@ -78,9 +78,7 @@ class RecordingStubModel(StubModel):
             yield event
 
 
-async def test_full_pipeline_with_quality_gate(
-    model, tools, tmp_sessions, comment_factory
-) -> None:
+async def test_full_pipeline_with_quality_gate(model, tools, tmp_sessions, comment_factory) -> None:
     """A grounded change plan passes the page workflow, gets a changelog, and
     is delivered; the PR notify branch (draft-then-post) runs in parallel."""
     factory, commenter = comment_factory
@@ -114,12 +112,12 @@ async def test_full_pipeline_with_quality_gate(
     assert order.index("changelog") < order.index("changelog_evaluate")
     assert order.index("changelog_evaluate") < order.index("deliver")
     # the notify branch ran in parallel and posted the scripted comment once
-    assert order.index("impact") < order.index("notify") < order.index("notify_post")
+    assert order.index("impact") < order.index("notify_post")
     assert commenter.calls == [
         (
             "acme/api",
             7,
-            "Draftly will generate docs for this PR:\n- docs/widgets.md",
+            "Draftly detected documentation work for this PR:\n- docs/widgets.md",
         )
     ]
     # the wrong generation path never ran
@@ -254,14 +252,13 @@ async def test_impact_none_skips_generation_and_delivery(
     assert result.status == Status.COMPLETED
     order = [n.node_id for n in result.execution_order]
     assert "impact" in order
-    # notify/notify_post are a parallel branch and fire on opened events
-    assert "notify" in order
+    # notify_post is a parallel branch and fires on opened events
     assert "notify_post" in order
     assert commenter.calls == [
         (
             "acme/api",
             7,
-            "Draftly will generate docs for this PR:\n- docs/widgets.md",
+            "Draftly found no documentation changes needed for this PR.",
         )
     ]
     for node in ("answer", "answer_evaluate", "document", "changelog", "deliver"):
@@ -357,9 +354,7 @@ def test_writer_tools_exclude_mutation_and_delivery(tools) -> None:
     assert {"read_file", "git_diff", "git_status"} <= names
 
 
-def test_writer_draft_tools_appended_only_to_doc_authoring_node(
-    model, tools, tmp_sessions
-) -> None:
+def test_writer_draft_tools_appended_only_to_doc_authoring_node(model, tools, tmp_sessions) -> None:
     """The three draft persistence tools (start_draft/append_chunk/
     finalize_draft) are appended ONLY to the docs writer factory behind the
     page workflow; the answer/changelog writers and the deliver agent must not
@@ -437,9 +432,7 @@ def test_github_grounding_changelog_prompt_names_only_registered_read_tools(
     assert "registered toolset" in prompt
 
 
-def test_writer_limits_forwarded_to_page_writer_handler(
-    model, tools, tmp_sessions
-) -> None:
+def test_writer_limits_forwarded_to_page_writer_handler(model, tools, tmp_sessions) -> None:
     """Explicit Strands writer budgets reach the page writer handler.
 
     The writer must invoke_async with Strands ``limits`` so an unbounded loop
@@ -463,9 +456,7 @@ def test_writer_limits_forwarded_to_page_writer_handler(
     assert write_handler.limits == {"turns": 3, "output_tokens": 500}
 
 
-def test_doc_writer_skills_list_only_registered_writer_tools(
-    model, tools, tmp_sessions
-) -> None:
+def test_doc_writer_skills_list_only_registered_writer_tools(model, tools, tmp_sessions) -> None:
     """Both doc-writing SKILLs must only advertise tools the writer actually
     registers in github grounding.
 
@@ -493,9 +484,7 @@ def test_doc_writer_skills_list_only_registered_writer_tools(
     for skill_name in ("documentation-generation", "documentation-update"):
         text = (skills_root / skill_name / "SKILL.md").read_text(encoding="utf-8")
         allowed = set(re.findall(r"^allowed-tools:\s*(.+)$", text, re.M)[0].split())
-        assert "read_file" not in allowed, (
-            f"{skill_name} must not advertise local-only read_file"
-        )
+        assert "read_file" not in allowed, f"{skill_name} must not advertise local-only read_file"
         unregistered = allowed - writer_names
         assert not unregistered, (
             f"{skill_name} advertises unregistered writer tools: {unregistered}"
@@ -605,7 +594,7 @@ def test_github_grounding_writer_and_changelog_use_api_repo_tools(
         graph.nodes["document"].executor.handlers["write"].writer_factory.tools
     )
     changelog_names = set(graph.nodes["changelog"].executor.tool_names)
-    expected_github = {"github_read_file", "github_get_tree", "github_search_code"}
+    expected_github = {"github_read_file", "github_get_tree"}
     for label, names in (("writer", writer_names), ("changelog", changelog_names)):
         assert expected_github <= names, (
             f"{label} missing GitHub API read tools in github grounding"
@@ -616,6 +605,7 @@ def test_github_grounding_writer_and_changelog_use_api_repo_tools(
             "git_diff",
             "git_status",
         }, f"{label} still has local-checkout tools in github grounding"
+    assert "github_search_code" not in writer_names
     # draft persistence stays writer-only
     assert {"start_draft", "append_chunk", "finalize_draft"} <= writer_names
     assert not {"start_draft", "append_chunk", "finalize_draft"} & changelog_names
@@ -646,9 +636,7 @@ def test_draft_generation_hook_registered_as_provider(
     assert constructed, "NextGenerationHook must be instantiated by the graph build"
 
 
-async def test_revision_loop_retries_only_failed_page(
-    tools, tmp_sessions, comment_factory
-) -> None:
+async def test_revision_loop_retries_only_failed_page(tools, tmp_sessions, comment_factory) -> None:
     """The full revise loop targets only evaluate-failed pages: page b fails
     the deterministic gate (content 'TODO'), the page workflow schedules ONE
     revision for docs/b.md, docs/a.md is untouched, the cross-page reviewer
@@ -1231,6 +1219,4 @@ async def test_deliver_prompt_contains_approved_plan_and_changelog(
     assert PLAN_PATH_MARKER in prompt_text, (
         "approved page-workflow files (paths) missing from deliver prompt"
     )
-    assert CHANGELOG_MARKER in prompt_text, (
-        "changelog markdown missing from deliver prompt"
-    )
+    assert CHANGELOG_MARKER in prompt_text, "changelog markdown missing from deliver prompt"

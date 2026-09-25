@@ -1,4 +1,4 @@
-"""Deterministic poster for the PR notify node (draft-then-post)."""
+"""Post a PR comment derived from the validated impact analysis."""
 
 from __future__ import annotations
 
@@ -22,14 +22,7 @@ logger = structlog.get_logger(__name__)
 
 
 class NotifyPostNode(MultiAgentBase):
-    """Post the notify agent's draft as a pull-request comment.
-
-    Draft-then-post separation: the ``notify`` LLM node only composes a
-    ``NotifyReceipt`` (no tools); this deterministic node applies the single
-    side effect. The comment factory is injected at invoke time so the
-    production default (``GitHubClient``) reads the runner's installation
-    context, and tests never touch the network.
-    """
+    """Post impact findings without claiming that writing has completed."""
 
     def __init__(
         self,
@@ -47,21 +40,30 @@ class NotifyPostNode(MultiAgentBase):
         **kwargs: Any,
     ) -> MultiAgentResult:
         deps = parse_node_input(task)
-        receipt = deps.get("notify", {})
-
-        if not (receipt.get("should_notify") and receipt.get("body")):
-            return self._result(
-                {"posted": False, "reason": "not_needed"}, invocation_state
-            )
+        impact = deps.get("impact")
+        if not isinstance(impact, dict):
+            return self._result({"posted": False, "reason": "no_impact"}, invocation_state)
+        action = impact.get("action")
+        if action in {"answer", "update", "create"}:
+            documents = [
+                str(path)
+                for path in impact.get("affected_documents") or []
+                if isinstance(path, str) and path.strip()
+            ]
+            body = "Draftly detected documentation work for this PR:"
+            if documents:
+                body += "\n" + "\n".join(f"- {path}" for path in documents)
+        elif action == "none":
+            body = "Draftly found no documentation changes needed for this PR."
+        else:
+            return self._result({"posted": False, "reason": "unknown_action"}, invocation_state)
 
         event = original_task(task)
         repository = event.get("repository")
         pr = event.get("pull_request") or {}
         number = pr.get("number")
         if not repository or not number:
-            return self._result(
-                {"posted": False, "reason": "no_target"}, invocation_state
-            )
+            return self._result({"posted": False, "reason": "no_target"}, invocation_state)
 
         commenter = self.comment_factory() if self.comment_factory else self._default_commenter()
         payload = {"posted": False, "reason": "error", "error": ""}
@@ -69,7 +71,7 @@ class NotifyPostNode(MultiAgentBase):
             posted = await commenter.create_comment(
                 repository,
                 int(number),
-                receipt["body"],
+                body,
             )
             payload = {
                 "posted": True,

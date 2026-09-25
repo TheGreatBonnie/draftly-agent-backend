@@ -42,7 +42,10 @@ from draftly.persistence.repositories.drafts import DraftRepository
 from tests.unit.orchestration.page_workflow.test_node import IMPACT_NO_EVIDENCE
 from tests.unit.orchestration.page_workflow.test_repository import FakeClient
 
-ORIGINAL_TASK = '{"event_id": "e-1", "event_type": "pull_request.opened"}'
+ORIGINAL_TASK = (
+    '{"event_id": "e-1", "event_type": "pull_request.opened", '
+    '"repository": "acme/api", "pull_request": {"head": {"sha": "abc123"}}}'
+)
 
 
 def _node_task(impact: dict) -> list[dict]:
@@ -156,6 +159,7 @@ def _node_result(result: MultiAgentResult) -> dict:
 
 # -- approve ----------------------------------------------------------------
 
+
 async def test_approve_accepts_artifacts_and_can_continue_to_changelog() -> None:
     node, _, _ = _wired_node()
     escalated = await _invoke(node, IMPACT_NO_EVIDENCE, "run-a")
@@ -180,6 +184,7 @@ async def test_approve_accepts_artifacts_and_can_continue_to_changelog() -> None
 
 
 # -- request_changes --------------------------------------------------------
+
 
 async def test_request_changes_requires_a_comment() -> None:
     node, _, _ = _wired_node()
@@ -214,9 +219,7 @@ async def test_request_changes_schedules_one_human_guided_revision_per_page() ->
     evaluate_v2 = [t for t in v2 if t.task_type == "evaluate"]
     assert {t.task_type for t in v2} == {"write", "evaluate"}
     assert all(t.input_data.get("human_guided") is True for t in v2)
-    assert all(
-        t.input_data.get("revision_comment") == "please add a rationale" for t in v2
-    )
+    assert all(t.input_data.get("revision_comment") == "please add a rationale" for t in v2)
     # The human-guided evaluate task records the page's existing attempt, so
     # a fourth automatic attempt is never booked; the write carries no attempt.
     assert all("attempt" in t.input_data for t in evaluate_v2)
@@ -236,6 +239,7 @@ async def test_duplicate_request_changes_is_a_noop() -> None:
 
 
 # -- reject -----------------------------------------------------------------
+
 
 async def test_reject_cancels_pending_work_and_blocks_delivery() -> None:
     node, pages, _ = _wired_node()
@@ -273,6 +277,7 @@ async def test_reject_cancels_pending_work_and_blocks_delivery() -> None:
 
 # -- changelog safety -------------------------------------------------------
 
+
 async def test_missing_sealed_artifact_blocks_changelog_gate() -> None:
     node_repo = PageWorkflowRepository(database=FakeClient())
     _ = node_repo
@@ -295,6 +300,7 @@ async def test_passed_with_escalation_cannot_schedule_changelog() -> None:
 
 
 # -- events ---------------------------------------------------------------
+
 
 async def test_resume_emits_workflow_resumed_event() -> None:
     node, _, _ = _wired_node()

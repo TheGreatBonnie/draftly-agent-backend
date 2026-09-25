@@ -65,6 +65,9 @@ class DocumentationTask(BaseModel):
     evidence: list[EvidenceItem] = Field(default_factory=list)
     requirements: list[str] = Field(default_factory=list)
     bundle_id: str | None = None
+    # Set by the workflow from the original event, never trusted from the plan.
+    repository: str | None = None
+    head_sha: str | None = None
 
 
 class ReviewCorrection(BaseModel):
@@ -159,8 +162,7 @@ class ChangelogEntry(BaseModel):
     entries: list[dict[str, str]] = Field(
         default_factory=list,
         description=(
-            "[{category, text}] - category is "
-            "Added/Changed/Deprecated/Removed/Fixed/Security"
+            "[{category, text}] - category is Added/Changed/Deprecated/Removed/Fixed/Security"
         ),
     )
     raw_markdown: str = Field(

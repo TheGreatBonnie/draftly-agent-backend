@@ -156,6 +156,131 @@ async def test_github_read_file_round_trip(fake_github: FakeGitHubClient) -> Non
     assert ("get_file_contents", "acme", "widget", "auth.py", "main") in fake_github.calls
 
 
+async def test_page_writer_github_read_rejects_other_repository_and_ref(
+    fake_github: FakeGitHubClient,
+) -> None:
+    from draftly.agents.documentation.draft_scope import (
+        DraftScope,
+        reset_draft_scope,
+        set_draft_scope,
+    )
+    from draftly.tools.github.read_file import github_read_file
+
+    token = set_draft_scope(
+        DraftScope(
+            run_id="run-1",
+            org_id="org-1",
+            generation=1,
+            assigned_page_id="docs/oauth.md",
+            repository="acme/api",
+            head_sha="abc123",
+        )
+    )
+    try:
+        with pytest.raises(ValueError, match="acme/api"):
+            await github_read_file("acme", "other", "src/oauth.py", "abc123")
+        with pytest.raises(ValueError, match="abc123"):
+            await github_read_file("acme", "api", "src/oauth.py", "main")
+    finally:
+        reset_draft_scope(token)
+    assert not fake_github.calls
+
+
+async def test_page_writer_github_read_rejects_missing_repository_assignment(
+    fake_github: FakeGitHubClient,
+) -> None:
+    from draftly.agents.documentation.draft_scope import (
+        DraftScope,
+        reset_draft_scope,
+        set_draft_scope,
+    )
+    from draftly.tools.github.read_file import github_read_file
+
+    token = set_draft_scope(
+        DraftScope(
+            run_id="run-1",
+            org_id="org-1",
+            generation=1,
+            assigned_page_id="docs/oauth.md",
+        )
+    )
+    try:
+        with pytest.raises(ValueError, match="no assigned repository"):
+            await github_read_file("acme", "api", "src/oauth.py", "main")
+    finally:
+        reset_draft_scope(token)
+    assert not fake_github.calls
+
+
+async def test_page_writer_github_tree_and_search_reject_other_repository(
+    fake_github: FakeGitHubClient,
+) -> None:
+    from draftly.agents.documentation.draft_scope import (
+        DraftScope,
+        reset_draft_scope,
+        set_draft_scope,
+    )
+    from draftly.tools.github.get_tree import github_get_tree
+    from draftly.tools.github.search_code import github_search_code
+
+    token = set_draft_scope(
+        DraftScope(
+            run_id="run-1",
+            org_id="org-1",
+            generation=1,
+            assigned_page_id="docs/oauth.md",
+            repository="acme/api",
+            head_sha="abc123",
+        )
+    )
+    try:
+        with pytest.raises(ValueError, match="acme/api"):
+            await github_get_tree("acme", "other", "abc123")
+        with pytest.raises(ValueError, match="abc123"):
+            await github_get_tree("acme", "api", "main")
+        with pytest.raises(ValueError, match="acme/api"):
+            await github_search_code("acme", "other", "OAuthClient")
+        with pytest.raises(ValueError, match="pinned"):
+            await github_search_code("acme", "api", "OAuthClient")
+    finally:
+        reset_draft_scope(token)
+    assert not fake_github.calls
+
+
+async def test_page_writer_reads_are_deduplicated_and_bounded(
+    fake_github: FakeGitHubClient,
+) -> None:
+    from draftly.agents.documentation.draft_scope import (
+        DraftScope,
+        WriterReadBudget,
+        reset_draft_scope,
+        set_draft_scope,
+    )
+    from draftly.tools.github.read_file import github_read_file
+
+    token = set_draft_scope(
+        DraftScope(
+            run_id="run-1",
+            org_id="org-1",
+            generation=1,
+            assigned_page_id="docs/oauth.md",
+            repository="acme/api",
+            head_sha="abc123",
+            read_budget=WriterReadBudget(max_calls=2),
+        )
+    )
+    try:
+        await github_read_file("acme", "api", "src/a.py", "abc123")
+        with pytest.raises(ValueError, match="already read"):
+            await github_read_file("acme", "api", "src/a.py", "abc123")
+        await github_read_file("acme", "api", "src/b.py", "abc123")
+        with pytest.raises(ValueError, match="read budget"):
+            await github_read_file("acme", "api", "src/c.py", "abc123")
+    finally:
+        reset_draft_scope(token)
+    assert len(fake_github.calls) == 2
+
+
 async def test_github_get_tree_round_trip(fake_github: FakeGitHubClient) -> None:
     from draftly.tools.github.get_tree import github_get_tree
 

@@ -26,7 +26,7 @@ from tests.stub_model import StubModel
 PR_TASK = (
     '{"event_id": "e-123", "event_type": "pull_request.opened", '
     '"project_id": "proj-1", "repository": "acme/api", "actor": "dev", '
-    '"pull_request": {"number": 7, "title": "Fix widget", "sha": "abc"}}'
+    '"pull_request": {"number": 7, "title": "Fix widget", "head": {"sha": "abc"}}}'
 )
 
 ISSUE_TASK = (
@@ -79,9 +79,7 @@ def stub_model() -> StubModel:
             DocChangePlan: {
                 "repository": "acme/api",
                 "branch": "docs/update-widgets",
-                "files": [
-                    {"path": "docs/widgets.md", "action": "update"}
-                ],
+                "files": [{"path": "docs/widgets.md", "action": "update"}],
             },
             AnswerDraft: {
                 "content": "widgets docs/widgets.md " * 40,

@@ -69,13 +69,9 @@ def _evidence_bundle(research_payload: Any) -> EvidenceBundle | None:
 
 def _result_from_states(states: list[Any]) -> DocumentationWorkflowResult:
     """Aggregate page states into the workflow report (``DocumentationWorkflowResult``)."""
-    passed_ids = [
-        s.page_id for s in states if s.status == PageStatus.PASSED.value
-    ]
+    passed_ids = [s.page_id for s in states if s.status == PageStatus.PASSED.value]
     escalated_ids = [
-        s.page_id
-        for s in states
-        if s.status == PageStatus.AWAITING_HUMAN_REVIEW.value
+        s.page_id for s in states if s.status == PageStatus.AWAITING_HUMAN_REVIEW.value
     ]
     failed_ids = [
         s.page_id
@@ -175,7 +171,21 @@ class DocumentationWorkflowNode(MultiAgentBase):
             # name comes from the original PR event (never from the plan).
             event = original_task(task)
             repository = str(event.get("repository") or "") or None
-            await self._seed(run_id, org_id, tasks, repository=repository)
+            pull_request = event.get("pull_request")
+            head = pull_request.get("head") if isinstance(pull_request, dict) else None
+            head_sha = str(head.get("sha") or "") or None if isinstance(head, dict) else None
+            if str(event.get("event_type") or "").startswith("pull_request."):
+                if not repository or not head_sha:
+                    logger.error(
+                        "page_workflow_missing_pr_source",
+                        run_id=run_id,
+                        repository=repository,
+                        head_sha=head_sha,
+                    )
+                    return self._failed(
+                        "PR writer requires a repository and head SHA", invocation_state
+                    )
+            await self._seed(run_id, org_id, tasks, repository=repository, head_sha=head_sha)
             executor = PageWorkflowExecutor(
                 repository=self.repository,
                 handlers=self.handlers,
@@ -282,9 +292,7 @@ class DocumentationWorkflowNode(MultiAgentBase):
         if decision == "approve":
             states = await self.repository.get_page_states(run_id=run_id)
             escalated = [
-                s.page_id
-                for s in states
-                if s.status == PageStatus.AWAITING_HUMAN_REVIEW.value
+                s.page_id for s in states if s.status == PageStatus.AWAITING_HUMAN_REVIEW.value
             ]
             if escalated:
                 await self.repository.approve_escalated_pages(
@@ -300,9 +308,7 @@ class DocumentationWorkflowNode(MultiAgentBase):
                 raise ValueError("request_changes requires a non-empty comment")
             states = await self.repository.get_page_states(run_id=run_id)
             escalated = [
-                s.page_id
-                for s in states
-                if s.status == PageStatus.AWAITING_HUMAN_REVIEW.value
+                s.page_id for s in states if s.status == PageStatus.AWAITING_HUMAN_REVIEW.value
             ]
             if not escalated:
                 # No pending human work: a duplicate request is a no-op.
@@ -335,9 +341,7 @@ class DocumentationWorkflowNode(MultiAgentBase):
                     decision=decision,
                     error=str(exc),
                 )
-                return _result_from_states(
-                    await self.repository.get_page_states(run_id=run_id)
-                )
+                return _result_from_states(await self.repository.get_page_states(run_id=run_id))
             states = await self.repository.get_page_states(run_id=run_id)
             await self._emit_page_progress(run_id, states)
             return _result_from_states(states)
@@ -465,9 +469,7 @@ class DocumentationWorkflowNode(MultiAgentBase):
         )
         return MultiAgentResult(
             status=Status.COMPLETED,
-            results={
-                self.name: NodeResult(result=agent_result({"result": result.model_dump()}))
-            },
+            results={self.name: NodeResult(result=agent_result({"result": result.model_dump()}))},
         )
 
     def _failed(self, reason: str, invocation_state: dict[str, Any] | None) -> MultiAgentResult:
@@ -494,6 +496,7 @@ class DocumentationWorkflowNode(MultiAgentBase):
         org_id: str,
         tasks: list[DocumentationTask],
         repository: str | None = None,
+        head_sha: str | None = None,
     ) -> None:
         """Pin v1 tasks: ``write`` then ``evaluate`` per planned page.
 
@@ -509,16 +512,19 @@ class DocumentationWorkflowNode(MultiAgentBase):
         write task's input so the writer handler can hydrate current content.
         """
         tasks = [
-            task if task.id == task.path else task.model_copy(update={"id": task.path})
+            task.model_copy(
+                update={
+                    "id": task.path,
+                    "repository": repository,
+                    "head_sha": head_sha,
+                }
+            )
             for task in tasks
         ]
         await self.repository.create_pages(
             run_id=run_id,
             org_id=org_id,
-            pages=[
-                NewPage(page_id=task.id, path=task.path, action=task.action)
-                for task in tasks
-            ],
+            pages=[NewPage(page_id=task.id, path=task.path, action=task.action) for task in tasks],
         )
         for task in tasks:
             write_id = f"write:{task.id}:1"

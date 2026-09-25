@@ -52,7 +52,10 @@ async def github_get_tree(
     path does not exist, and never re-issue the same un-narrowed call.
     """
     from draftly.integrations.github.client import GitHubClient
+    from draftly.tools.github.writer_scope import require_writer_target, reserve_writer_read
 
+    require_writer_target(owner, repo, ref)
+    reserve_writer_read("github_get_tree", owner, repo, ref, _normalized_prefix(path_prefix))
     client = GitHubClient()
     page = await client.get_tree_bounded(
         owner,

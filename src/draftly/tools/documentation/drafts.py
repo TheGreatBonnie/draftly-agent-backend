@@ -79,9 +79,7 @@ def _require_assigned_path(path: str, tool_name: str) -> None:
     scope = _require_scope()
     assigned = getattr(scope, "assigned_page_id", None)
     if assigned is not None and path != assigned:
-        raise ValueError(
-            f"{tool_name}: path {path!r} is outside assigned page {assigned!r}"
-        )
+        raise ValueError(f"{tool_name}: path {path!r} is outside assigned page {assigned!r}")
 
 
 async def _require_assigned_draft(
@@ -97,9 +95,7 @@ async def _require_assigned_draft(
     if revision is None:
         raise ValueError(f"{tool_name}: unknown draft_id {draft_id!r}")
     if revision.run_id != scope.run_id or revision.path != assigned:
-        raise ValueError(
-            f"{tool_name}: draft {draft_id!r} is outside assigned page {assigned!r}"
-        )
+        raise ValueError(f"{tool_name}: draft {draft_id!r} is outside assigned page {assigned!r}")
 
 
 @tool
@@ -111,7 +107,7 @@ async def start_draft(
     """Start a draft for one file; returns a draft_id for append_chunk.
 
     Arguments:
-        repository: repo name the file belongs to (informational only)
+        repository: assigned repository for a page-workflow writer
         path: repo-relative path of the file being drafted
         action: 'create' for a new file, 'update' for an existing one
     """
@@ -121,6 +117,12 @@ async def start_draft(
     _require_assigned_path(clean_path, "start_draft")
 
     scope = _require_scope()
+    assigned_repository = getattr(scope, "repository", None)
+    if assigned_repository and repository != assigned_repository:
+        raise ValueError(
+            f"start_draft: repository {repository!r} does not match assigned "
+            f"repository {assigned_repository!r}"
+        )
     repo = build_draft_repository()
     revision = await repo.create_revision(
         run_id=scope.run_id,
@@ -130,6 +132,10 @@ async def start_draft(
         action=action,
         version=getattr(scope, "version", None),
     )
+    progress = getattr(scope, "progress", None)
+    if progress is not None:
+        progress.draft_id = revision.id
+        progress.sealed = bool(revision.sealed)
     logger.info(
         "start_draft",
         draft_id=revision.id,
@@ -210,6 +216,9 @@ async def append_chunk(
     repo = build_draft_repository()
     await _require_assigned_draft(repo, draft_id, "append_chunk")
     count = await repo.append_chunk(draft_id, content)
+    progress = getattr(_require_scope(), "progress", None)
+    if progress is not None and progress.draft_id == draft_id:
+        progress.chunks = count
     logger.debug(
         "append_chunk",
         draft_id=draft_id,
@@ -236,6 +245,9 @@ async def finalize_draft(draft_id: str) -> dict:
     repo = build_draft_repository()
     await _require_assigned_draft(repo, draft_id, "finalize_draft")
     revision = await repo.finalize(draft_id)
+    progress = getattr(_require_scope(), "progress", None)
+    if progress is not None and progress.draft_id == draft_id:
+        progress.sealed = bool(revision.sealed)
     logger.info(
         "finalize_draft",
         draft_id=draft_id,
