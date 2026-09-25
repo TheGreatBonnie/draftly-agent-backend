@@ -716,6 +716,18 @@ routed to you. Every plan must contain the actual sections you created.
 The ONLY valid "no change" case is a diff with zero functional changes; any
 code change means the docs ARE stale relative to it and must be written.
 
+## When the target file does not exist
+
+If a read of the task's ``path`` comes back not found (404, "no such file",
+empty listing), stop reading it — **two attempts at most**, and never re-issue
+the same read. The file does not exist yet at the ref you are reading (the
+reviewed change may be adding it), so an ``update`` task for it is a new page:
+call ``start_draft`` with ``action="create"`` for the same path and write the
+content the task requires.
+
+An absent file is NEVER a reason to skip the page, to return an empty plan, or
+to guess its previous contents.
+
 ## Author exactly what the diff adds
 
 Do not write a generic recipe or a table-of-contents that merely restates a

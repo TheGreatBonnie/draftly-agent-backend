@@ -592,6 +592,43 @@ async def test_update_writer_receives_existing_file_content_for_first_write() ->
     assert output["artifact_id"] == artifact.artifact_id
 
 
+async def test_update_writer_is_told_when_the_target_file_is_absent() -> None:
+    """An ``update`` task whose file is not in the store must say so.
+
+    Run e1e96f90: the impact plan emitted an ``update`` task for ``CHANGELOG.md``,
+    which the PR under review ADDS — every read attempt 404'd ("Since I can't
+    access the CHANGELOG.md file from the repository (404 errors)…"), the writer
+    looped on reads, never sealed a draft and the task failed with "page
+    'CHANGELOG.md' has no sealed artifact". Telling the writer up front that the
+    file is absent (and that a new file must be authored) breaks that loop.
+    """
+    page = _page_task()
+    artifact = _artifact()
+    drafts = _Drafts([artifact])
+    pages = _Pages([_state(page.id)])
+    factory = _WriterFactory()
+    documents = _Documents(by_path={})
+    handler = PageWriterHandler(
+        writer_factory=factory,
+        drafts_repo=drafts,
+        page_repository=pages,
+        documents_repo=documents,
+    )
+
+    await handler(
+        _task(
+            task_type="write",
+            input_data={"task": page.model_dump(), "repository": "acme/api"},
+        )
+    )
+
+    assert documents.calls == [("org-1", "acme/api", "docs/oauth.md")]
+    prompt = factory.agents[0].prompts[0]
+    assert "NOT FOUND" in prompt
+    assert 'action="create"' in prompt
+    assert "EXISTING CONTENT" not in prompt
+
+
 async def test_create_write_skips_existing_content_hydration() -> None:
     """Create tasks never look up (or surface) a stale repo file body."""
     page = DocumentationTask(

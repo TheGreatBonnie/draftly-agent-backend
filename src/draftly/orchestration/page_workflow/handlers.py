@@ -324,7 +324,19 @@ class PageWriterHandler:
             return None
         content = (row or {}).get("content") if isinstance(row, dict) else None
         if not isinstance(content, str) or not content.strip():
-            return None
+            # The store has no body for this path. Run e1e96f90: the impact plan
+            # emitted an ``update`` task for CHANGELOG.md — a file the reviewed PR
+            # ADDS — so every read 404'd, the writer looped on reads, never sealed
+            # a draft and the page was lost. Say it up front and say what to do.
+            return (
+                f"TARGET FILE NOT FOUND: {page.path!r} has no stored body for "
+                f"{repository!r}. If your read tools also return not found (404) "
+                "for this path, do NOT retry the read: the file does not exist yet "
+                "at the ref you are reading, so author it as a new page — call "
+                'start_draft with action="create" for this exact path — and write '
+                "the content the task requires. Never guess its previous contents "
+                "and never return an empty plan because it is missing."
+            )
         return (
             f"EXISTING CONTENT of {page.path!r} (rewrite in place; preserve "
             f"anything still accurate):\n\n{content}"

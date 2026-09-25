@@ -74,6 +74,25 @@ RENDER_MATRIX = (
 )
 
 
+def test_writer_prompt_stops_retrying_reads_for_an_absent_target() -> None:
+    """Run e1e96f90 burned eight writer turns re-reading a path the PR itself
+    adds (a 404 every time). The prompt must cap the attempts and say what to do
+    instead: author the file as a new page."""
+    prompt = build_prompt(
+        WRITER_PROMPT,
+        output_model=DocChangePlan,
+        documentation_policy="documentation_policy",
+        writing_style="writing_style",
+        repository_rules="repository_rules",
+        security_rules="security_rules",
+    )
+
+    flat = " ".join(prompt.split())
+    assert "not found" in flat.lower()
+    assert 'action="create"' in prompt
+    assert "two attempts" in flat
+
+
 class TestRenderedPromptsCarryOutputContract:
     @pytest.mark.parametrize(("template", "model", "fields"), RENDER_MATRIX)
     def test_payload_fields_present(

@@ -29,6 +29,11 @@ Modify existing documentation to stay accurate with the codebase.
 - Never remove working examples without replacing them.
 - If the target section no longer exists, treat that part as a create and say
   so explicitly in the plan summary.
+- If the target page cannot be read at all (not found / 404), stop after **two
+  attempts** and treat it as a new page: `start_draft` with `action="create"`
+  for the same path, then write the content the task requires. Do not retry the
+  read, do not guess the file's previous contents, and do not return an empty
+  plan.
 - When several pages are affected, produce one plan with multiple files and a
   single commit message — not one plan per page.
 
