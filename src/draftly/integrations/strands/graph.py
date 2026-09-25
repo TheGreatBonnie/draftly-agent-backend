@@ -113,9 +113,12 @@ def build_graph_for_run(
 
     # The Task 6 research plan and Task 13 progress sink are
     # documentation-graph-only; every other builder rejects the unknown kwarg.
+    # Same for the writer loop budgets (Strands `limits`): only the docs page
+    # writer consumes them.
     if surface != "pull_request":
         graph_kwargs.pop("research_plan", None)
         graph_kwargs.pop("progress_sink", None)
+        graph_kwargs.pop("writer_limits", None)
 
     # Grounding mode (local checkout vs GitHub API vs docs-only) is a
     # documentation-graph concern; other builders must not receive it.

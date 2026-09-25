@@ -244,6 +244,7 @@ class _Agent:
     def __init__(self) -> None:
         self.prompts: list[str] = []
         self.states: list[dict[str, Any] | None] = []
+        self.kwargs: list[dict[str, Any]] = []
 
     async def invoke_async(
         self,
@@ -253,6 +254,7 @@ class _Agent:
     ) -> Any:
         self.prompts.append(prompt)
         self.states.append(invocation_state)
+        self.kwargs.append(kwargs)
         return SimpleNamespace(structured_output=SimpleNamespace())
 
 
@@ -347,6 +349,51 @@ async def test_initial_writer_receives_one_page_and_only_its_evidence() -> None:
             "version": 1,
         }
     ]
+
+
+async def test_writer_forwards_strands_limits_to_invoke_async() -> None:
+    """The handler must surface configured Strands limits to the writer agent
+    so an unbounded loop stops at a deterministic cap instead of relying on
+    the provider's per-response truncation recovery."""
+    page = _page_task()
+    artifact = _artifact()
+    drafts = _Drafts([artifact])
+    pages = _Pages([_state(page.id)])
+    factory = _WriterFactory()
+    handler = PageWriterHandler(
+        writer_factory=factory,
+        drafts_repo=drafts,
+        page_repository=pages,
+        limits={"turns": 3, "output_tokens": 500},
+    )
+
+    await handler(
+        _task(task_type="write", input_data={"task": page.model_dump()})
+    )
+
+    assert factory.agents[0].kwargs[0]["limits"] == {
+        "turns": 3,
+        "output_tokens": 500,
+    }
+
+
+async def test_writer_omits_limits_kwarg_when_unset() -> None:
+    page = _page_task()
+    artifact = _artifact()
+    drafts = _Drafts([artifact])
+    pages = _Pages([_state(page.id)])
+    factory = _WriterFactory()
+    handler = PageWriterHandler(
+        writer_factory=factory,
+        drafts_repo=drafts,
+        page_repository=pages,
+    )
+
+    await handler(
+        _task(task_type="write", input_data={"task": page.model_dump()})
+    )
+
+    assert "limits" not in factory.agents[0].kwargs[0]
 
 
 async def test_writer_accepts_plan_with_slug_id_and_distinct_real_path() -> None:

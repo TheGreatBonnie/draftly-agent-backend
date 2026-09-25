@@ -94,6 +94,7 @@ PRUNED: tuple[str, ...] = (
 def _clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
     for _, _, env_var, _ in SURVIVORS:
         monkeypatch.delenv(env_var, raising=False)
+    monkeypatch.delenv("NEMOTRON_ULTRA_MAX_OUTPUT_TOKENS", raising=False)
 
 
 class TestSurvivorModelsRegistered:
@@ -133,13 +134,32 @@ class TestSurvivorModelsRegistered:
 
 
 class TestNoOutputTokenCaps:
-    def test_all_registered_models_are_uncapped(self) -> None:
+    """Registry-wide per-response output budget policy.
+
+    Every model runs uncapped (``max_tokens is None``) EXCEPT
+    ``nemotron-ultra-doc``, which deliberately ships an explicit per-response
+    budget. Run 3ef0d570 showed the docgen writer's giant tool-call batch
+    truncating at the endpoint's unknown default cap; Strands recovered by
+    discarding every pending tool use and the starved model invented
+    unregistered tools. The explicit cap replaces that unknown with a tunable
+    budget (env ``NEMOTRON_ULTRA_MAX_OUTPUT_TOKENS``).
+    """
+
+    #: The one intentional per-response output cap in the registry.
+    DOCGEN_CAPPED_MODEL = "nemotron-ultra-doc"
+
+    def test_all_registered_models_are_uncapped_except_the_docgen_writer(
+        self,
+    ) -> None:
         registry = build_model_router().registry
 
         for config in registry.list_models():
-            assert config.max_tokens is None, (
-                f"{config.name} imposes max_tokens={config.max_tokens!r}"
-            )
+            if config.name == self.DOCGEN_CAPPED_MODEL:
+                assert config.max_tokens == 16_384
+            else:
+                assert config.max_tokens is None, (
+                    f"{config.name} imposes max_tokens={config.max_tokens!r}"
+                )
 
 
 class TestPrunedModelsAbsent:

@@ -245,6 +245,23 @@ async def test_append_chunk_rejects_empty(repo: _FakeRepo, scoped_run: None) -> 
         await append_chunk(started["draft_id"], "")
 
 
+async def test_append_chunk_rejects_empty_draft_id(
+    repo: _FakeRepo, scoped_run: None
+) -> None:
+    """Strands parse-drops truncated tool JSON to {} — the draft_id arrives ""."""
+    with pytest.raises(ValueError, match="draft_id"):
+        await append_chunk("", "content")
+
+
+async def test_start_draft_rejects_empty_repository(
+    repo: _FakeRepo, scoped_run: None
+) -> None:
+    from draftly.tools._guard import EmptyToolInputError
+
+    with pytest.raises(EmptyToolInputError, match="repository"):
+        await start_draft(repository="", path="docs/a.md", action="update")
+
+
 async def test_append_chunk_rejects_chunk_size_mismatch(
     repo: _FakeRepo, scoped_run: None
 ) -> None:
@@ -275,6 +292,13 @@ async def test_finalize_returns_seal(repo: _FakeRepo, scoped_run: None) -> None:
 async def test_finalize_unknown_draft(repo: _FakeRepo, scoped_run: None) -> None:
     with pytest.raises(ValueError, match="unknown"):
         await finalize_draft("nope")
+
+
+async def test_finalize_rejects_empty_draft_id(
+    repo: _FakeRepo, scoped_run: None
+) -> None:
+    with pytest.raises(ValueError, match="draft_id"):
+        await finalize_draft("")
 
 
 async def test_get_drafted_docs_requires_active_scope() -> None:

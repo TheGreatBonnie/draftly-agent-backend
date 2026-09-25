@@ -139,6 +139,7 @@ def build_documentation_graph(
     write_concurrency: int = 3,
     progress_sink: Any | None = None,
     page_workflow: Any = None,
+    writer_limits: Any = None,
 ):
     """Build the unified Draftly Graph for documentation workflows.
 
@@ -155,6 +156,11 @@ def build_documentation_graph(
     page-scoped documentation workflow. When omitted the graph runs its nodes
     offline — the ``document`` node reports a failed state rather than
     fabricating unsealed bytes.
+
+    ``writer_limits`` forwards Strands ``limits`` (e.g. ``{"turns": 60,
+    "output_tokens": 48000}``) to every page-writer invocation so an
+    unbounded agent loop stops at a deterministic cap instead of relying on
+    the provider's per-response truncation recovery.
     """
     # Lazy imports break the import cycle content_graph ↔ documentation_graph
     # (surface graphs are directly importable regardless of whether the
@@ -355,6 +361,7 @@ def build_documentation_graph(
                     drafts_repo=drafts_repo,
                     page_repository=page_workflow,
                     documents_repo=documents_repo,
+                    limits=writer_limits,
                 ),
                 "evaluate": PageEvaluatorHandler(
                     rubric_grader=docs_rubric_grader,

@@ -24,6 +24,21 @@ class StrandsConfig(BaseModel):
     review_policy: str = "always"  # "always" | "risky" | "never"
 
     # ------------------------------------------------------------------
+    # Documentation page writer loop (spec: 2026-09-20-documentation-workflow-replacement)
+    # ------------------------------------------------------------------
+
+    #: Strands ``limits`` turns cap for one page-writer agent invocation. One
+    #: turn is one model call plus tool execution; a page write needs ~15-40
+    #: turns (analysis, start_draft, N append_chunk, finalize). 60 bounds a
+    #: runaway loop while leaving headroom for slow multi-chunk pages.
+    writer_max_turns: int = 60
+    #: Strands ``limits`` cumulative model-generated-token cap for the writer
+    #: loop (soft, checked at turn boundaries). Keeps the writer under the
+    #: per-run budget instead of relying on the provider's per-response
+    #: truncation recovery (the writer starvation root cause in run 3ef0d570).
+    writer_output_tokens: int = 48_000
+
+    # ------------------------------------------------------------------
     # Agent steering (spec: 2026-09-10-agent-steering-design)
     # ------------------------------------------------------------------
 
@@ -173,6 +188,9 @@ class Settings(BaseSettings):
     strands_node_timeout: int = 1200
     strands_evaluator_max_iterations: int = 2
     strands_review_policy: str = "always"  # "always" | "risky" | "never"
+    # Page-writer loop budgets (Strands `limits` for the write agent).
+    strands_writer_max_turns: int = 60
+    strands_writer_output_tokens: int = 48_000
 
     # ------------------------------------------------------------------
     # Agent steering (spec: 2026-09-10-agent-steering-design)
@@ -201,6 +219,8 @@ class Settings(BaseSettings):
             node_timeout=self.strands_node_timeout,
             evaluator_max_iterations=self.strands_evaluator_max_iterations,
             review_policy=self.strands_review_policy,
+            writer_max_turns=self.strands_writer_max_turns,
+            writer_output_tokens=self.strands_writer_output_tokens,
             steering_enabled=self.strands_steering_enabled,
             steering_enforcement_enabled=self.strands_steering_enforcement_enabled,
             steering_policy_version=self.strands_steering_policy_version,

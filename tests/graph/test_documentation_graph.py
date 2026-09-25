@@ -9,6 +9,8 @@ the page workflow via ``PageEvaluatorHandler``.
 
 from __future__ import annotations
 
+import re
+from pathlib import Path
 from types import SimpleNamespace
 
 from strands.multiagent.base import Status
@@ -399,6 +401,70 @@ def test_deliver_agent_gets_drafted_docs_read_tool(model, tools, tmp_sessions) -
     assert "get_drafted_docs" not in set(graph.nodes["answer"].executor.tool_names)
     changelog_names = set(graph.nodes["changelog"].executor.tool_names)
     assert "get_drafted_docs" not in changelog_names
+
+
+def test_writer_limits_forwarded_to_page_writer_handler(
+    model, tools, tmp_sessions
+) -> None:
+    """Explicit Strands writer budgets reach the page writer handler.
+
+    The writer must invoke_async with Strands ``limits`` so an unbounded loop
+    stops at a deterministic turn/output cap instead of relying on the
+    provider's per-response truncation recovery (which starves the agent and
+    made it invent unregistered tool names in run 3ef0d570).
+    """
+    wiring = docs_workflow_wiring()
+    graph = build_graph_for_run(
+        "writer-limits-1",
+        surface="pull_request",
+        tools_registry=tools,
+        model=model,
+        storage_dir=tmp_sessions,
+        page_workflow=wiring["page_workflow"],
+        drafts_repo=wiring["drafts_repo"],
+        agents=wiring["agents"],
+        writer_limits={"turns": 3, "output_tokens": 500},
+    )
+    write_handler = graph.nodes["document"].executor.handlers["write"]
+    assert write_handler.limits == {"turns": 3, "output_tokens": 500}
+
+
+def test_documentation_generation_skill_lists_only_registered_writer_tools(
+    model, tools, tmp_sessions
+) -> None:
+    """The documentation-generation SKILL must only advertise tools the writer
+    actually registers in github grounding.
+
+    ``read_file`` is a local-checkout tool the GitHub-mode writer never
+    receives; advertising it teaches the model to emit names the registry
+    rejects (the ``list_directory``/``glob`` tool-not-found failures in run
+    3ef0d570).
+    """
+    skill_path = (
+        Path(__file__).resolve().parents[2]
+        / "src/draftly/skills/documentation-generation/SKILL.md"
+    )
+    text = skill_path.read_text(encoding="utf-8")
+    allowed = set(re.findall(r"^allowed-tools:\s*(.+)$", text, re.M)[0].split())
+    assert "read_file" not in allowed, "SKILL must not advertise local-only tools"
+
+    wiring = docs_workflow_wiring()
+    graph = build_graph_for_run(
+        "skill-writer-tools-1",
+        surface="pull_request",
+        tools_registry=tools,
+        model=model,
+        storage_dir=tmp_sessions,
+        grounding="github",
+        page_workflow=wiring["page_workflow"],
+        drafts_repo=wiring["drafts_repo"],
+        agents=wiring["agents"],
+    )
+    writer_names = _tool_names(
+        graph.nodes["document"].executor.handlers["write"].writer_factory.tools
+    )
+    unregistered = allowed - writer_names
+    assert not unregistered, f"skill advertises unregistered writer tools: {unregistered}"
 
 
 def test_draft_generation_hook_registered_as_provider(

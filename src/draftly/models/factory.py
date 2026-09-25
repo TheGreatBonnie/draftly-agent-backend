@@ -132,6 +132,57 @@ def _resolve_dimensions(
     return default
 
 
+def _resolve_model_max_output_tokens(
+    *env_names: str,
+    default: int = 16_384,
+) -> int:
+    """Resolve a model's per-response max output token budget from env.
+
+    The docgen writer must ship a defined per-response output cap; leaving it
+    ``None`` lets the endpoint's default apply, which truncates a large
+    tool-call batch mid-JSON and starves the agent into inventing tools. A
+    non-numeric or non-positive value is ignored with a warning rather than
+    crashing router construction.
+    """
+
+    for name in env_names:
+        value = os.getenv(name)
+
+        if not value or not value.strip():
+            continue
+
+        try:
+            parsed = int(value.strip())
+        except ValueError:
+            logger.warning(
+                "model_max_output_tokens_invalid var=%s value=%s",
+                name,
+                value,
+            )
+            break
+
+        if parsed <= 0:
+            logger.warning(
+                "model_max_output_tokens_nonpositive var=%s value=%s",
+                name,
+                value,
+            )
+            break
+
+        logger.debug(
+            "model_max_output_tokens resolved var=%s value=%s", name, parsed
+        )
+        return parsed
+
+    logger.debug(
+        "model_max_output_tokens unresolved vars=%s using default=%s",
+        env_names,
+        default,
+    )
+
+    return default
+
+
 def build_model_router(
     *,
     stats_store: EMAStatsStore | None = None,
@@ -822,6 +873,13 @@ def build_model_router(
             model_id=_resolve_model_id(
                 "NEMOTRON_ULTRA_MODEL_ID",
                 default="nvidia/Nemotron-3-Ultra-550b-a55b",
+            ),
+            # Explicit per-response output budget (never the endpoint's
+            # default cap): the writer's tool-call JSON truncated mid-batch in
+            # run 3ef0d570, Strands recovered by discarding every pending tool
+            # use, and the starved model invented unregistered tool names.
+            max_tokens=_resolve_model_max_output_tokens(
+                "NEMOTRON_ULTRA_MAX_OUTPUT_TOKENS",
             ),
             capabilities=(
                 "reasoning",

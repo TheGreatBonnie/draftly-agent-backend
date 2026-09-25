@@ -21,6 +21,23 @@ TF_BASE_URL = "https://api.tokenfactory.nebius.com/v1"
 class TestNebiusTokenFactoryProvider:
     """Provider construction contract."""
 
+    def test_docgen_model_registry_sets_explicit_per_response_max_tokens(
+        self, monkeypatch
+    ) -> None:
+        """The docgen writer model must ship a defined per-response output
+        budget (never the endpoint's default cap), so a normal tool-call batch
+        is not truncated mid-JSON — the truncation root cause of writer run
+        3ef0d570 that starved the writer into inventing tools."""
+        from draftly.models.factory import build_model_router
+
+        monkeypatch.delenv("NEMOTRON_ULTRA_MAX_OUTPUT_TOKENS", raising=False)
+        router = build_model_router(enabled_providers={"nebius_token_factory"})
+        assert router.registry.get_model("nemotron-ultra-doc").max_tokens == 16_384
+
+        monkeypatch.setenv("NEMOTRON_ULTRA_MAX_OUTPUT_TOKENS", "8000")
+        router = build_model_router(enabled_providers={"nebius_token_factory"})
+        assert router.registry.get_model("nemotron-ultra-doc").max_tokens == 8000
+
     def _provider(self, api_key: str | None = "test-key") -> NebiusTokenFactoryProvider:
         return NebiusTokenFactoryProvider(
             ProviderConfig(

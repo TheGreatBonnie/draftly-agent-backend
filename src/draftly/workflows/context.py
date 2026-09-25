@@ -130,4 +130,13 @@ class WorkflowContext:
             value = getattr(strands, attr, None)
             if value is not None:
                 limits[attr] = value
+        writer_turns = getattr(strands, "writer_max_turns", None)
+        writer_output_tokens = getattr(strands, "writer_output_tokens", None)
+        if writer_turns is not None or writer_output_tokens is not None:
+            writer_limits: dict[str, Any] = {}
+            if writer_turns is not None:
+                writer_limits["turns"] = writer_turns
+            if writer_output_tokens is not None:
+                writer_limits["output_tokens"] = writer_output_tokens
+            limits["writer_limits"] = writer_limits
         return limits
