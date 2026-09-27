@@ -123,6 +123,20 @@ async def start_draft(
             f"start_draft: repository {repository!r} does not match assigned "
             f"repository {assigned_repository!r}"
         )
+    # A page-scoped writer with no assigned repository is a wiring bug: the
+    # runner scopes the agent to one page but never told it what to draft
+    # against, so accepting the call lets the model invent a repository.
+    if getattr(scope, "assigned_page_id", None) and not assigned_repository:
+        raise ValueError(
+            f"start_draft: page {scope.assigned_page_id!r} is assigned but has "
+            f"no assigned repository; the runner must publish a DraftScope with "
+            f"both set."
+        )
+    progress = getattr(scope, "progress", None)
+    # Captured before create_revision overwrites it: only a *matching* draft id
+    # means a re-open. A new artifact_version yields a new id on the same page,
+    # and reporting that as a re-open would claim content the model lacks.
+    existing_draft_id = progress.draft_id if progress is not None else None
     repo = build_draft_repository()
     revision = await repo.create_revision(
         run_id=scope.run_id,
@@ -132,7 +146,7 @@ async def start_draft(
         action=action,
         version=getattr(scope, "version", None),
     )
-    progress = getattr(scope, "progress", None)
+    reopened = existing_draft_id is not None and existing_draft_id == revision.id
     if progress is not None:
         progress.draft_id = revision.id
         progress.sealed = bool(revision.sealed)
@@ -143,8 +157,33 @@ async def start_draft(
         generation=scope.generation,
         path=clean_path,
         action=action,
+        reopened=reopened,
+        chunks=progress.chunks if progress is not None else 0,
     )
-    return {"draft_id": revision.id}
+    payload: dict = {
+        "draft_id": revision.id,
+        "path": clean_path,
+        "sealed": bool(revision.sealed),
+        "reopened": reopened,
+        "chunks": (progress.chunks if progress is not None else 0) if reopened else 0,
+    }
+    if reopened and revision.sealed:
+        payload["message"] = (
+            f"Draft {revision.id} is already open and sealed. Do not append more "
+            f"content; emit the metadata-only DocChangePlan."
+        )
+    elif reopened:
+        payload["message"] = (
+            f"Draft {revision.id} is already open with {payload['chunks']} chunks "
+            f"already appended. Do not re-plan it. Append only what is missing "
+            f"with append_chunk, then seal it with finalize_draft."
+        )
+    else:
+        payload["message"] = (
+            f"Draft {revision.id} opened for {clean_path}. Append content with "
+            f"append_chunk, then seal it with finalize_draft."
+        )
+    return payload
 
 
 @tool
