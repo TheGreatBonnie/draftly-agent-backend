@@ -553,8 +553,14 @@ async def test_writer_resume_keeps_the_same_invocation_context_and_limits() -> N
 
 
 async def test_writer_fails_when_the_truncation_persists_after_the_resume() -> None:
-    """One resume, then the task fails as before — a page that cannot be written
-    within the budget must still surface as a task failure."""
+    """A page that cannot be written within its budget must still surface as a
+    task failure.
+
+    The failure is now the unified budget rather than ``MaxTokensReachedException``
+    itself: a MaxTokens resume and an infrastructure re-claim draw on one
+    counter, so the budget is the single stop condition. What matters here is
+    that the task fails after exactly two invocations.
+    """
     page = _page_task()
     artifact = _artifact()
     drafts = _Drafts([artifact])
@@ -566,7 +572,7 @@ async def test_writer_fails_when_the_truncation_persists_after_the_resume() -> N
         page_repository=pages,
     )
 
-    with pytest.raises(MaxTokensReachedException):
+    with pytest.raises(RuntimeError, match="budget"):
         await handler(_task(task_type="write", input_data={"task": page.model_dump()}))
 
     assert len(factory.agents[0].prompts) == 2

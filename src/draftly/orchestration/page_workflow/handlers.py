@@ -56,12 +56,17 @@ logger = structlog.get_logger(__name__)
 MAX_PAGE_EVALUATION_ATTEMPTS = MAX_AUTOMATIC_EVALUATION_ATTEMPTS
 CROSS_PAGE_REVIEW_TASK_ID = "cross-page-review"
 
-#: One resume per write attempt after the provider cut a response short.
-#: Strands leaves the partial message in the conversation and documents the
-#: recovery as "continue by calling the agent again"; a second truncation still
-#: fails the task. Run e1e96f90 lost ``docs/api/auth.md`` and ``docs/api/oauth.md``
-#: — and with them the whole PR workflow — to a single truncation each.
-MAX_WRITER_RESUMES = 1
+#: Total writer invocations one page may receive, counting BOTH a MaxTokens
+#: resume and an infrastructure re-claim. This replaces ``MAX_WRITER_RESUMES``
+#: plus the executor's own retry, which were counted separately and so handed a
+#: truncating page three invocations: one full attempt, one in-handler resume,
+#: and then a re-claim that started the whole thing over. Run d76e2490 showed
+#: what that costs. Two still leaves the recovery that saved run e1e96f90, which
+#: lost ``docs/api/auth.md`` and ``docs/api/oauth.md`` to a single truncation.
+DEFAULT_MAX_WRITE_ATTEMPTS = 2
+
+#: Ceiling on the per-task attempt table before it is dropped wholesale.
+MAX_TRACKED_WRITE_TASKS = 1024
 
 #: Continuation instruction for a resumed writer. Keeps the model on the
 #: outstanding draft calls instead of restarting the page from scratch.
@@ -290,7 +295,11 @@ class PageWriterHandler:
         documents_repo: Any | None = None,
         limits: Any = None,
         session_repository: Any | None = None,
+        max_write_attempts: int = DEFAULT_MAX_WRITE_ATTEMPTS,
+        _max_tracked_tasks: int = MAX_TRACKED_WRITE_TASKS,
     ) -> None:
+        if max_write_attempts < 1:
+            raise ValueError("max_write_attempts must be >= 1")
         self.writer_factory = writer_factory
         self.drafts_repo = drafts_repo
         self.page_repository = page_repository
@@ -298,8 +307,35 @@ class PageWriterHandler:
         #: writes for ``update`` pages hydrate this body into the prompt.
         self.documents_repo = documents_repo
         self.limits = limits
+        self.max_write_attempts = max_write_attempts
+        #: Agent invocations already spent per ``task_id``. This is the single
+        #: budget: a MaxTokens resume and an infrastructure re-claim both draw
+        #: on it, so a page can never be handed more than
+        #: ``max_write_attempts`` writer invocations in total.
+        self._attempts: dict[str, int] = {}
+        self._max_tracked_tasks = _max_tracked_tasks
         self._session_repository = session_repository
         self._session_repository_resolved = session_repository is not None
+
+    def _spend_attempt(self, task_id: str) -> None:
+        """Charge one writer invocation against ``task_id``'s budget.
+
+        Keyed by task id, not by page, so a retry and its original share one
+        budget. The table is bounded: the handler outlives a single run, and an
+        unbounded map would leak one entry per task forever. Clearing is safe
+        precisely because a cleared task starts again from the full budget -
+        the same situation as a fresh worker, which is the pre-existing
+        behaviour.
+        """
+        if len(self._attempts) > self._max_tracked_tasks:
+            self._attempts.clear()
+        spent = self._attempts.get(task_id, 0) + 1
+        self._attempts[task_id] = spent
+        if spent > self.max_write_attempts:
+            raise RuntimeError(
+                f"write task {task_id!r} exhausted its budget of "
+                f"{self.max_write_attempts} writer invocations"
+            )
 
     def _sessions(self) -> Any | None:
         """The shared session repository, built once per handler.
@@ -438,16 +474,22 @@ class PageWriterHandler:
         invocation_state: dict[str, Any],
         kwargs: dict[str, Any],
         page: DocumentationTask,
+        task_id: str,
     ) -> None:
-        """Invoke the writer, resuming once after an output-cap truncation.
+        """Invoke the writer, resuming after an output-cap truncation.
 
         A per-response truncation is recoverable: the partial message is already
         in the agent's conversation, so re-invoking with a continuation
         instruction lets the same agent finish the outstanding draft calls for
-        the SAME page. Only a repeated truncation fails the task.
+        the SAME page.
+
+        Every invocation is charged to the task's budget, so the resume here and
+        a later infrastructure re-claim cannot between them exceed it. The
+        budget - not a local retry counter - is what stops a page being retried
+        forever.
         """
-        attempt = 0
         while True:
+            self._spend_attempt(task_id)
             try:
                 await agent.invoke_async(
                     prompt,
@@ -456,14 +498,12 @@ class PageWriterHandler:
                 )
                 return
             except MaxTokensReachedException as exc:
-                if attempt >= MAX_WRITER_RESUMES:
-                    raise
-                attempt += 1
                 logger.warning(
                     "writer_max_tokens_resume",
                     run_id=invocation_state.get("run_id"),
                     page_id=page.id,
-                    attempt=attempt,
+                    spent=self._attempts.get(task_id, 0),
+                    budget=self.max_write_attempts,
                     error=str(exc),
                 )
                 scope = current_draft_scope()
@@ -575,7 +615,9 @@ class PageWriterHandler:
             kwargs: dict[str, Any] = {}
             if self.limits is not None:
                 kwargs["limits"] = self.limits
-            await self._invoke_writer(agent, prompt, invocation_state, kwargs, page)
+            await self._invoke_writer(
+                agent, prompt, invocation_state, kwargs, page, workflow_task.task_id
+            )
         except Exception as exc:
             scope = current_draft_scope()
             progress = scope.progress if scope is not None else None
