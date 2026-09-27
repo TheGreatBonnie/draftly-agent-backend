@@ -970,6 +970,18 @@ def test_default_local_grounding_has_no_github_tools_in_impact_prompt(
     assert "code_search" in prompt
 
 
+def _unavailable_sentence(prompt: str) -> str:
+    """The prompt's "these tools are NOT available" line, or "" if absent.
+
+    Lets a test assert that an unregistered tool name appears *only* as an
+    explicit prohibition, without depending on the sentence's exact wording.
+    """
+    for line in prompt.splitlines():
+        if "NOT available in this run" in line:
+            return line
+    return ""
+
+
 def test_github_grounding_writer_prompt_names_only_registered_tools(
     model, tools, tmp_sessions
 ) -> None:
@@ -1002,9 +1014,17 @@ def test_github_grounding_writer_prompt_names_only_registered_tools(
     prompt = agent.system_prompt
     assert "github_get_tree" in prompt
     assert "github_read_file" in prompt
-    assert "read_file" not in prompt.replace("github_read_file", "")
-    assert "list_directory" not in prompt
     assert "registered toolset" in prompt
+    # Absent repo tools ARE named, but only inside the "not available"
+    # sentence. Run d7cfb2a0 looped on a silently-missing `read_file`; run
+    # d76e2490 looped harder, calling it 683 times. Silence did not teach the
+    # model, an explicit prohibition does.
+    assert _unavailable_sentence(prompt)
+    unavailable = _unavailable_sentence(prompt)
+    assert "`read_file`" in unavailable
+    assert "`list_directory`" in unavailable
+    # Nothing outside that sentence may teach an unregistered name.
+    assert "read_file" not in prompt.replace("github_read_file", "").replace(unavailable, "")
 
 
 def test_default_local_grounding_writer_prompt_names_checkout_tools(
@@ -1036,8 +1056,13 @@ def test_default_local_grounding_writer_prompt_names_checkout_tools(
     prompt = agent.system_prompt
     assert "read_file" in prompt
     assert "list_directory" in prompt
-    assert "github_read_file" not in prompt
     assert "registered toolset" in prompt
+    # The GitHub-API names are registered nowhere in a local run, so they appear
+    # only as an explicit prohibition, never as an available tool.
+    unavailable = _unavailable_sentence(prompt)
+    assert unavailable
+    assert "`github_read_file`" in unavailable
+    assert "github_read_file" not in prompt.replace(unavailable, "")
 
 
 def test_default_local_grounding_keeps_checkout_tools(

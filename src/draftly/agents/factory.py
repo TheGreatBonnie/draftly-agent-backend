@@ -84,6 +84,14 @@ def build_draftly_agent(
         role=policy.role,
     )
     agent_options.setdefault("agent_id", agent_id)
+    # Strands defaults ``callback_handler`` to ``PrintingCallbackHandler``,
+    # which print()s every reasoning delta, text delta, and ``Tool #N:`` line
+    # to stdout. That interleaves with structlog on the same fd and splices
+    # model text into log records (run d76e2490: 2,242 raw lines, 65,520
+    # ``<unk>`` tokens, an unreadable failing node). The handler only observes
+    # and prints, so silencing it changes no agent behaviour. Callers that
+    # genuinely stream (SSE) read ``graph.stream_async``, not this callback.
+    agent_options.setdefault("callback_handler", None)
     return Agent(
         model=model,
         system_prompt=system_prompt,

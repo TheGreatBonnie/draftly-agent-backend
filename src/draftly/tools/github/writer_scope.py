@@ -26,6 +26,23 @@ def require_writer_target(owner: str, repo: str, ref: str | None = None) -> None
         )
 
 
+def writer_read_key(
+    tool_name: str,
+    owner: object = "",
+    repo: object = "",
+    path: object = "",
+    ref: object = "",
+) -> tuple[str, ...]:
+    """Build the canonical writer read-budget key for one GitHub read.
+
+    Shared so the steering guard (``WriterReadBudgetGuard``, which reads a
+    ``ToolUse`` mapping) and the tools themselves (which read bound arguments)
+    count the same read as the same budget entry. If the two key shapes drift,
+    a read guarded here is charged twice and the budget halves.
+    """
+    return (tool_name, *(str(arg) for arg in (owner, repo, path, ref)))
+
+
 def reject_unpinned_writer_search() -> None:
     """GitHub code search has no SHA filter, so a PR writer cannot use it."""
     scope = current_draft_scope()
@@ -37,7 +54,13 @@ def reject_unpinned_writer_search() -> None:
 
 
 def reserve_writer_read(tool_name: str, *args: object) -> None:
-    """Count a distinct page-writer read before making a GitHub request."""
+    """Count a distinct page-writer read before making a GitHub request.
+
+    The steering guard (``WriterReadBudgetGuard``) normally intercepts budget
+    rejections first and returns a ``Guide``, so this raise is the backstop for
+    callers that bypass steering. Both paths use ``writer_read_key`` so a read
+    is never charged to the budget twice.
+    """
     scope = current_draft_scope()
     if scope is not None and scope.read_budget is not None:
-        scope.read_budget.reserve((tool_name, *(str(arg) for arg in args)))
+        scope.read_budget.reserve(writer_read_key(tool_name, *args))

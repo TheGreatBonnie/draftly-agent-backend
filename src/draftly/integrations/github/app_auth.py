@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import os
 import time
 from pathlib import Path
@@ -41,8 +42,26 @@ def generate_jwt() -> str:
     return jwt.encode(payload, private_key, algorithm="RS256")
 
 
-async def get_installation_token(installation_id: int) -> str:
-    """Exchange JWT for temporary repository-specific access token."""
+#: GitHub expires installation tokens after 1 hour. Hold them for 45 minutes so
+#: a token handed out is always valid for at least 15 more.
+_TOKEN_TTL_SECONDS = 45 * 60
+
+#: installation_id -> (token, expires_at_monotonic). A per-installation token
+#: is scoped to one installation, so it is never valid for another.
+_token_cache: dict[int, tuple[str, float]] = {}
+
+#: One mint at a time per process. Without this, the concurrent tool calls a
+#: single page issues all miss the cache together and each mints its own.
+_token_cache_lock = asyncio.Lock()
+
+
+def clear_installation_token_cache() -> None:
+    """Drop every cached token. For tests and credential rotation."""
+    _token_cache.clear()
+
+
+async def _mint_installation_token(installation_id: int) -> str:
+    """Exchange a freshly signed App JWT for a repository-scoped token."""
     jwt_token = generate_jwt()
     url = f"https://api.github.com/app/installations/{installation_id}/access_tokens"
     headers = {
@@ -56,6 +75,38 @@ async def get_installation_token(installation_id: int) -> str:
         token_data = resp.json()
         logger.info("installation_token_obtained", installation_id=installation_id)
         return cast(str, token_data["token"])
+
+
+async def get_installation_token(installation_id: int) -> str:
+    """Return a valid installation token, minting one only when needed.
+
+    Every GitHub tool call reached this function, so a single page with 28 tool
+    calls signed 28 JWTs and made 28 API round trips to obtain 28 tokens for
+    one installation (run d76e2490). The token is good for an hour; caching it
+    removes all of that.
+    """
+    now = time.monotonic()
+    cached = _token_cache.get(installation_id)
+    if cached is not None:
+        token, expires_at = cached
+        if expires_at > now:
+            return token
+
+    # The double-check inside the lock matters: concurrent callers that queued
+    # behind the first mint must reuse its result, not mint again.
+    async with _token_cache_lock:
+        now = time.monotonic()
+        cached = _token_cache.get(installation_id)
+        if cached is not None:
+            token, expires_at = cached
+            if expires_at > now:
+                return token
+
+        # A failed mint propagates and leaves nothing cached, so the next
+        # caller retries instead of inheriting the failure.
+        token = await _mint_installation_token(installation_id)
+        _token_cache[installation_id] = (token, time.monotonic() + _TOKEN_TTL_SECONDS)
+        return token
 
 
 async def build_installation_client(installation_id: int):

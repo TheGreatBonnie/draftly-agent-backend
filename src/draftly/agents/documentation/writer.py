@@ -10,9 +10,31 @@ from strands.vended_plugins.skills import AgentSkills
 from draftly.agents.factory import build_draftly_agent
 from draftly.agents.prompts import WRITER_PROMPT, build_prompt, load_skills
 from draftly.agents.schemas import DocChangePlan, DocumentationTask
-from draftly.orchestration.graphs.tool_scoping import render_tool_names, repo_tool_hint
+from draftly.orchestration.graphs.tool_scoping import (
+    render_tool_names,
+    render_unavailable_repo_tools,
+    repo_tool_hint,
+)
 from draftly.steering.context import SteeringRuntime
 from draftly.steering.decisions import AgentRole
+from draftly.steering.tool_call_burst_guard import ToolCallBurstGuard
+from draftly.steering.writer_read_budget_guard import WriterReadBudgetGuard
+
+
+def _unavailable_repo_tools_sentence(tools: list[Any]) -> str:
+    """Render the absent-tool sentence, or nothing when all are registered.
+
+    The closed-list rule alone did not stop run d76e2490 from calling
+    ``read_file`` 683 times: the model knew a filesystem read existed somewhere
+    in Draftly and reached for it. Naming the gap is what closes it.
+    """
+    absent = render_unavailable_repo_tools(tools)
+    if not absent:
+        return ""
+    return (
+        "\nThese repository tools are NOT available in this run: "
+        f"{absent}. Do not call them. Use the registered equivalents above.\n"
+    )
 
 
 def build_writer_agent(
@@ -36,7 +58,11 @@ def build_writer_agent(
             security_rules="security_rules",
         )
         .replace("{repo_tool_hint}", repo_tool_hint(tools))
-        .replace("{registered_tools}", render_tool_names(tools)),
+        .replace("{registered_tools}", render_tool_names(tools))
+        .replace(
+            "{unavailable_repo_tools}",
+            _unavailable_repo_tools_sentence(tools),
+        ),
         model=model,
         tools=tools,
         structured_output_model=DocChangePlan,
@@ -48,6 +74,9 @@ def build_writer_agent(
                 )
             )
         ],
+        # Run d76e2490 emitted 679 tool blocks in one response, hit max_tokens,
+        # and executed none of them. Only after_model_call can see that.
+        interventions=[ToolCallBurstGuard(), WriterReadBudgetGuard()],
         runtime=runtime or SteeringRuntime.disabled(),
         agent_id=agent_id or "doc_writer",
         node_id=node_id or "doc_writer",

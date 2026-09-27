@@ -74,6 +74,25 @@ def repo_tool_hint(tools: list[Any]) -> str:
     return ", ".join(present) if present else FALLBACK_REPO_HINT
 
 
+def render_unavailable_repo_tools(tools: list[Any]) -> str:
+    """Name the repository-tool aliases that are NOT registered for this run.
+
+    ``read_file`` is registered for the research agents and absent for the PR
+    writer. A model carrying that prior reached for it 683 times in run
+    d76e2490, emitting 679 tool blocks in one message that hit ``max_tokens``
+    and failed the page. The prompt's closed-list rule was too abstract to
+    change that; naming the gap by name is the fix.
+
+    Only ``REPO_TOOL_HINT_NAMES`` is considered. Naming every unregistered
+    tool (22 of them for a writer run) invites more misses than it prevents.
+    Returns ``""`` when all of them are registered, so the caller can drop
+    the sentence entirely.
+    """
+    registered = {name for tool in tools if (name := tool_name(tool))}
+    absent = [name for name in REPO_TOOL_HINT_NAMES if name not in registered]
+    return ", ".join(f"`{name}`" for name in absent)
+
+
 def render_tool_names(tools: list[Any]) -> str:
     """Render the run's registered tool names as an inline backticked list.
 

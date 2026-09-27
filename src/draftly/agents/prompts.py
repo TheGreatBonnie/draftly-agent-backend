@@ -677,7 +677,7 @@ repository tools registered for this run: {repo_tool_hint}.
 These are the ONLY tools registered for this run:
 
 {registered_tools}
-
+{unavailable_repo_tools}
 A call to any other name — a differently-spelled variant of these names, a
 filesystem or shell command, or an invented dotted skill path — is not
 registered: it is rejected, never executes, and burns a turn you need to finish

@@ -88,6 +88,23 @@ class EmbeddingRouter:
         self.registry = registry
         self.health = health
         self.last_provider: str | None = None
+        # (provider, model_id) -> embedder. Building an embedder constructs an
+        # HTTP client, and `embed` resolved one per query rather than per model
+        # (run d76e2490: 6 resolutions inside the impact window alone). Keyed
+        # per provider so failover to a second provider builds its own client
+        # instead of reusing a client pointed at a different endpoint.
+        self._embedders: dict[tuple[str, str], OpenAICompatibleEmbedder] = {}
+
+    def _embedder_for(
+        self,
+        config: EmbeddingConfig,
+    ) -> OpenAICompatibleEmbedder:
+        key = (config.provider, config.model_id)
+        embedder = self._embedders.get(key)
+        if embedder is None:
+            embedder = self.registry.get_provider(config.provider).create_embedder(config)
+            self._embedders[key] = embedder
+        return embedder
 
     def embed(
         self,
@@ -115,7 +132,7 @@ class EmbeddingRouter:
             )
 
             try:
-                embedder = provider.create_embedder(config)
+                embedder = self._embedder_for(config)
 
                 vector = embedder.embed_query(text)
 
@@ -180,7 +197,7 @@ class EmbeddingRouter:
                 config.provider, config.model_id, len(texts),
             )
             try:
-                embedder = provider.create_embedder(config)
+                embedder = self._embedder_for(config)
                 vectors = embedder.embed_queries(texts)
             except Exception as exc:
                 from .router import ModelRouter
