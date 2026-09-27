@@ -107,11 +107,19 @@ class WriterFactory:
         self.runtime = runtime
         self._builder = builder or build_writer_agent
 
-    def create(self, task: DocumentationTask) -> Agent:
+    def create(self, task: DocumentationTask, **agent_options: Any) -> Agent:
+        """Build the writer for one task.
+
+        ``agent_options`` are forwarded to the builder, which passes them to
+        ``Agent(...)``. A page writer uses ``session_manager`` here so a
+        re-claimed task resumes its conversation instead of restarting at
+        ``Tool #1``; callers that pass none get the previous behaviour.
+        """
         return self._builder(
             self.model,
             self.tools,
             runtime=self.runtime,
             agent_id="documentation.writer",
             node_id="document",
+            **agent_options,
         )

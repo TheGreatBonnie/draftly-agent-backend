@@ -27,6 +27,10 @@ from draftly.agents.documentation.draft_scope import (
 )
 from draftly.agents.documentation.writer import WriterFactory
 from draftly.agents.schemas import DocumentationTask
+from draftly.integrations.strands.page_session import (
+    build_page_session_manager,
+    truncate_dangling_tool_blocks,
+)
 from draftly.orchestration.nodes.evaluate import (
     _evidence_has_signals,
     compute_page_metrics,
@@ -285,6 +289,7 @@ class PageWriterHandler:
         page_repository: PageWorkflowRepository,
         documents_repo: Any | None = None,
         limits: Any = None,
+        session_repository: Any | None = None,
     ) -> None:
         self.writer_factory = writer_factory
         self.drafts_repo = drafts_repo
@@ -293,6 +298,56 @@ class PageWriterHandler:
         #: writes for ``update`` pages hydrate this body into the prompt.
         self.documents_repo = documents_repo
         self.limits = limits
+        self._session_repository = session_repository
+        self._session_repository_resolved = session_repository is not None
+
+    def _sessions(self) -> Any | None:
+        """The shared session repository, built once per handler.
+
+        Lazy and memoized on purpose: ``DatabaseSessionRepository`` owns an
+        asyncpg pool on a worker thread, and constructing one per write task
+        would give every page its own pool and thread. All pages in a run share
+        the single instance and differ only by session id.
+
+        Returns ``None`` when no repository is reachable, which is the offline
+        and test case. A writer with no session simply cannot resume.
+        """
+        if not self._session_repository_resolved:
+            self._session_repository_resolved = True
+            database = getattr(self.drafts_repo, "database", None)
+            dsn = getattr(database, "database_url", None)
+            if dsn:
+                from draftly.integrations.strands.session_storage import (
+                    DatabaseSessionRepository,
+                )
+
+                self._session_repository = DatabaseSessionRepository(database_url=dsn)
+        return self._session_repository
+
+    def _page_session(self, workflow_task: WorkflowTask, page: DocumentationTask) -> Any | None:
+        """A resume session for this page, or ``None`` when unavailable.
+
+        Failing to build one is logged and swallowed. A resume aid that could
+        fail a write would be worse than no resume at all, so the worst case
+        here is the old restart-from-scratch behaviour.
+        """
+        try:
+            return build_page_session_manager(
+                run_id=workflow_task.run_id,
+                page_id=page.id,
+                artifact_version=workflow_task.artifact_version,
+                session_repository=self._sessions(),
+            )
+        except Exception as exc:
+            logger.warning(
+                "page_writer_session_unavailable",
+                run_id=workflow_task.run_id,
+                page_id=page.id,
+                artifact_version=workflow_task.artifact_version,
+                error_type=type(exc).__name__,
+                error=str(exc),
+            )
+            return None
 
     async def _current_repo_content(
         self,
@@ -345,6 +400,35 @@ class PageWriterHandler:
         return (
             f"EXISTING CONTENT of {page.path!r} (rewrite in place; preserve "
             f"anything still accurate):\n\n{content}"
+        )
+
+    def _restore(
+        self,
+        agent: Any,
+        workflow_task: WorkflowTask,
+        page: DocumentationTask,
+        version: int,
+    ) -> None:
+        """Repair a history restored from a previous attempt.
+
+        A retry that follows a crash mid-tool-call restores messages whose tool
+        calls do not line up, and Bedrock rejects that. Cutting back to the last
+        consistent point lets the model re-issue only the in-flight calls and
+        keeps every earlier read, which is the entire point of the session.
+        """
+        restored = getattr(agent, "messages", None)
+        if not isinstance(restored, list) or not restored:
+            return
+        repaired = truncate_dangling_tool_blocks(restored)
+        if repaired == restored:
+            return
+        agent.messages = repaired
+        logger.warning(
+            "page_writer_session_truncated_dangling_tool_call",
+            run_id=workflow_task.run_id,
+            page_id=page.id,
+            artifact_version=version,
+            dropped=len(restored) - len(repaired),
         )
 
     async def _invoke_writer(
@@ -462,7 +546,12 @@ class PageWriterHandler:
             if existing is not None:
                 prompt = f"{prompt}\n\n{existing}"
 
-        agent = self.writer_factory.create(page)
+        session_manager = self._page_session(workflow_task, page)
+        agent = self.writer_factory.create(
+            page,
+            **({"session_manager": session_manager} if session_manager is not None else {}),
+        )
+        self._restore(agent, workflow_task, page, version)
         invocation_state = {
             "run_id": workflow_task.run_id,
             "project_id": workflow_task.org_id,
