@@ -114,9 +114,12 @@ def _swarm_for_plan(
 
     ``plan.failure`` (missing mandatory capability) is handled by the caller;
     here every planned researcher is a capability the run has evidence for.
-    Explicit ``execution_timeout``/``node_timeout`` overrides win over the
-    plan's lowered defaults so the operator-configured Strands budgets
-    (``STRANDS_NODE_TIMEOUT`` etc.) reach the research swarm.
+    The operator-configured Strands budgets (``STRANDS_NODE_TIMEOUT`` etc.) and
+    the plan's research budgets are combined with ``min``: the effective limit
+    is whichever is tighter. Deployment-wide timeouts are far larger than the
+    per-researcher plan, so letting the operator value win would hand a stuck
+    researcher the whole deployment budget; but a plan that is more generous
+    than the operator setting must not extend it either.
     """
     agents: list[Agent] = []
     for name in plan.researchers:
@@ -150,10 +153,14 @@ def _swarm_for_plan(
         entry_point=agents[0],
         max_handoffs=plan.max_handoffs,
         max_iterations=plan.max_iterations,
-        execution_timeout=(
-            execution_timeout if execution_timeout is not None else plan.execution_timeout
+        execution_timeout=min(
+            plan.execution_timeout,
+            execution_timeout if execution_timeout is not None else plan.execution_timeout,
         ),
-        node_timeout=node_timeout if node_timeout is not None else plan.node_timeout,
+        node_timeout=min(
+            plan.node_timeout,
+            node_timeout if node_timeout is not None else plan.node_timeout,
+        ),
         repetitive_handoff_detection_window=8,
         repetitive_handoff_min_unique_agents=3,
     )

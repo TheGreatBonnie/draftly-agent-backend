@@ -16,6 +16,7 @@ from draftly.app.services.init_lock import (
     release_init_lock,
     try_acquire_init_lock,
 )
+from draftly.persistence.repositories.organizations import get_or_create_org_by_clerk
 from draftly.workflows.onboarding.initialize import STAGE_LABELS, STAGES
 
 logger = structlog.get_logger(__name__)
@@ -116,6 +117,29 @@ def _require_transition(current: dict | None, target: str, action: str) -> str:
     return current_state
 
 
+async def _ensure_org(request: Request, token: dict) -> None:
+    """Self-healing: guarantee the Clerk org exists locally before onboarding writes.
+
+    organizations rows are normally created by the Clerk ``organization.created``
+    webhook. When that delivery is dropped (e.g. transient tunnel or signing-secret
+    issues), onboarding writes violate the onboarding_state FK to
+    organizations(clerk_org_id). This idempotent SELECT-then-INSERT fallback closes
+    that gap at the linear state machine's entry point.
+    """
+    org_id = _org_id(token)
+    try:
+        await get_or_create_org_by_clerk(
+            clerk_org_id=org_id,
+            name=(token.get("raw") or {}).get("org_slug") or org_id,
+            db=_repos(request).onboarding.client,
+        )
+    except Exception as exc:
+        logger.exception("onboarding_org_provision_failed", org_id=org_id)
+        raise HTTPException(
+            status_code=500, detail="Failed to provision organization"
+        ) from exc
+
+
 class WorkspaceRequest(BaseModel):
     name: str
     description: str | None = None
@@ -176,6 +200,7 @@ async def create_workspace(
 ) -> dict[str, Any]:
     org_id = _org_id(token)
     repos = _repos(request)
+    await _ensure_org(request, token)
     current = await repos.onboarding.get(org_id)
     _require_transition(current, "WORKSPACE_CREATED", "create workspace")
     stage_config = [

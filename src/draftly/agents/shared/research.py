@@ -9,6 +9,7 @@ from strands import Agent
 from draftly.agents.factory import build_draftly_agent
 from draftly.steering.context import SteeringRuntime
 from draftly.steering.decisions import AgentRole
+from draftly.steering.research_budget_guard import ResearchBudgetGuard
 
 
 def build_github_researcher(
@@ -18,6 +19,7 @@ def build_github_researcher(
     runtime: SteeringRuntime | None = None,
     agent_id: str | None = None,
     node_id: str | None = None,
+    budget: ResearchBudgetGuard | None = None,
 ) -> Agent:
     """GitHub-focused researcher sub-agent."""
 
@@ -34,6 +36,7 @@ def build_github_researcher(
         node_id=node_id or "github_researcher",
         name="github_researcher",
         description="Researches GitHub evidence for the event.",
+        budget=budget or ResearchBudgetGuard(),
     )
 
 
@@ -44,6 +47,7 @@ def build_slack_researcher(
     runtime: SteeringRuntime | None = None,
     agent_id: str | None = None,
     node_id: str | None = None,
+    budget: ResearchBudgetGuard | None = None,
 ) -> Agent:
     """Slack-history researcher sub-agent."""
 
@@ -60,6 +64,7 @@ def build_slack_researcher(
         node_id=node_id or "slack_researcher",
         name="slack_researcher",
         description="Researches Slack history for the event.",
+        budget=budget or ResearchBudgetGuard(),
     )
 
 
@@ -70,6 +75,7 @@ def build_discord_researcher(
     runtime: SteeringRuntime | None = None,
     agent_id: str | None = None,
     node_id: str | None = None,
+    budget: ResearchBudgetGuard | None = None,
 ) -> Agent:
     """Discord-history researcher sub-agent."""
 
@@ -86,6 +92,7 @@ def build_discord_researcher(
         node_id=node_id or "discord_researcher",
         name="discord_researcher",
         description="Researches Discord history for the event.",
+        budget=budget or ResearchBudgetGuard(),
     )
 
 
@@ -96,6 +103,7 @@ def build_docs_researcher(
     runtime: SteeringRuntime | None = None,
     agent_id: str | None = None,
     node_id: str | None = None,
+    budget: ResearchBudgetGuard | None = None,
 ) -> Agent:
     """Documentation-store researcher sub-agent."""
 
@@ -112,4 +120,5 @@ def build_docs_researcher(
         node_id=node_id or "docs_researcher",
         name="docs_researcher",
         description="Researches documentation coverage for the event.",
+        budget=budget or ResearchBudgetGuard(),
     )

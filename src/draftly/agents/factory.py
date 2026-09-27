@@ -63,6 +63,7 @@ def build_draftly_agent(
     node_id: str,
     structured_output_model: Any | None = None,
     interventions: Iterable[Any] = (),
+    budget: Any | None = None,
     **agent_options: Any,
 ) -> Agent:
     """Build a Strands ``Agent`` with steering installed in the constructor.
@@ -96,6 +97,6 @@ def build_draftly_agent(
             ),
         ],
         structured_output_model=structured_output_model,
-        interventions=[*(interventions or ()), ToolRegistryGuard()],
+        interventions=[*(interventions or ()), ToolRegistryGuard(), *([budget] if budget else [])],
         **agent_options,
     )

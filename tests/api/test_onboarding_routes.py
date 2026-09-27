@@ -52,6 +52,16 @@ def client() -> TestClient:
     return TestClient(app)
 
 
+@pytest.fixture(autouse=True)
+def provision_org() -> AsyncMock:
+    """Patch the org-provisioning fallback so route tests never touch a real DB."""
+    with patch(
+        "draftly.app.api.routes.onboarding.get_or_create_org_by_clerk",
+        new=AsyncMock(return_value="test-org"),
+    ) as mock_provision:
+        yield mock_provision
+
+
 @contextmanager
 def github_connect_patches(
     existing_org: str | None = None,
@@ -147,6 +157,49 @@ class TestOnboardingRoutes:
             json={"name": "My Workspace", "description": "Test"},
         )
         assert response.status_code == 200
+
+    def test_workspace_provisions_missing_org(
+        self, client: TestClient, provision_org: AsyncMock
+    ) -> None:
+        """Missing organizations row (dropped webhook) is self-healed before write."""
+        response = client.post(
+            "/onboarding/workspace",
+            json={"name": "My Workspace", "description": "Test"},
+        )
+        assert response.status_code == 200
+        provision_org.assert_awaited_once()
+        kwargs = provision_org.await_args.kwargs
+        assert kwargs["clerk_org_id"] == "test-org"
+        assert kwargs["name"] == "test-org"  # falls back to org_id without org_slug
+
+    def test_workspace_uses_org_slug_as_provisioning_name(
+        self, client: TestClient, provision_org: AsyncMock
+    ) -> None:
+        from draftly.app.api.auth import get_verified_token
+
+        client.app.dependency_overrides[get_verified_token] = lambda: {
+            "org_id": "test-org",
+            "raw": {"org_slug": "acme-slug"},
+        }
+        response = client.post(
+            "/onboarding/workspace",
+            json={"name": "My Workspace"},
+        )
+        assert response.status_code == 200
+        kwargs = provision_org.await_args.kwargs
+        assert kwargs["clerk_org_id"] == "test-org"
+        assert kwargs["name"] == "acme-slug"
+
+    def test_workspace_returns_500_when_provisioning_fails(
+        self, client: TestClient, provision_org: AsyncMock
+    ) -> None:
+        provision_org.side_effect = RuntimeError("db unavailable")
+        response = client.post(
+            "/onboarding/workspace",
+            json={"name": "My Workspace"},
+        )
+        assert response.status_code == 500
+        assert response.json()["detail"] == "Failed to provision organization"
 
     def test_github_connect_advances_state(self, client: TestClient) -> None:
         repos = client.app.state.draftly.dependencies.repositories
