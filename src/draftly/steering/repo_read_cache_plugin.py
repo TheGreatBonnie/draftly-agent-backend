@@ -19,10 +19,12 @@ from __future__ import annotations
 
 from typing import Any
 
-from strands.hooks import AfterToolCallEvent, BeforeToolCallEvent, HookProvider, HookRegistry
+from strands.hooks import AfterToolCallEvent, BeforeToolCallEvent
+from strands.plugins import Plugin, hook
 from strands.types._events import ToolResultEvent
 from strands.types.tools import AgentTool
 
+from draftly.agents.documentation.draft_scope import current_draft_scope
 from draftly.agents.documentation.repo_read_cache import (
     CACHEABLE_TOOLS,
     cache_key,
@@ -89,22 +91,36 @@ def _key_for(tool_use: dict) -> str | None:
     if name not in CACHEABLE_TOOLS:
         return None
     args = _args(tool_use)
+    ref = args.get("ref") or args.get("sha")
+    if not ref:
+        # A page writer may omit ``ref``, which reads the default branch rather
+        # than the pinned head. ``require_writer_target`` already rejects any
+        # *supplied* ref that is not the scope's ``head_sha``, so the only alias
+        # left is "absent" versus "spelled out" - and those are the same read.
+        # Filling it in merges them. Substituting a ref the model *did* supply
+        # would be the unsafe direction, so this never overwrites one.
+        scope = current_draft_scope()
+        ref = getattr(scope, "head_sha", None) or ""
     return cache_key(
         tool_name=str(name),
         owner=str(args.get("owner") or args.get("org") or ""),
         repo=str(args.get("repo") or args.get("repository") or ""),
         path=str(args.get("path") or ""),
-        ref=str(args.get("ref") or args.get("sha") or ""),
+        ref=str(ref),
     )
 
 
-class RepoReadCachePlugin(HookProvider):
-    """Populate and serve the run-scoped GitHub read cache."""
+class RepoReadCachePlugin(Plugin):
+    """Populate and serve the run-scoped GitHub read cache.
 
-    def register_hooks(self, registry: HookRegistry) -> None:
-        registry.add_callback(BeforeToolCallEvent, self.before_tool_call)
-        registry.add_callback(AfterToolCallEvent, self.after_tool_call)
+    Registered on every agent and inert unless a cache is installed, which makes
+    the three cacheable reads share one cache across a run's page writers
+    without a single GitHub tool function changing.
+    """
 
+    name = "draftly-repo-read-cache"
+
+    @hook
     def before_tool_call(self, event: BeforeToolCallEvent) -> None:
         cache = current_repo_read_cache()
         if cache is None:
@@ -123,6 +139,7 @@ class RepoReadCachePlugin(HookProvider):
             tool_type=getattr(original, "tool_type", "function"),
         )
 
+    @hook
     def after_tool_call(self, event: AfterToolCallEvent) -> None:
         cache = current_repo_read_cache()
         if cache is None:

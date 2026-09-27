@@ -9,9 +9,16 @@ model sees an ordinary tool result and never learns the cache exists.
 from __future__ import annotations
 
 import asyncio
+import contextlib
+from collections.abc import Iterator
 
 import pytest
 
+from draftly.agents.documentation.draft_scope import (
+    DraftScope,
+    reset_draft_scope,
+    set_draft_scope,
+)
 from draftly.agents.documentation.repo_read_cache import (
     RepoReadCache,
     cache_key,
@@ -88,6 +95,15 @@ def _key(**overrides) -> str:
 
 def _result(text: str, *, status: str = "success") -> dict:
     return {"toolUseId": "t1", "status": status, "content": [{"text": text}]}
+
+
+@contextlib.contextmanager
+def _draft_scope(scope: DraftScope) -> Iterator[DraftScope]:
+    token = set_draft_scope(scope)
+    try:
+        yield scope
+    finally:
+        reset_draft_scope(token)
 
 
 def _drain(tool_obj, tool_use: dict) -> dict:
@@ -229,3 +245,38 @@ def test_a_different_path_is_not_served_from_the_cache(cache):
     event = _before(path="authorize.py")
     RepoReadCachePlugin().before_tool_call(event)
     assert event.selected_tool is None
+
+
+def test_an_omitted_ref_is_filled_in_from_the_scope(cache):
+    """``require_writer_target`` already rejects any supplied ref other than the
+    head SHA, so "absent" and "spelled out" name the same read and must share
+    an entry."""
+    scope = DraftScope(
+        run_id="run-1", org_id="org-1", generation=1, repository="org/repo", head_sha="abc123"
+    )
+    with _draft_scope(scope):
+        RepoReadCachePlugin().after_tool_call(_after(_result("body"), ref=""))
+        event = _before(ref="abc123", toolUseId="t2")
+        RepoReadCachePlugin().before_tool_call(event)
+    assert event.selected_tool is not None
+
+
+def test_a_supplied_ref_is_never_overwritten_by_the_scope(cache):
+    """The unsafe direction: substituting ``head_sha`` for a ref the model
+    chose would serve one commit's bytes for another's."""
+    scope = DraftScope(
+        run_id="run-1", org_id="org-1", generation=1, repository="org/repo", head_sha="abc123"
+    )
+    with _draft_scope(scope):
+        cache.put(_key(ref="main"), "main body")
+        cache.put(_key(ref="abc123"), "head body")
+        event = _before(ref="main")
+        RepoReadCachePlugin().before_tool_call(event)
+
+    assert event.selected_tool is not None
+    assert _drain(event.selected_tool, dict(event.tool_use))["content"] == [{"text": "main body"}]
+
+
+def test_with_no_scope_an_omitted_ref_keys_as_empty(cache):
+    RepoReadCachePlugin().after_tool_call(_after(_result("body"), ref=""))
+    assert cache.get(_key(ref="")) == "body"

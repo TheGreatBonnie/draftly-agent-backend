@@ -75,7 +75,9 @@ def build_draftly_agent(
     behavior. The provided plugin/intervention/structured-output lists are
     preserved and the handler is present in the constructor call — nothing is
     mutated after the ``Agent`` is built. The registry guard always runs so
-    invalid tool names cannot spin through the agent loop.
+    invalid tool names cannot spin through the agent loop, and the GitHub read
+    cache plugin is always registered so that any agent in a documented run
+    benefits from the cache without opting in.
     """
     policy: RolePolicy = policy_for(role)
     agent_runtime = runtime.for_agent(
@@ -92,12 +94,20 @@ def build_draftly_agent(
     # and prints, so silencing it changes no agent behaviour. Callers that
     # genuinely stream (SSE) read ``graph.stream_async``, not this callback.
     agent_options.setdefault("callback_handler", None)
+    # Imported here, not at module scope: the plugin reaches into
+    # ``agents.documentation``, whose package ``__init__`` builds agents and so
+    # imports this module back. A module-level import would be a cycle.
+    from draftly.steering.repo_read_cache_plugin import RepoReadCachePlugin
+
     return Agent(
         model=model,
         system_prompt=system_prompt,
         tools=list(tools or ()),
         plugins=[
             *plugins,
+            # Registered on every agent and inert unless a run-scoped cache is
+            # installed, so no caller has to opt in.
+            RepoReadCachePlugin(),
             DraftlySteeringHandler(
                 runtime=agent_runtime,
                 policy=policy,

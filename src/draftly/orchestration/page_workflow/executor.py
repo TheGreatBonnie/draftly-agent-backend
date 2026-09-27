@@ -19,6 +19,13 @@ from typing import Any, cast
 
 import structlog
 
+from draftly.agents.documentation.repo_read_cache import (
+    DEFAULT_MAX_BYTES,
+    DEFAULT_MAX_ENTRIES,
+    RepoReadCache,
+    reset_repo_read_cache,
+    set_repo_read_cache,
+)
 from draftly.orchestration.page_workflow.repository import (
     PageWorkflowRepository,
     WorkflowTask,
@@ -67,6 +74,8 @@ class PageWorkflowExecutor:
         evaluation_concurrency: int,
         lease_seconds: int = 300,
         lease_owner: str = "page-workflow-executor",
+        read_cache_max_entries: int = DEFAULT_MAX_ENTRIES,
+        read_cache_max_bytes: int = DEFAULT_MAX_BYTES,
     ) -> None:
         if write_concurrency < 1:
             raise ValueError("write_concurrency must be >= 1")
@@ -80,13 +89,37 @@ class PageWorkflowExecutor:
         self.evaluation_concurrency = evaluation_concurrency
         self.lease_seconds = lease_seconds
         self.lease_owner = lease_owner
+        self.read_cache_max_entries = read_cache_max_entries
+        self.read_cache_max_bytes = read_cache_max_bytes
 
     async def run(self, run_id: str, org_id: str) -> ExecutorResult:
         """Execute every claimable task of ``run_id`` and return the outcome.
 
         ``org_id`` is accepted for interface symmetry with the rest of the
         workflow; task persistence is scoped by ``run_id``.
+
+        One run-scoped :class:`RepoReadCache` is installed here, before any task
+        is spawned, and torn down afterwards. ``asyncio`` copies a context at
+        task creation, so every writer spawned by ``_drive`` inherits this
+        binding and they share a single cache object - that sharing is the
+        entire point, and it is why the installation lives here rather than in
+        a handler. ``_drive`` is awaited directly rather than scheduled, so the
+        binding is this coroutine's own and the ``finally`` restores it.
         """
+        cache = RepoReadCache(
+            max_entries=self.read_cache_max_entries,
+            max_bytes=self.read_cache_max_bytes,
+        )
+        token = set_repo_read_cache(cache)
+        try:
+            result = await self._drive(run_id, org_id)
+        finally:
+            reset_repo_read_cache(token)
+        logger.info("page_workflow_read_cache", run_id=run_id, **cache.stats())
+        return result
+
+    async def _drive(self, run_id: str, org_id: str) -> ExecutorResult:
+        """The scheduling loop behind :meth:`run`."""
         write_semaphore = asyncio.Semaphore(self.write_concurrency)
         evaluation_semaphore = asyncio.Semaphore(self.evaluation_concurrency)
         completed: set[str] = set()
