@@ -9,7 +9,11 @@ class ProviderConfig:
     enabled: bool = True
     priority: int = 100
     timeout: float = 60.0
-    max_retries: int = 2
+    #: Zero: the SDK's internal retry loop runs *before* the failover wrapper
+    #: sees the exception, so retrying here would spend 3x ``timeout`` on one
+    #: provider before rotation was even possible. Retry/failover is owned by
+    #: ``PaymentAwareModel`` instead.
+    max_retries: int = 0
 
 
 @dataclass(frozen=True)

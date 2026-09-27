@@ -109,10 +109,14 @@ class _FakeHealthEntry:
     def __init__(self):
         self.disabled = False
         self.disable_count = 0
+        self.recorded = []
 
     def disable(self):
         self.disabled = True
         self.disable_count += 1
+
+    def record_failure(self, failure_type="timeout"):
+        self.recorded.append(failure_type)
 
     def available(self):
         return not self.disabled

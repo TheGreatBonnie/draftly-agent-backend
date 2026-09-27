@@ -66,26 +66,75 @@ def resolve_concrete_model(router: Any = None, *, index: int = 0) -> Any:
     return provider.create_model(config)
 
 
+def _is_timeout(exc: BaseException) -> bool:
+    """True when ``exc`` is genuinely a transport timeout.
+
+    Deliberately type-based rather than label-based. ``_classify_failure``
+    defaults every unrecognised error to ``FAILURE_TIMEOUT`` ("unrelated
+    errors default to FAILURE_TIMEOUT"), so trusting that label would make a
+    ``RuntimeError`` in our own code look like a slow provider and rotate it.
+    A timeout is a fact about the exception type, not a guess from a message.
+
+    Strands re-raises provider errors wrapped in ``EventLoopException``, and
+    the OpenAI SDK chains the httpx error via ``__cause__``, so both are
+    unwrapped before testing.
+    """
+    import httpx
+    import openai
+
+    timeout_types: tuple[type[BaseException], ...] = (
+        openai.APITimeoutError,
+        httpx.TimeoutException,
+        TimeoutError,  # asyncio.TimeoutError is this builtin
+    )
+
+    seen: list[BaseException] = []
+    current: BaseException | None = exc
+    while current is not None and current not in seen:
+        seen.append(current)
+        if isinstance(current, timeout_types):
+            return True
+        unwrapped = getattr(current, "original_exception", None)
+        current = unwrapped if isinstance(unwrapped, BaseException) else current.__cause__
+    return False
+
+
 class PaymentAwareModel:
-    """Wraps a concrete Strands model with 402-payment failover.
+    """Wraps a concrete Strands model with failover on provider-level failure.
 
     The router binds one concrete model per role at graph-build time; a
-    completion call that fails with a payment-required (402) error (e.g. an
-    exhausted router balance) would otherwise fail the whole node. This
-    wrapper:
+    completion call that fails because of the *provider* (exhausted balance,
+    bad credentials, throttling, or a slow upstream that blew the request
+    timeout) would otherwise fail the whole node even though other enabled
+    providers are configured and healthy.
 
-      1. disables the failing provider in the router's health registry, so
+    On a failover-worthy failure this wrapper:
+
+      1. penalises the failing provider in the router's health registry, so
          subsequent ``route()`` calls skip it;
-      2. re-resolves the same role through the router; and
-      3. retries the call once against the replacement model.
+      2. re-resolves the same role through the router -- which keeps rotation
+         bounded by ``DRAFTLY_ENABLED_PROVIDERS``; and
+      3. retries the call against the replacement model.
 
-    Only payment-classified failures trigger failover. Retrying happens at
-    most once per call. ``stream``/``structured_output`` are re-entered
-    transparently; attributes and other methods delegate to the current
-    inner model so the wrapper is usable anywhere a Strands ``Model`` is.
+    Payment and auth failures *disable* the provider (they do not recover on
+    their own). Transient failures -- timeouts, rate limits, unavailability --
+    only *record* a failure, so ``ProviderHealth.available()`` restores the
+    provider after its cooldown instead of poisoning a long-lived worker.
+
+    Failover-worthy = the router's ``FALLBACK_FAILURES`` (payment, rate limit,
+    service unavailable) or a real timeout exception. Unrelated errors -- a
+    ``RuntimeError`` in our own code -- propagate untouched: rotating a
+    genuine bug just triples its latency and hides it.
+
+    ``stream``/``structured_output`` are re-entered transparently; attributes
+    and other methods delegate to the current inner model so the wrapper is
+    usable anywhere a Strands ``Model`` is.
     """
 
-    _MAX_FAILOVERS = 1
+    #: Providers now run with ``max_retries=0`` (``ProviderConfig``), so this
+    #: wrapper is solely responsible for retrying. Two rotations preserve the
+    #: three total attempts the SDK used to make on a single provider.
+    _MAX_FAILOVERS = 2
 
     def __init__(
         self,
@@ -129,7 +178,7 @@ class PaymentAwareModel:
                 try:
                     return await self._inner.count_tokens(messages, tool_specs=tool_specs, **kwargs)
                 except Exception as exc:
-                    if attempt >= self._MAX_FAILOVERS or not self._is_payment_failure(exc):
+                    if attempt >= self._MAX_FAILOVERS or not self._is_failover_failure(exc):
                         raise
                     attempt += 1
                     self._failover(exc)
@@ -156,22 +205,25 @@ class PaymentAwareModel:
                     yield event
                 return
             except Exception as exc:
-                if attempt >= self._MAX_FAILOVERS or not self._is_payment_failure(exc):
+                if attempt >= self._MAX_FAILOVERS or not self._is_failover_failure(exc):
                     raise
                 attempt += 1
                 self._failover(exc)
 
     # -- failover -----------------------------------------------------------
 
-    def _is_payment_failure(self, exc: Exception) -> bool:
-        from draftly.models.health import FAILURE_PAYMENT
+    def _is_failover_failure(self, exc: Exception) -> bool:
+        from draftly.models.health import FALLBACK_FAILURES
         from draftly.models.router import ModelRouter
 
-        return ModelRouter._classify_failure(exc) == FAILURE_PAYMENT
+        if ModelRouter._classify_failure(exc) in FALLBACK_FAILURES:
+            return True
+        return _is_timeout(exc)
 
     def _failover(self, exc: Exception) -> None:
-        """Disable the failing provider and swap in a re-resolved model."""
-        from draftly.models.router import NoCandidateError
+        """Penalise the failing provider and swap in a re-resolved model."""
+        from draftly.models.health import DISABLING_FAILURES
+        from draftly.models.router import ModelRouter, NoCandidateError
         from draftly.models.schemas import ROLE_TO_TASK_TYPE, RoutingRequest
 
         try:
@@ -179,12 +231,20 @@ class PaymentAwareModel:
         except KeyError:
             raise
 
-        self._router.health.get(self._provider).disable()
+        failure = ModelRouter._classify_failure(exc)
+        health = self._router.health.get(self._provider)
+        if failure in DISABLING_FAILURES:
+            health.disable()
+        else:
+            # Transient: mark unhealthy so route() skips this provider, but let
+            # ProviderHealth.available() restore it once the cooldown elapses.
+            health.record_failure(failure)
 
         logger.warning(
-            "model_payment_failover provider=%s role=%s error=%s",
+            "model_failover provider=%s role=%s failure=%s error=%s",
             self._provider,
             self._role,
+            failure,
             exc,
         )
 

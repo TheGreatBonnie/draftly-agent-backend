@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 import structlog
 
 __all__ = [
+    "DISABLING_FAILURES",
     "FAILURE_AUTH",
     "FAILURE_CONTEXT_LENGTH",
     "FAILURE_INVALID_REQUEST",
@@ -29,6 +30,11 @@ FAILURE_PAYMENT = "payment_required"
 
 # Failure types that should trigger provider fallback (vs retry/fail-fast).
 FALLBACK_FAILURES = frozenset({FAILURE_RATE_LIMIT, FAILURE_UNAVAILABLE, FAILURE_PAYMENT})
+
+# Failure types severe enough to disable a provider outright rather than give
+# it a cooldown. Payment exhaustion and bad credentials do not fix themselves;
+# a rate limit or a slow upstream does.
+DISABLING_FAILURES = frozenset({FAILURE_AUTH, FAILURE_PAYMENT})
 
 
 @dataclass

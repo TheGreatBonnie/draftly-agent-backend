@@ -239,6 +239,26 @@ def build_steering_judge(
     return judge
 
 
+def _is_unregistered(agent, tool_use) -> bool:
+    """True when the agent's registry cannot execute this tool name.
+
+    Strands runs the steering plugin's ``before_tool_call`` at
+    ``HookOrder.DEFAULT`` (0) and ``InterventionRegistry`` -- which owns
+    ``ToolRegistryGuard`` -- at ``HookOrder.INTERVENTION_INPUT`` (90). Policy is
+    therefore always evaluated *before* the guard rejects an invented name, and
+    that ordering is not ours to change. When the registry does not contain the
+    name the call cannot succeed whatever the policy decides, so evaluating it
+    spends a judge round-trip to reach a verdict that is then discarded.
+
+    Returns ``False`` when the agent cannot enumerate its tools, so duck-typed
+    agents keep the previous behaviour.
+    """
+    registered = getattr(agent, "tool_names", None)
+    if registered is None:
+        return False
+    return (tool_use or {}).get("name", "") not in registered
+
+
 class DraftlySteeringHandler(SteeringHandler):
     """Adapt ``SteeringDecision`` outcomes to Strands steering actions."""
 
@@ -265,6 +285,8 @@ class DraftlySteeringHandler(SteeringHandler):
     async def steer_before_tool(self, *, agent, tool_use, **kwargs):
         if not self.runtime.enabled:
             return Proceed(reason="steering disabled")
+        if _is_unregistered(agent, tool_use):
+            return Proceed(reason="tool absent from agent registry")
         try:
             return await self._handle_tool(agent=agent, tool_use=tool_use, **kwargs)
         except SteeringFailure:

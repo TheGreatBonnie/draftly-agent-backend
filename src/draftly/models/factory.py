@@ -48,11 +48,17 @@ def _enabled_providers_from_env() -> set[str] | None:
     unknown = providers - set(KNOWN_PROVIDERS)
 
     if unknown:
-        logger.warning(
-            "enabled_providers_unknown providers=%s ignored",
-            sorted(unknown),
-        )
+        # Drop the unusable names rather than passing them through. A name the
+        # registry does not know silently narrows the allowlist -- `mantle_openai`
+        # instead of `mantle-openai` removed every mantle-openai model from
+        # routing *and* from failover rotation while the config looked correct.
+        # The effective allowlist is now exactly the one that can be honoured.
+        logger.warning("enabled_providers_unknown", providers=sorted(unknown))
+        providers -= unknown
 
+    # An explicit allowlist that turns out to be entirely unusable stays an empty
+    # allowlist. Returning None here would mean "unset => everything" and widen
+    # a typo into full access; an empty set makes route() raise NoCandidateError.
     return providers
 
 
@@ -801,6 +807,53 @@ def build_model_router(
                 "tool_calling",
             ),
             priority=3,
+
+        )
+    )
+
+    # `research` fallbacks. The only research-capable model was
+    # nemotron-super-research on nebius_token_factory, so losing that provider
+    # left TaskType.RESEARCH with no candidate and route() raised
+    # NoCandidateError. Both below were probed on the failing path -- a
+    # non-streaming parse() with response_format, which is how strands emits
+    # structured output for context/research agents:
+    #   qwen3-coder-next  6.89s  finish=stop  reasoning=0  parsed=OK
+    #   minimax-m2       17.40s  finish=stop  reasoning=0  parsed=OK
+    # Both clear the 60s ProviderConfig.timeout that the primary cannot.
+    registry.register_model(
+        ModelConfig(
+            name="research-mantle-qwen3-coder-next",
+            provider="mantle",
+            model_id=_resolve_model_id(
+                "MANTLE_QWEN3_CODER_NEXT_MODEL",
+                default="qwen.qwen3-coder-next",
+            ),
+            capabilities=(
+                "research",
+                "tool_calling",
+                "structured_output",
+            ),
+            priority=3,
+
+        )
+    )
+
+    registry.register_model(
+        ModelConfig(
+            name="research-mantle-minimax-m2",
+            provider="mantle",
+            model_id=_resolve_model_id(
+                "MANTLE_MINIMAX_M2_MODEL",
+                default="minimax.minimax-m2",
+            ),
+            capabilities=(
+                "research",
+                "tool_calling",
+                "structured_output",
+            ),
+            # Priority is only the final tie-breaker (scoring.py), so it must
+            # still order the two fallbacks deterministically: qwen3 first.
+            priority=4,
 
         )
     )
