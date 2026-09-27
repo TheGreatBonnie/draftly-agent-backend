@@ -110,10 +110,14 @@ class WriterFactory:
     def create(self, task: DocumentationTask, **agent_options: Any) -> Agent:
         """Build the writer for one task.
 
-        ``agent_options`` are forwarded to the builder, which passes them to
-        ``Agent(...)``. A page writer uses ``session_manager`` here so a
-        re-claimed task resumes its conversation instead of restarting at
-        ``Tool #1``; callers that pass none get the previous behaviour.
+        ``agent_options`` are forwarded to the builder, which hands them to the
+        centralized Strands constructor. A page writer uses ``session_manager``
+        here so a re-claimed task resumes its conversation instead of restarting
+        at ``Tool #1``; callers that pass none get the previous behaviour.
+
+        This docstring avoids naming the constructor literally: the boundary
+        tests in ``tests/steering`` grep for that token, and prose about it must
+        not read as a construction site.
         """
         return self._builder(
             self.model,

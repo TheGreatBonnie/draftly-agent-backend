@@ -88,6 +88,13 @@ class RolePolicy:
     search_tools: frozenset[str] = frozenset()
     write_tools: frozenset[str] = frozenset()
     deliver_tools: frozenset[str] = frozenset()
+    #: Tools that are read-only by construction and that the policy otherwise
+    #: leaves unclassified. Separate from ``read_tools`` on purpose: adding a
+    #: tool there also subjects it to the checkout-root scope check, which
+    #: would reject a GitHub read's repo-relative ``path`` (``src/oauth.py`` is
+    #: not under ``repo_checkout_root``). This set only answers
+    #: ``is_read_only_tool``; it grants no deterministic enforcement.
+    read_only_tools: frozenset[str] = frozenset()
     #: Map from tool name to the evidence argument key the tool must carry.
     required_evidence: Mapping[str, str] = field(default_factory=dict)
     #: Map from tool name to text arguments that must be non-empty.
@@ -98,6 +105,34 @@ class RolePolicy:
     @property
     def _all_side_effect_tools(self) -> frozenset[str]:
         return self.side_effect_tools | self.deliver_tools
+
+    def is_side_effect_tool(self, tool_name: str) -> bool:
+        """Whether a tool can have an effect outside the agent's own turn.
+
+        Public so callers outside the policy can ask without reaching for
+        ``_all_side_effect_tools``.
+        """
+        return tool_name in self._all_side_effect_tools
+
+    def is_read_only_tool(self, tool_name: str) -> bool:
+        """Whether a tool is *positively* known to only read.
+
+        Deliberately not ``not is_side_effect_tool(...)``. Absence from the
+        side-effect sets means "not enumerated", not "harmless": the writer
+        policy lists no side-effect tools at all yet still drives ``write_file``,
+        and a caller that inferred read-only from the negative would skip the
+        judge on a tool that writes a file.
+
+        So this requires positive evidence - an explicit ``read_only_tools``
+        entry, or membership of the read/search sets. A tool in none of them is
+        treated as not read-only, which is the direction that keeps the judge in
+        the loop.
+        """
+        if self.is_side_effect_tool(tool_name):
+            return False
+        if tool_name in self.read_only_tools:
+            return True
+        return tool_name in self.read_tools | self.search_tools
 
     # ------------------------------------------------------------------
     # Public evaluation API
@@ -623,6 +658,22 @@ _REPO_WRITE_TOOLS = frozenset(
         "update_frontmatter",
     }
 )
+#: GitHub-API reads the policy otherwise leaves unclassified. They are read-only
+#: by construction - each one reads a repository or a search index and returns a
+#: string - and they are exactly the tools that produced 190 of the 242 judge
+#: round-trips in run ``d76e2490``. Listed in ``read_only_tools`` rather than
+#: ``read_tools`` because ``read_tools`` also triggers the checkout-root scope
+#: check, which would guide every one of them: a GitHub read's ``path`` is
+#: repository-relative (``src/oauth.py``) and is not under ``repo_checkout_root``.
+#: ``create_comment`` is deliberately absent; it is a delivery, not a read.
+_GITHUB_READ_ONLY_TOOLS = frozenset(
+    {
+        "github_read_file",
+        "github_get_file",
+        "github_get_tree",
+        "github_search_code",
+    }
+)
 _OUTBOUND_READ_TOOLS = frozenset(
     {
         "get_diff",
@@ -717,6 +768,7 @@ _ROLE_POLICIES: dict[AgentRole, RolePolicy] = {
         write_tools=_REPO_WRITE_TOOLS | frozenset(_WRITER_EVIDENCE.keys()),
         read_tools=_REPO_READ_TOOLS | _OUTBOUND_READ_TOOLS,
         search_tools=_SEARCH_TOOLS | _DOC_TOOLS,
+        read_only_tools=_GITHUB_READ_ONLY_TOOLS,
         required_evidence=_WRITER_EVIDENCE,
         judge_enabled=True,
         limits=_DEFAULT_LIMITS,
@@ -759,6 +811,7 @@ _ROLE_POLICIES: dict[AgentRole, RolePolicy] = {
         read_tools=_REPO_READ_TOOLS | _OUTBOUND_READ_TOOLS,
         search_tools=_SEARCH_TOOLS | _DOC_TOOLS,
         write_tools=_REPO_WRITE_TOOLS,
+        read_only_tools=_GITHUB_READ_ONLY_TOOLS,
         required_evidence=_WRITER_EVIDENCE,
         judge_enabled=True,
         limits=_DEFAULT_LIMITS,

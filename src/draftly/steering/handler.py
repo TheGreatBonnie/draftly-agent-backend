@@ -43,6 +43,11 @@ from draftly.steering.redaction import redact_value, scrub_secret_values
 _metrics: Metrics = _default_metrics
 logger = structlog.get_logger(__name__)
 
+#: Ceiling on the per-handler judged-decision cache. Sized for one run's worth
+#: of distinct tool calls with room to spare; overflow clears rather than
+#: evicting, because a miss costs exactly what an uncached handler always paid.
+JUDGE_CACHE_LIMIT = 1024
+
 
 def _record_decision_metrics(decision: SteeringDecision, surface: str) -> None:
     """Increment the flat decision-dimension counters (no labels)."""
@@ -277,6 +282,12 @@ class DraftlySteeringHandler(SteeringHandler):
         self.judge = judge
         #: Stable id of the last durable interruption created by this handler.
         self.last_interrupt_id: str | None = None
+        #: Judged decisions keyed by (role, phase, rule, tool, args digest).
+        #: Bounded: the handler outlives a run, and one entry per tool call would
+        #: leak without limit. Clearing is safe - a miss costs one round-trip,
+        #: which is exactly what an uncached handler always paid.
+        self._judge_cache: dict[tuple[str, ...], SteeringDecision] = {}
+        self._judge_cache_limit = JUDGE_CACHE_LIMIT
 
     # ------------------------------------------------------------------
     # Strands public callbacks (keyword-compatible with the installed SDK)
@@ -357,26 +368,91 @@ class DraftlySteeringHandler(SteeringHandler):
                 flat.setdefault(key, value)
         return flat
 
+    def _cached_judge_for(
+        self, *, tool_name: str, tool_use: dict
+    ) -> Callable[..., Awaitable[SteeringDecision]]:
+        """A judge that skips calls it cannot change and memoizes the rest.
+
+        Two separate economies, because they address different waste:
+
+        * **Skip.** A tool the policy *positively* identifies as read-only, and
+          that the deterministic rules already cleared, cannot be made safer by
+          an LLM that is shown only a summary of the decision - never the tool
+          name, the path, or the payload. Run ``d76e2490`` spent 242 judge
+          round-trips on this path and every one returned ``proceed`` with a
+          byte-identical reason. The trade is real and deliberate: the judge
+          loses the ability to *block* a read-only call. It keeps every ability
+          that matters, because a deterministic ``Interrupt`` is still reached
+          first and ``_apply_judge`` never lets a judge overturn one.
+        * **Memoize.** The rest is keyed on an ARGS DIGEST, not the tool name,
+          so a verdict can only be reused for a genuinely identical call.
+          ``toolUseId`` is excluded from the digest: it is transport bookkeeping
+          that changes on every call, and including it would make the cache
+          unreachable.
+        """
+        args_digest = hashlib.sha256(
+            json.dumps(
+                {
+                    key: value
+                    for key, value in (tool_use or {}).items()
+                    if key not in self._IDEM_RESERVED_KEYS
+                },
+                sort_keys=True,
+                default=str,
+            ).encode()
+        ).hexdigest()
+        read_only = self.policy.is_read_only_tool(tool_name)
+        base = self.judge
+
+        async def _judge(*, decision: SteeringDecision) -> SteeringDecision:
+            if read_only and decision.kind is DecisionKind.PROCEED:
+                _metrics.increment("draftly_steering_judge_skipped_total")
+                return decision
+            if base is None:
+                return decision
+            key = (
+                str(getattr(decision.role, "value", "") or ""),
+                str(getattr(decision.phase, "value", "") or ""),
+                decision.rule or "",
+                tool_name,
+                args_digest,
+            )
+            cached = self._judge_cache.get(key)
+            if cached is not None:
+                _metrics.increment("draftly_steering_judge_cache_hits_total")
+                return cached
+            result = await base(decision=decision)
+            if len(self._judge_cache) >= self._judge_cache_limit:
+                self._judge_cache.clear()
+            self._judge_cache[key] = result
+            return result
+
+        return _judge
+
     async def _handle_tool(self, *, agent, tool_use, **kwargs):
         self._stamp_idempotency_key(tool_use)
         tool_use = self._flatten_tool_use(tool_use)
         tool_name = tool_use.get("name", "")
         tool_use_id = tool_use.get("toolUseId") or ""
         enforcement = self.runtime.config.enforcement_enabled
+        # Both sites take the wrapped judge: leaving the shadow path on
+        # ``self.judge`` would restore the full cost the moment enforcement is
+        # turned off, which is exactly the mode shadow mode exists to measure.
+        judge = self._cached_judge_for(tool_name=tool_name, tool_use=tool_use)
         try:
             if enforcement:
                 decision = await self.policy.evaluate_tool_async(
                     runtime=self.runtime,
                     tool_name=tool_name,
                     tool_use=tool_use,
-                    judge=self.judge,
+                    judge=judge,
                 )
             else:
                 decision = await self.policy.evaluate_tool_shadow(
                     runtime=self.runtime,
                     tool_name=tool_name,
                     tool_use=tool_use,
-                    judge=self.judge,
+                    judge=judge,
                 )
         except SteeringError as exc:
             return self._on_policy_failure(exc)
