@@ -4,7 +4,8 @@ Every production ``Agent(...)`` construction must route through
 ``build_draftly_agent`` so that exactly one ``DraftlySteeringHandler`` is
 installed at construction time (never by mutating a built agent). Caller
 plugins, interventions, structured output, and extra ``Agent`` options are
-preserved; on a disabled runtime the steering handler is a defensive no-op.
+preserved. A registry guard bounds invented tool retries even when steering is
+disabled; on a disabled runtime the steering handler is a defensive no-op.
 """
 
 from __future__ import annotations
@@ -23,6 +24,7 @@ from draftly.steering.handler import (
     build_steering_judge,
 )
 from draftly.steering.policy import RolePolicy, policy_for
+from draftly.steering.tool_registry_guard import ToolRegistryGuard
 
 
 def _optional_judge(
@@ -71,7 +73,8 @@ def build_draftly_agent(
     disabled runtime it returns ``Proceed`` for every event and never changes
     behavior. The provided plugin/intervention/structured-output lists are
     preserved and the handler is present in the constructor call — nothing is
-    mutated after the ``Agent`` is built.
+    mutated after the ``Agent`` is built. The registry guard always runs so
+    invalid tool names cannot spin through the agent loop.
     """
     policy: RolePolicy = policy_for(role)
     agent_runtime = runtime.for_agent(
@@ -93,6 +96,6 @@ def build_draftly_agent(
             ),
         ],
         structured_output_model=structured_output_model,
-        interventions=list(interventions or ()),
+        interventions=[*(interventions or ()), ToolRegistryGuard()],
         **agent_options,
     )

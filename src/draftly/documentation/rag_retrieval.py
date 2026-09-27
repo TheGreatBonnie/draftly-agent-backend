@@ -19,6 +19,7 @@ from urllib.parse import urlsplit
 import structlog
 
 from draftly.documentation.page_type import map_question_type
+from draftly.memory.vector_utils import format_vector
 
 logger = structlog.get_logger("draftly.documentation.rag_retrieval")
 
@@ -80,7 +81,7 @@ class RagRetrieval:
         embedding = await self.embeddings.embed(query)
         rows = await self.db.fetch_all(
             _SQL,
-            embedding,
+            format_vector(embedding),
             query,
             "documents",
             org_id,

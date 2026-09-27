@@ -265,6 +265,16 @@ async def test_live_search_uses_restricted_params() -> None:
 
 
 @pytest.mark.asyncio
+async def test_retrieval_sends_pgvector_text_to_database() -> None:
+    retrieval, db, _ = _retrieval([_row()])
+
+    result = await retrieval.retrieve(org_id="o", query="OAuth authentication")
+
+    assert db.last_params[0] == "[0.1,0.2,0.3]"
+    assert result.results[0]["id"] == "m1"
+
+
+@pytest.mark.asyncio
 async def test_product_version_source_type_filters() -> None:
     retrieval, db, _ = _retrieval([])
 
