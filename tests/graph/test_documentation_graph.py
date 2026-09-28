@@ -178,6 +178,54 @@ def test_graph_builds_single_document_workflow_node(model, tools, tmp_sessions) 
     assert "create" not in graph.nodes
 
 
+async def test_context_evidence_reaches_the_document_node(
+    model, tools, tmp_sessions, comment_factory, monkeypatch
+) -> None:
+    """context emits the only structured EvidenceBundle in the graph.
+
+    Without a context -> document edge its items are discarded, and every page
+    escalates for missing evidence (run 94ffec30: 5/5 pages escalated).
+    """
+    from draftly.orchestration.page_workflow.node import DocumentationWorkflowNode
+
+    seen: list[list] = []
+    original = DocumentationWorkflowNode.invoke_async
+
+    async def spy(self, task, *args, **kwargs):
+        seen.append(task)
+        return await original(self, task, *args, **kwargs)
+
+    monkeypatch.setattr(DocumentationWorkflowNode, "invoke_async", spy)
+
+    factory, _ = comment_factory
+    wiring = docs_workflow_wiring()
+    graph = build_graph_for_run(
+        "context-edge-1",
+        surface="pull_request",
+        tools_registry=tools,
+        model=docs_model(),
+        storage_dir=tmp_sessions,
+        comment_factory=factory,
+        page_workflow=wiring["page_workflow"],
+        drafts_repo=wiring["drafts_repo"],
+        agents=wiring["agents"],
+    )
+    await graph.invoke_async(
+        PR_TASK,
+        invocation_state={"run_id": "context-edge-1", "review_policy": "never"},
+    )
+
+    assert seen, "the document node never ran"
+    joined = "\n".join(
+        block.get("text", "")
+        for blocks in seen
+        for block in blocks
+        if isinstance(block, dict)
+    )
+    assert "From context:" in joined
+    assert "docs/widgets.md" in joined
+
+
 def test_graph_uses_injected_agent_factory_registry(model, tools, tmp_sessions) -> None:
     from draftly.agents.shared.classifier import build_classifier
 

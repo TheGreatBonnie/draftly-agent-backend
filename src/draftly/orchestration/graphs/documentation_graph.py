@@ -497,6 +497,11 @@ def build_documentation_graph(
     # (scoped evidence per task path). Gated like the impact edge so the work
     # is only ever scheduled on a write.
     builder.add_edge("research", "document", condition=route_to_write)
+    # The context node is the only node that emits a structured EvidenceBundle
+    # (research is a text swarm, so parse_node_input drops it). Without this
+    # edge its items reach no one and every page escalates for missing
+    # evidence. Gated like the other content edges.
+    builder.add_edge("context", "document", condition=route_to_write)
 
     # PR notify: post the impact result directly so the comment cannot drift
     # from the actual page plan. Runs only for pull_request.opened events.
