@@ -321,6 +321,9 @@ async def test_list_revisions(repo: DraftRepository) -> None:
     rev1 = await repo.create_revision(
         run_id="run-1", org_id="org-1", generation=1, path="docs/a.md", action="update"
     )
+    # finalize() rejects an empty draft (see test_finalize_empty_draft_keeps_it_open),
+    # so generation 1 needs real content before it can be sealed.
+    await repo.append_chunk(rev1.id, "# A")
     await repo.finalize(rev1.id)
     rev2 = await repo.create_revision(
         run_id="run-1", org_id="org-1", generation=2, path="docs/b.md", action="create"

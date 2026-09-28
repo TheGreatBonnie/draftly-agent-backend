@@ -34,6 +34,12 @@ def client() -> TestClient:
     repos.repository_config.get = AsyncMock(return_value=None)
     repos.repository_config.upsert = AsyncMock(return_value={})
     repos.repository_config.list_by_org = AsyncMock(return_value=[])
+    # connect_github() authorizes the installation with a direct query before it
+    # will persist anything. A bare MagicMock would hand back a non-awaitable,
+    # so stand in an owned row; tests covering the rejection path override this.
+    state.dependencies.integrations.database.fetch_one = AsyncMock(
+        return_value={"id": "gh-install-1"}
+    )
     state.worker = MagicMock()
     state.worker.task_runner.has_task = MagicMock(return_value=True)
     state.worker.run_task = AsyncMock(

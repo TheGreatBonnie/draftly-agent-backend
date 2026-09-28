@@ -25,7 +25,7 @@ from draftly.documentation.tavily_source import (
     group_chunks_into_pages,
     pack_sample_files,
 )
-from draftly.integrations.tavily.errors import TavilyError
+from draftly.integrations.tavily.errors import TavilyError, TavilyErrorCode
 from tests.fakes import FakeTavilyClient
 
 ROOT = "https://docs.example.com"

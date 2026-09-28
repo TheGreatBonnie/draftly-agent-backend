@@ -742,6 +742,13 @@ async def test_build_online_task_env_state_carries_real_diff() -> None:
                 / "001-oauth-login"
             ),
             "pr_number": 101,
+            # Pin the base to the scenario's own code commit. Without this,
+            # build_worktree_pr() resolves the base from the worktree's
+            # @{upstream}, and once origin/feat/001-oauth-login has been pushed
+            # past HEAD the three-dot diff collapses to the merge base and comes
+            # back empty. HEAD~1 keeps the diff equal to the OAuth commit no
+            # matter how far the scenario branch has been pushed.
+            "base_ref": "HEAD~1",
         },
     )
 
