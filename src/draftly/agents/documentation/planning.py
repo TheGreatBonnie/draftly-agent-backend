@@ -129,14 +129,24 @@ def _tokens(value: str) -> set[str]:
     }
 
 
+def _haystack(item: EvidenceItem) -> set[str]:
+    """Every token an item can be matched on.
+
+    All four fields are optional and default to ``''``. The context agent
+    gathers evidence through ``github_read_file``, so it fills ``url`` and
+    ``excerpt`` and leaves ``id`` and ``topic`` blank; tokenising only the
+    latter pair scored every real bundle at zero.
+    """
+    return _tokens(item.id) | _tokens(item.topic) | _tokens(item.url) | _tokens(item.excerpt)
+
+
 def _topic_matches(items: list[EvidenceItem], path: str) -> list[EvidenceItem]:
     """Best-effort page affinity by token overlap. Guarantees nothing."""
     wanted = _tokens(path)
     if not wanted:
         return []
     scored = [
-        (len(wanted & (_tokens(item.id) | _tokens(item.topic))), index, item)
-        for index, item in enumerate(items)
+        (len(wanted & _haystack(item)), index, item) for index, item in enumerate(items)
     ]
     scored = [entry for entry in scored if entry[0] > 0]
     scored.sort(key=lambda entry: (-entry[0], entry[1]))

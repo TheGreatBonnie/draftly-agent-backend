@@ -177,6 +177,39 @@ def test_resolver_topic_affinity_caps_at_three_items() -> None:
     assert len(task.evidence) == 3
 
 
+def test_resolver_matches_page_by_affinity_over_url_and_excerpt() -> None:
+    """Source 4 must read the fields the context agent actually fills.
+
+    The agent gathers evidence through ``github_read_file``, so it emits ``url``
+    and ``excerpt`` and leaves ``id`` and ``topic`` blank. Run c6d18ea0
+    escalated 9/9 pages because this source tokenised only the blank pair.
+    """
+    path = "docs/how-to/oauth-login-flow.md"
+    impact = ImpactAnalysis(
+        action="update",
+        affected_documents=[path],
+        tasks=_tasks_only(path),
+    )
+    deps = {
+        "context": {
+            "items": [
+                {
+                    "url": "https://github.com/acme/authly/blob/main/src/oauth.rs",
+                    "excerpt": "the login flow starts the authorization code grant",
+                },
+                {
+                    "url": "https://github.com/acme/authly/blob/main/src/billing.rs",
+                    "excerpt": "invoice totals and payment methods",
+                },
+            ]
+        }
+    }
+    [task] = resolve_task_evidence(impact, deps)
+    assert [item.url for item in task.evidence] == [
+        "https://github.com/acme/authly/blob/main/src/oauth.rs"
+    ]
+
+
 def test_resolver_leaves_unmatched_pages_empty_for_escalation() -> None:
     """The escalation path must stay reachable: no source matched."""
     impact = ImpactAnalysis(
