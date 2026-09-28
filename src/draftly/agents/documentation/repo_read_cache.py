@@ -36,7 +36,7 @@ CACHEABLE_TOOLS: frozenset[str] = frozenset(
 DEFAULT_MAX_ENTRIES = 512
 DEFAULT_MAX_BYTES = 32 * 1024 * 1024
 
-_cache_var: ContextVar["RepoReadCache | None"] = ContextVar(
+_cache_var: ContextVar[RepoReadCache | None] = ContextVar(
     "draftly_repo_read_cache", default=None
 )
 
