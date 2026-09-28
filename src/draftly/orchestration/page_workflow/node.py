@@ -27,8 +27,8 @@ from strands.multiagent.base import (
     Status,
 )
 
-from draftly.agents.documentation.planning import plan_tasks
-from draftly.agents.schemas import DocumentationTask, EvidenceBundle, ImpactAnalysis
+from draftly.agents.documentation.planning import resolve_task_evidence
+from draftly.agents.schemas import DocumentationTask, ImpactAnalysis
 from draftly.orchestration.nodes.base import (
     agent_result,
     original_task,
@@ -52,19 +52,6 @@ logger = structlog.get_logger(__name__)
 #: Non-write impact actions must never route through the page workflow; the
 #: graph already gates on ``route_to_write``, this is a defensive guard.
 _WRITE_ACTIONS = ("update", "create")
-
-
-def _evidence_bundle(research_payload: Any) -> EvidenceBundle | None:
-    """Normalize the research dependency into an ``EvidenceBundle``."""
-    if isinstance(research_payload, dict):
-        items = research_payload.get("items") or research_payload.get("evidence")
-    elif isinstance(research_payload, list):
-        items = research_payload
-    else:
-        return None
-    if not isinstance(items, list) or not items:
-        return None
-    return EvidenceBundle(items=list(items))
 
 
 def _result_from_states(states: list[Any]) -> DocumentationWorkflowResult:
@@ -159,8 +146,7 @@ class DocumentationWorkflowNode(MultiAgentBase):
             # Defensive: the graph should never route here for non-write actions.
             return self._vacuous_pass()
 
-        evidence = _evidence_bundle(deps.get("research"))
-        tasks = plan_tasks(impact, evidence)
+        tasks = resolve_task_evidence(impact, deps)
         if not tasks:
             # No pages planned: a real (empty) plan is a completed pass.
             return self._vacuous_pass()

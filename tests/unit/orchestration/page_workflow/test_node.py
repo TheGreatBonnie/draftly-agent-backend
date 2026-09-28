@@ -16,7 +16,7 @@ import pytest
 from strands.multiagent.base import Status
 
 from draftly.agents.documentation.writer import WriterFactory
-from draftly.agents.schemas import ReviewVerdict
+from draftly.agents.schemas import DocumentationTask, ImpactAnalysis, ReviewVerdict
 from draftly.orchestration.nodes.base import node_data
 from draftly.orchestration.nodes.rubric_grader import build_docs_rubric_grader
 from draftly.orchestration.page_workflow.handlers import (
@@ -396,6 +396,59 @@ async def test_no_evidence_escalates_to_human_review() -> None:
     assert report["ready_for_review"] is True
     assert report["escalated_page_ids"] == ["docs/widgets.md"]
     assert report["failed_page_ids"] == []
+
+
+async def test_context_evidence_evaluates_instead_of_escalating() -> None:
+    """A page with context evidence must reach the quality gate, not escalate.
+
+    IMPACT_NO_EVIDENCE carries a task with no evidence, which is the exact
+    production shape: the impact agent emits tasks and omits evidence. Before
+    the fix the node read only deps["research"], so this page escalated.
+    """
+    node, _pages, _writer, _review = _wired_node()
+    sections = [
+        "Original Task: " + ORIGINAL_TASK,
+        "Inputs from previous nodes:",
+        "From impact:",
+        "  - Agent: " + json.dumps(IMPACT_NO_EVIDENCE),
+        "From context:",
+        "  - Agent: "
+        + json.dumps({"items": [{"id": "docs/widgets.md", "topic": "widgets"}]}),
+    ]
+    result = await node.invoke_async(
+        [{"text": "\n".join(sections)}],
+        invocation_state={"run_id": "run-ctx", "project_id": "org-1"},
+    )
+
+    assert result.status == Status.COMPLETED
+    report = node_data(result, "document")["result"]
+    assert report["escalated_page_ids"] == []
+    assert report["passed"] is True
+    assert report["passed_page_ids"] == ["docs/widgets.md"]
+
+
+async def test_empty_evidence_is_logged(monkeypatch) -> None:
+    """A page the resolver could not source must say so out loud."""
+    import draftly.agents.documentation.planning as planning
+
+    events: list[dict] = []
+
+    class _Capture:
+        def warning(self, event, **kwargs):
+            events.append({"event": event, **kwargs})
+
+    monkeypatch.setattr(planning, "logger", _Capture())
+
+    impact = ImpactAnalysis(
+        action="update",
+        affected_documents=["docs/a.md"],
+        tasks=[DocumentationTask(id="docs/a.md", path="docs/a.md")],
+    )
+    planning.resolve_task_evidence(impact, {})
+
+    assert [e for e in events if e["event"] == "page_evidence_empty"]
+    assert events[0]["paths"] == ["docs/a.md"]
+    assert events[0]["page_count"] == 1
 
 
 async def test_missing_run_id_fails() -> None:
