@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
-from draftly.agents.documentation.planning import plan_tasks, task_id_for, tasks_from_impact
+from draftly.agents.documentation.planning import (
+    plan_tasks,
+    resolve_task_evidence,
+    task_id_for,
+    tasks_from_impact,
+)
 from draftly.agents.schemas import DocumentationTask, EvidenceBundle, EvidenceItem, ImpactAnalysis
 
 
@@ -46,3 +51,164 @@ def test_plan_tasks_falls_back_when_llm_emitted_none() -> None:
 
 def test_task_id_for_is_the_path() -> None:
     assert task_id_for("docs/guide.md") == "docs/guide.md"
+
+
+def _tasks_only(*paths: str) -> list[DocumentationTask]:
+    return [DocumentationTask(id=path, path=path) for path in paths]
+
+
+def test_resolver_prefers_task_evidence_over_all_sources() -> None:
+    """Source 1 wins even when every other source has a match."""
+    impact = ImpactAnalysis(
+        action="update",
+        affected_documents=["docs/a.md"],
+        tasks=[
+            DocumentationTask(
+                id="docs/a.md",
+                path="docs/a.md",
+                evidence=[EvidenceItem(id="docs/a.md", topic="from-tasks")],
+            )
+        ],
+    )
+    deps = {
+        "context": {"items": [{"id": "docs/a.md", "topic": "from-context"}]},
+    }
+    [task] = resolve_task_evidence(impact, deps)
+    assert [item.topic for item in task.evidence] == ["from-tasks"]
+
+
+def test_resolver_reads_context_bundle_when_tasks_omit_evidence() -> None:
+    """The production case: LLM tasks carry no evidence, context supplies it."""
+    impact = ImpactAnalysis(
+        action="update",
+        affected_documents=["docs/a.md"],
+        tasks=_tasks_only("docs/a.md"),
+    )
+    deps = {"context": {"items": [{"id": "docs/a.md", "topic": "widgets"}]}}
+    [task] = resolve_task_evidence(impact, deps)
+    assert [item.id for item in task.evidence] == ["docs/a.md"]
+
+
+def test_resolver_falls_back_to_research_when_context_is_empty() -> None:
+    """Legacy precedence, evaluate.py:378-381: context first, research second."""
+    impact = ImpactAnalysis(
+        action="update",
+        affected_documents=["docs/a.md"],
+        tasks=_tasks_only("docs/a.md"),
+    )
+    deps = {
+        "context": {"items": []},
+        "research": {"items": [{"id": "docs/a.md", "topic": "widgets"}]},
+    }
+    [task] = resolve_task_evidence(impact, deps)
+    assert [item.id for item in task.evidence] == ["docs/a.md"]
+
+
+def test_resolver_prefers_context_over_research() -> None:
+    impact = ImpactAnalysis(
+        action="update",
+        affected_documents=["docs/a.md"],
+        tasks=_tasks_only("docs/a.md"),
+    )
+    deps = {
+        "context": {"items": [{"id": "docs/a.md", "topic": "from-context"}]},
+        "research": {"items": [{"id": "docs/a.md", "topic": "from-research"}]},
+    }
+    [task] = resolve_task_evidence(impact, deps)
+    assert [item.topic for item in task.evidence] == ["from-context"]
+
+
+def test_resolver_scopes_impact_prose_evidence_by_doc_match() -> None:
+    """Source 2: 'Doc match: <path>' is the only page link in the prose."""
+    impact = ImpactAnalysis(
+        action="update",
+        affected_documents=["docs/a.md", "docs/b.md"],
+        tasks=_tasks_only("docs/a.md", "docs/b.md"),
+        evidence=[
+            "src/api/users.py:45-67 - added rate limiting\n"
+            "Doc match: docs/a.md (score: 0.9)"
+        ],
+    )
+    tasks = resolve_task_evidence(impact, {})
+    assert [item.id for item in tasks[0].evidence] == ["docs/a.md"]
+    assert "rate limiting" in tasks[0].evidence[0].excerpt
+    assert tasks[1].evidence == []
+
+
+def test_resolver_matches_remaining_pages_by_topic_affinity() -> None:
+    """Source 4: no exact id, but the topic overlaps the page name."""
+    path = "docs/guides/oauth-authorization-url.md"
+    impact = ImpactAnalysis(
+        action="update",
+        affected_documents=[path],
+        tasks=_tasks_only(path),
+    )
+    deps = {
+        "context": {
+            "items": [
+                {
+                    "id": "https://docs.example.com/authorize",
+                    "topic": "oauth authorization url guide",
+                },
+                {"id": "https://docs.example.com/unrelated", "topic": "billing"},
+            ]
+        }
+    }
+    [task] = resolve_task_evidence(impact, deps)
+    assert [item.id for item in task.evidence] == [
+        "https://docs.example.com/authorize"
+    ]
+
+
+def test_resolver_topic_affinity_caps_at_three_items() -> None:
+    impact = ImpactAnalysis(
+        action="update",
+        affected_documents=["docs/guides/oauth.md"],
+        tasks=_tasks_only("docs/guides/oauth.md"),
+    )
+    deps = {
+        "context": {
+            "items": [
+                {"id": f"https://example.com/{n}", "topic": "oauth guide"} for n in range(6)
+            ]
+        }
+    }
+    [task] = resolve_task_evidence(impact, deps)
+    assert len(task.evidence) == 3
+
+
+def test_resolver_leaves_unmatched_pages_empty_for_escalation() -> None:
+    """The escalation path must stay reachable: no source matched."""
+    impact = ImpactAnalysis(
+        action="update",
+        affected_documents=["docs/a.md"],
+        tasks=_tasks_only("docs/a.md"),
+    )
+    [task] = resolve_task_evidence(impact, {})
+    assert task.evidence == []
+
+
+def test_resolver_tolerates_malformed_dep_payloads() -> None:
+    """parse_node_input hands us whatever the section contained."""
+    impact = ImpactAnalysis(
+        action="update",
+        affected_documents=["docs/a.md"],
+        tasks=_tasks_only("docs/a.md"),
+    )
+    deps = {"context": "## Research Summary: PR #67", "research": None}
+    [task] = resolve_task_evidence(impact, deps)
+    assert task.evidence == []
+
+
+def test_resolver_keeps_affected_documents_expansion_path() -> None:
+    """No LLM tasks: the resolver still expands and fills affected_documents."""
+    impact = ImpactAnalysis(
+        action="update",
+        affected_documents=["docs/a.md", "docs/b.md"],
+        rationale="behavior changed",
+    )
+    deps = {"context": {"items": [{"id": "docs/b.md", "topic": "widgets"}]}}
+    tasks = resolve_task_evidence(impact, deps)
+    assert [t.path for t in tasks] == ["docs/a.md", "docs/b.md"]
+    assert tasks[0].evidence == []
+    assert [item.id for item in tasks[1].evidence] == ["docs/b.md"]
