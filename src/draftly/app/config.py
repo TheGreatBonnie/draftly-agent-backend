@@ -38,11 +38,21 @@ class StrandsConfig(BaseModel):
     #: truncation recovery (the writer starvation root cause in run 3ef0d570).
     writer_output_tokens: int = 48_000
     #: Strands ``limits`` turns cap for the documentation *context* agent.
-    #: One turn is one model call plus tool execution. Evidence gathering runs
-    #: read_file/get_tree/get_diff/PR-read (run ce8ea540 used 6+2+2+1 before it
-    #: died), so a handful of turns of headroom over that is real work; the cap
-    #: exists so an unbounded agent cannot decide how much a run spends.
-    context_max_turns: int = 12
+    #: One turn is one model call plus the tool execution that follows.
+    #:
+    #: Calibrated against measured runs, not guessed:
+    #:   * ``ce8ea540`` (uncapped) reached 11 tool calls and was still sweeping.
+    #:   * ``02b58350`` (capped at 12) issued 14 tool calls across exactly 12
+    #:     model calls and was cut off mid-sweep, so 12 sits *below* real demand
+    #:     -- the agent never got the turn it needed to emit the EvidenceBundle
+    #:     and the node finished "successfully" with zero evidence.
+    #:
+    #: 30 leaves room for a full evidence sweep plus the final structured-output
+    #: turn, while still being a real ceiling: the uncapped node spent 84.9s
+    #: before dying on an unrelated truncation. Operator-tunable via
+    #: ``STRANDS_CONTEXT_MAX_TURNS``; revisit the number when a run completes a
+    #: sweep and reports its actual cycle count.
+    context_max_turns: int = 30
 
     # ------------------------------------------------------------------
     # Agent steering (spec: 2026-09-10-agent-steering-design)
@@ -198,7 +208,7 @@ class Settings(BaseSettings):
     strands_writer_max_turns: int = 60
     strands_writer_output_tokens: int = 48_000
     # Documentation context-agent loop budget (Strands `limits`).
-    strands_context_max_turns: int = 12
+    strands_context_max_turns: int = 30
 
     # ------------------------------------------------------------------
     # Agent steering (spec: 2026-09-10-agent-steering-design)

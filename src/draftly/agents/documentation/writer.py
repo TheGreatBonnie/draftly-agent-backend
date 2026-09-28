@@ -44,8 +44,21 @@ def build_writer_agent(
     runtime: SteeringRuntime | None = None,
     agent_id: str | None = None,
     node_id: str | None = None,
+    **agent_options: Any,
 ) -> Agent:
-    """Build the documentation writer agent."""
+    """Build the documentation writer agent.
+
+    ``agent_options`` are forwarded to the centralized Strands constructor,
+    honouring the contract ``WriterFactory.create`` documents. The page writer
+    uses this to pass a per-page ``session_manager`` so a re-claimed task
+    resumes instead of restarting at ``Tool #1`` (run ``02b58350`` failed all
+    seven page writes with ``TypeError: build_writer_agent() got an unexpected
+    keyword argument 'session_manager'`` because the passthrough was missing).
+
+    Options the writer owns itself stay explicit, so a caller passing e.g.
+    ``structured_output_model`` collides loudly here rather than silently
+    displacing ``DocChangePlan``.
+    """
 
     return build_draftly_agent(
         role=AgentRole.WRITER,
@@ -82,6 +95,7 @@ def build_writer_agent(
         node_id=node_id or "doc_writer",
         name="doc_writer",
         description="Writes documentation change plans (create/update).",
+        **agent_options,
     )
 
 

@@ -19,9 +19,10 @@ from types import SimpleNamespace
 from draftly.app.config import Settings, StrandsConfig
 from draftly.workflows.context import WorkflowContext
 
-#: A research agent that reads files, a tree, the diff and the PR needs
-#: several turns to gather evidence, but must not be free to keep going.
-DEFAULT_CONTEXT_MAX_TURNS = 12
+# The *number* is asserted in ``test_context_budget_headroom.py``, against the
+# measured demand. This module only asserts that the value travels from config
+# to the graph, so there is exactly one place a number can go stale.
+DEFAULT_CONTEXT_MAX_TURNS = StrandsConfig().context_max_turns
 
 
 def test_settings_context_budget_defaults(monkeypatch) -> None:
