@@ -86,14 +86,21 @@ def build_draftly_agent(
         role=policy.role,
     )
     agent_options.setdefault("agent_id", agent_id)
-    # Strands defaults ``callback_handler`` to ``PrintingCallbackHandler``,
-    # which print()s every reasoning delta, text delta, and ``Tool #N:`` line
-    # to stdout. That interleaves with structlog on the same fd and splices
-    # model text into log records (run d76e2490: 2,242 raw lines, 65,520
-    # ``<unk>`` tokens, an unreadable failing node). The handler only observes
-    # and prints, so silencing it changes no agent behaviour. Callers that
-    # genuinely stream (SSE) read ``graph.stream_async``, not this callback.
-    agent_options.setdefault("callback_handler", None)
+    # Reverted (b662209, "A. Silence stdout"): the agent now inherits Strands'
+    # default ``PrintingCallbackHandler``, so reasoning deltas, text deltas and
+    # ``Tool #N:`` lines stream to the worker log again.
+    #
+    # b662209 disabled this because the handler print()s to the same fd as
+    # structlog -- run d76e2490 produced 2,242 raw lines and 65,520 ``<unk>``
+    # tokens and the failing node became unreadable *in a rich console*. That
+    # cost is volume, not corruption, and it is worth paying to see reasoning.
+    # Two things did change since, and neither is a reason to re-disable:
+    # ``observability/logging.py`` now uses ``RichTracebackFormatter`` with
+    # ``show_locals=False``, so tracebacks no longer render 31,330 lines of
+    # frame locals, and these are plain text lines, not rich-console frames.
+    #
+    # SSE is unaffected either way: it reads ``graph.stream_async``.
+    #
     # Imported here, not at module scope: the plugin reaches into
     # ``agents.documentation``, whose package ``__init__`` builds agents and so
     # imports this module back. A module-level import would be a cycle.

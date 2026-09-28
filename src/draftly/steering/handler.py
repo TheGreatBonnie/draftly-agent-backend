@@ -108,6 +108,15 @@ class _IsolatedJudge:
     and flat ``tools``/``plugins`` lists, using its own model — never the
     application agent under review. There is no recursive Draftly factory
     call, so a judge can neither steer nor inherit application plugins.
+
+    ``callback_handler=None`` here is a deliberate exception, not an oversight
+    to be made consistent: ``build_draftly_agent`` deliberately lets the
+    printing callback stream application-agent reasoning to the worker log, and
+    the judge is the one agent that stays silent. It runs once per review
+    round-trip, so its reasoning is repetitive grading commentary repeated
+    dozens of times per run -- volume with no diagnostic value. Do not remove
+    this for consistency with the other agents; see
+    ``tests/unit/agents/test_no_stdout_model_text.py``.
     """
 
     def __init__(self, *, system_prompt: str, model: Any) -> None:

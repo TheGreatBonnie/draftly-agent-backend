@@ -1,17 +1,24 @@
-"""Application agents must not print model text to stdout.
+"""Application agents stream model text to stdout.
+
+REVERSED. This file previously asserted the opposite, and the reversal is
+deliberate.
 
 Strands' default ``callback_handler`` is ``PrintingCallbackHandler``, which
 ``print()``s every reasoning delta, every text delta, and a ``Tool #N:`` line
-per tool block straight to stdout. ``build_draftly_agent`` never passed
-``callback_handler``, so every Draftly agent inherited it and the model text
-interleaved with structlog on the same fd.
+per tool block straight to stdout. ``b662209`` set ``callback_handler=None`` in
+``build_draftly_agent`` to silence it, because run d76e2490 produced 2,242 raw
+text lines and 65,520 ``<unk>`` tokens that interleaved with structlog on the
+same fd and made the last ~8 minutes of the failing ``document`` node
+unreadable in a rich console.
 
-Run d76e2490 produced 2,242 raw text lines and 65,520 ``<unk>`` tokens that way,
-spliced into surrounding log records and making the last ~8 minutes of the
-failing ``document`` node unreadable.
+That suppression was reverted: reasoning is wanted in the worker log. The
+d76e2490 cost is volume, not corruption, and it is now paid knowingly. The
+``show_locals=False`` formatter from ``00537a6`` also removed the traceback
+render that made that same run 97% of its bytes.
 
-These tests assert the observable behaviour (nothing reaches stdout) rather than
-the constructor kwarg, so a future refactor cannot pass them by accident.
+The tests are inverted rather than deleted, so streaming cannot silently
+regress. The judge stays silenced -- see
+``test_judge_agent_remains_silenced``.
 """
 
 from __future__ import annotations
@@ -51,8 +58,9 @@ class _ReasoningStubModel(StubModel):
 
 
 def _reasoning_model() -> _ReasoningStubModel:
+    # No ``text``: the writer is a structured-output agent, so StubModel emits
+    # a DocChangePlan tool call and never a text delta.
     return _ReasoningStubModel(
-        text="VISIBLE-ANSWER-TEXT",
         structured_outputs={
             DocChangePlan: {"files": [{"path": "docs/a.md", "action": "create"}]},
         },
@@ -60,32 +68,45 @@ def _reasoning_model() -> _ReasoningStubModel:
 
 
 @pytest.mark.asyncio
-async def test_writer_agent_emits_no_model_text_to_stdout(
+async def test_writer_agent_streams_model_text_to_stdout(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """A reasoning model's deltas must not reach stdout."""
+    """A reasoning model's deltas must reach stdout, or reasoning is not logged.
+
+    Only two of the three handler outputs apply here. The writer is a
+    structured-output agent: its answer arrives as a ``DocChangePlan`` tool
+    call, so ``StubModel`` never emits a text delta and there is no
+    ``VISIBLE-ANSWER-TEXT`` line to assert. Reasoning and the ``Tool #N:``
+    line are the two that matter.
+    """
     agent = build_writer_agent(_reasoning_model(), [])
 
     assert isinstance(agent, Agent)
     await agent.invoke_async("write the page")
 
     captured = capsys.readouterr()
-    assert "SECRET-CHAIN-OF-THOUGHT" not in captured.out
-    assert "VISIBLE-ANSWER-TEXT" not in captured.out
-    assert "Tool #" not in captured.out
+    assert _REASONING in captured.out
+    assert "Tool #1: DocChangePlan" in captured.out
 
 
-def test_writer_agent_does_not_use_printing_callback_handler() -> None:
-    """Pin the root cause so the default cannot silently return."""
+def test_writer_agent_uses_printing_callback_handler() -> None:
+    """Pin the root cause so the default cannot silently disappear again."""
     from strands.handlers.callback_handler import PrintingCallbackHandler
 
     agent = build_writer_agent(StubModel(), [])
 
-    assert not isinstance(agent.callback_handler, PrintingCallbackHandler)
+    assert isinstance(agent.callback_handler, PrintingCallbackHandler)
 
 
 def test_judge_agent_remains_silenced() -> None:
-    """The judge was already silenced; keep both agents consistent."""
+    """The judge is a deliberate exception, not a leftover.
+
+    It is no longer "consistent" with the writer -- that consistency is
+    deliberately broken. The judge is built outside ``build_draftly_agent`` and
+    stays silent because its reasoning is long, repetitive grading commentary
+    on each of the 242 judge round-trips of d76e2490: volume with no
+    diagnostic value.
+    """
     from strands.handlers.callback_handler import PrintingCallbackHandler
 
     from draftly.steering.handler import _IsolatedJudge
