@@ -236,9 +236,9 @@ class PageWorkflowRepository:
                 UPDATE documentation_page_states
                    SET status = 'passed',
                        escalation_reason = CASE
-                           WHEN $3 IS NULL THEN escalation_reason
-                           WHEN escalation_reason IS NULL THEN 'Approved: ' || $3
-                           ELSE escalation_reason || E'\nApproved: ' || $3
+                           WHEN $3::text IS NULL THEN escalation_reason
+                           WHEN escalation_reason IS NULL THEN 'Approved: ' || $3::text
+                           ELSE escalation_reason || E'\nApproved: ' || $3::text
                        END,
                        updated_at = now()
                  WHERE run_id = $1
