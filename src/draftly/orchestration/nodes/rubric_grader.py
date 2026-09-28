@@ -56,13 +56,45 @@ class DeterministicRubricGrader:
         return RubricGrade()
 
 
+class _EvidenceAwareEvaluator(OutputEvaluator):
+    """An ``OutputEvaluator`` that renders page evidence as an ``<Evidence>`` block.
+
+    ``OutputEvaluator`` composes its judge prompt from a fixed set of sections
+    and silently ignores ``EvaluationData.metadata``, so evidence handed over
+    that way never reaches the judge. The groundedness rubric asks whether claims
+    are traceable to "the evidence ... or the provided evidence/content files";
+    without this block the judge is asked to verify against context it was never
+    given. ``build_groundedness_evaluator`` hit the same class of bug and works
+    around it with ``uses_environment_state``; a single page is better served by
+    a dedicated section.
+    """
+
+    def _build_prompt(self, evaluation_case: EvaluationData) -> str | list:
+        # strands_evals ships no py.typed, so the base return is Any; declare it
+        # or mypy rejects the passthrough below.
+        prompt: str | list = super()._build_prompt(evaluation_case)
+        evidence = (evaluation_case.metadata or {}).get("evidence") or []
+        lines = [
+            f"- {item.get('id') or item.get('url') or ''}: {item.get('topic') or ''}".rstrip(
+                ": "
+            )
+            for item in evidence
+            if isinstance(item, dict)
+        ]
+        rendered = "\n".join(line for line in lines if line.strip())
+        if not rendered:
+            return prompt
+        return str(prompt).replace("<Rubric>", f"<Evidence>\n{rendered}\n</Evidence>\n<Rubric>", 1)
+
+
 class StrandsRubricGrader:
     """Thin adapter over a rubric ``OutputEvaluator``.
 
     ``evaluator`` is any ``OutputEvaluator`` (e.g. the existing
     groundedness/completeness judges). We score ``actual_output`` (the draft)
-    with the judge's rubric, feeding the evidence via metadata so the judge's
-    prompt can weigh it.
+    with the judge's rubric, handing the page evidence over on
+    ``EvaluationData.metadata``; rendering it into the prompt is the evaluator's
+    job, not ours.
     """
 
     def __init__(self, evaluator: OutputEvaluator, *, rubric: str) -> None:
@@ -72,7 +104,7 @@ class StrandsRubricGrader:
     async def grade(self, *, draft: str, evidence: list[dict]) -> RubricGrade:
         outputs = await self._evaluator.evaluate_async(
             EvaluationData(
-                input=self._rubric,
+                input="",
                 actual_output=draft,
                 metadata={"evidence": evidence},
             )
@@ -102,7 +134,7 @@ def build_docs_rubric_grader(model: Any, rubric: str) -> RubricGrader:
     if model is None:
         return DeterministicRubricGrader()
     return StrandsRubricGrader(
-        OutputEvaluator(rubric=rubric, model=model),
+        _EvidenceAwareEvaluator(rubric=rubric, model=model, include_inputs=False),
         rubric=rubric,
     )
 
@@ -115,7 +147,9 @@ def build_changelog_rubric_grader(model: Any) -> RubricGrader:
     if model is None:
         return DeterministicRubricGrader()
     return StrandsRubricGrader(
-        OutputEvaluator(rubric=CHANGELOG_RUBRIC, model=model),
+        _EvidenceAwareEvaluator(
+            rubric=CHANGELOG_RUBRIC, model=model, include_inputs=False
+        ),
         rubric=CHANGELOG_RUBRIC,
     )
 
