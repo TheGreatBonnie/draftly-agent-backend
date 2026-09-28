@@ -371,6 +371,17 @@ class ModelRouter:
         name = type(exc).__name__.lower()
         message = str(exc).lower()
 
+        # Matched by type before the message heuristics below, because
+        # ``MaxTokensReachedException("max_tokens")`` contains neither "rate"
+        # nor "limit" and so fell through to the FAILURE_TIMEOUT default --
+        # making the failover log blame network latency for a response that was
+        # cut off by the model's output cap (run 9ab7a0a0). RATE_LIMIT is the
+        # existing "this provider cannot serve a request this size right now"
+        # category: failover-worthy, cooled down rather than disabled, so a
+        # single oversized call does not take a provider out of rotation.
+        if "maxtokensreached" in name:
+            return FAILURE_RATE_LIMIT
+
         if "auth" in name or "401" in message or "api key" in message or "unauthorized" in message:
             return FAILURE_AUTH
 

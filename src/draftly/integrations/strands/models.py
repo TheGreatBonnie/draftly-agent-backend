@@ -68,19 +68,32 @@ def resolve_concrete_model(router: Any = None, *, index: int = 0) -> Any:
 
 
 def _is_max_tokens_event(event: Any) -> bool:
-    """True when ``event`` is the terminating ``stop`` event of a truncated run.
+    """True when ``event`` is the terminating event of a truncated run.
 
-    Strands delivers the provider's final event as ``{"stop": (..., stop_reason)}``
-    for both the streaming and ``structured_output`` paths, so this one shape
-    covers both. ``max_tokens`` means the model was cut off mid-response: the
-    stream completed, so nothing raised, but the output is unusable.
+    Every Strands model normalises its provider's finish reason into a single
+    terminal event, ``{"messageStop": {"stopReason": ...}}`` -- OpenAI's
+    ``length``, Anthropic's and Bedrock's ``max_tokens`` all arrive as
+    ``"max_tokens"`` (``strands/models/openai.py:580``). ``max_tokens`` means
+    the model was cut off mid-response: the stream completed, so nothing raised
+    here, but the output is unusable.
+
+    This matched ``{"stop": (..., stop_reason)}`` for its first version, a shape
+    **no Strands model yields** -- the only ``event["stop"]`` in the library is
+    a *read* of a boto3 Bedrock event. The failover was therefore dead code:
+    run ``9ab7a0a0`` lost the ``impact`` node to ``max_tokens`` with zero
+    ``model_failover`` lines logged, despite six enabled providers.
+
+    Note the ``stream`` path is the one that can be observed at all. Strands'
+    ``structured_output`` is non-streaming and yields only ``{"output": ...}``;
+    on a truncated parse it raises ``ValueError``, which carries no stop reason,
+    so a truncation there is still not failover-eligible.
     """
     if not isinstance(event, dict):
         return False
-    stop = event.get("stop")
-    if not isinstance(stop, (tuple, list)) or len(stop) < 3:
+    message_stop = event.get("messageStop")
+    if not isinstance(message_stop, dict):
         return False
-    return stop[2] == "max_tokens"
+    return message_stop.get("stopReason") == "max_tokens"
 
 
 def _is_timeout(exc: BaseException) -> bool:

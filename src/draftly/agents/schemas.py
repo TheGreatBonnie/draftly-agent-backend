@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 from pathlib import PurePath
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 
 from draftly.agents.taxonomy import (
     CHANGE_TYPES,
@@ -46,6 +46,33 @@ EVIDENCE_EXCERPT_MAX_CHARS = 2_000
 EVIDENCE_TOPIC_MAX_CHARS = 500
 EVIDENCE_URL_MAX_CHARS = 2_000
 EVIDENCE_ID_MAX_CHARS = 500
+
+
+#: Field ceilings for ``ImpactAnalysis``, the documentation plan.
+#:
+#: Same reasoning as ``EVIDENCE_*_MAX_CHARS`` above, one node earlier: the plan
+#: is model-authored, lands in ONE response, and is the one payload that had no
+#: ceilings at all. Run ``9ab7a0a0`` lost the ``impact`` node to ``max_tokens``
+#: with the ``impact_analysis`` tool call cut off mid-JSON, and strands'
+#: recovery discards the partial message -- so the node produced nothing.
+#:
+#: The counts are the important half. ``tasks`` is a multiplier over each task's
+#: own evidence, so an unbounded list is quadratic in the worst case, and a
+#: model that enumerates the repository rather than planning a change is the
+#: realistic way to get there. They are set far above a real single-PR plan
+#: (run ``9ab7a0a0`` produced 9 evidence items) because a rejected plan costs
+#: the whole node: these catch the runaway, not the merely large.
+IMPACT_RATIONALE_MAX_CHARS = 4_000
+IMPACT_MAX_TASKS = 50
+IMPACT_MAX_AFFECTED_DOCUMENTS = 200
+IMPACT_MAX_EVIDENCE = 50
+IMPACT_DOCUMENT_MAX_CHARS = 500
+
+#: A single path/anchor string. ``max_length`` on a ``list[str]`` bounds the
+#: *count*, not the items, so the item ceiling needs its own type -- which also
+#: puts ``maxLength`` on the item in the generated tool schema, where the model
+#: can see it.
+ImpactRef = Annotated[str, StringConstraints(max_length=IMPACT_DOCUMENT_MAX_CHARS)]
 
 
 class EvidenceItem(BaseModel):
@@ -108,10 +135,16 @@ class ImpactAnalysis(BaseModel):
     """Documentation impact analysis for a surface event."""
 
     action: str = Field(description=_enum_description(DOCA_ACTIONS))
-    affected_documents: list[str] = Field(default_factory=list)
-    rationale: str = ""
-    evidence: list[str] = Field(default_factory=list)
-    tasks: list[DocumentationTask] = Field(default_factory=list)
+    affected_documents: list[ImpactRef] = Field(
+        default_factory=list,
+        max_length=IMPACT_MAX_AFFECTED_DOCUMENTS,
+    )
+    rationale: str = Field(default="", max_length=IMPACT_RATIONALE_MAX_CHARS)
+    evidence: list[ImpactRef] = Field(default_factory=list, max_length=IMPACT_MAX_EVIDENCE)
+    tasks: list[DocumentationTask] = Field(
+        default_factory=list,
+        max_length=IMPACT_MAX_TASKS,
+    )
 
     @model_validator(mode="after")
     def _validate_task_paths(self) -> ImpactAnalysis:
