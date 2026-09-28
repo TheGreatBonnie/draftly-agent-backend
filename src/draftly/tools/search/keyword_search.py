@@ -43,11 +43,19 @@ def _row_to_dict(row) -> dict:
 
 @tool
 async def keyword_search(
-    query: str,
-    namespace: str,
+    query: str | list[str],
+    namespace: str | list[str],
     limit: int = 10,
 ) -> list[dict]:
-    """Search memory items by keyword in a namespace."""
+    """Search memory items by keyword in a namespace.
+
+    ``query``/``namespace`` are declared as ``str | list[str]`` so the generated
+    tool schema advertises the array form. The impact agents frequently emit
+    ``{"query": ["oauth", "login"]}``; with a bare ``str`` annotation strands
+    rejects the call at argument binding and the search never runs, which is
+    exactly what ``coerce_string`` below would have normalized. Keep the union
+    in the signature whenever touching these parameters.
+    """
     query = coerce_string(query, "query", "keyword_search")
     namespace = coerce_string(namespace, "namespace", "keyword_search")
 
