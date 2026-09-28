@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from structlog.testing import capture_logs
+
 from draftly.agents.documentation.planning import (
     plan_tasks,
     resolve_task_evidence,
@@ -240,6 +242,42 @@ def test_resolver_matches_page_across_singular_plural_tokens() -> None:
     assert [item.url for item in task.evidence] == [
         "https://github.com/acme/authly/blob/main/src/error.rs"
     ]
+
+
+def test_resolver_logs_why_pages_could_not_be_resolved() -> None:
+    """An empty-evidence warning must say which source was empty.
+
+    ``page_evidence_empty`` reported only the failing paths, so diagnosing run
+    c6d18ea0 meant reconstructing the resolver's inputs from a 1214-line log.
+    The event must carry the dependency keys, the item count it read, and how
+    many pages each source rescued.
+    """
+    unresolved = "docs/explanation/faq.md"
+    impact = ImpactAnalysis(
+        action="update",
+        affected_documents=["docs/how-to/oauth-login-flow.md", unresolved],
+        tasks=_tasks_only("docs/how-to/oauth-login-flow.md", unresolved),
+    )
+    deps = {
+        "context": {
+            "items": [
+                {
+                    "url": "https://github.com/acme/authly/blob/main/src/oauth.rs",
+                    "excerpt": "authorization code grant",
+                }
+            ]
+        },
+        "research": "## Research Summary: PR #67",
+    }
+
+    with capture_logs() as events:
+        resolve_task_evidence(impact, deps)
+
+    [event] = [e for e in events if e.get("event") == "page_evidence_empty"]
+    assert sorted(event["deps"]) == ["context", "research"]
+    assert event["items"] == 1
+    assert event["unresolved_pages"] == [unresolved]
+    assert event["resolved_pages"] == 1
 
 
 def test_resolver_leaves_unmatched_pages_empty_for_escalation() -> None:

@@ -182,19 +182,26 @@ def resolve_task_evidence(
 
     resolved: list[DocumentationTask] = []
     unresolved: list[str] = []
+    # Which source rescued each page, so an empty-evidence warning can say why
+    # the fallbacks came up short instead of only which pages failed.
+    sources: dict[str, str] = {}
     for task in tasks:
         if task.evidence:
             resolved.append(task)
+            sources[task.path] = "task"
             continue
-        matched = (
-            prose.get(task.path)
-            or ([by_id[task.path]] if task.path in by_id else [])
-            or _topic_matches(items, task.path)
-        )
-        if matched:
+        prose_match = prose.get(task.path)
+        id_match = [by_id[task.path]] if task.path in by_id else []
+        topic_match = _topic_matches(items, task.path)
+        if prose_match or id_match or topic_match:
+            matched = prose_match or id_match or topic_match
             resolved.append(task.model_copy(update={"evidence": matched}))
+            sources[task.path] = (
+                "doc_match" if prose_match else "exact_id" if id_match else "topic_affinity"
+            )
         else:
             unresolved.append(task.path)
+            sources[task.path] = "none"
             resolved.append(task)
 
     if unresolved:
@@ -202,5 +209,10 @@ def resolve_task_evidence(
             "page_evidence_empty",
             paths=sorted(unresolved),
             page_count=len(unresolved),
+            unresolved_pages=sorted(unresolved),
+            resolved_pages=len(tasks) - len(unresolved),
+            items=len(items),
+            deps=sorted(deps),
+            sources=sources,
         )
     return resolved
