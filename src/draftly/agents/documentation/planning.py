@@ -121,9 +121,20 @@ def _prose_evidence_by_path(refs: list[str]) -> dict[str, list[EvidenceItem]]:
     return by_path
 
 
+def _fold(token: str) -> str:
+    """Drop a plural trailing ``s`` so ``errors`` and ``error`` compare equal.
+
+    Only for tokens long enough that the ``s`` is plausibly a plural, and never
+    for ``-ss`` endings, which would mangle ``address`` and ``class``.
+    """
+    if len(token) > 4 and token.endswith("s") and not token.endswith("ss"):
+        return token[:-1]
+    return token
+
+
 def _tokens(value: str) -> set[str]:
     return {
-        token
+        _fold(token)
         for token in re.split(r"[^a-z0-9]+", PurePath(value).stem.lower())
         if len(token) >= _MIN_TOPIC_TOKEN
     }

@@ -210,6 +210,38 @@ def test_resolver_matches_page_by_affinity_over_url_and_excerpt() -> None:
     ]
 
 
+def test_resolver_matches_page_across_singular_plural_tokens() -> None:
+    """A trailing-s difference must not zero the score.
+
+    ``src/error.rs`` and ``docs/reference/errors.md`` are the same subject;
+    exact token equality called them unrelated.
+    """
+    path = "docs/reference/errors.md"
+    impact = ImpactAnalysis(
+        action="update",
+        affected_documents=[path],
+        tasks=_tasks_only(path),
+    )
+    deps = {
+        "context": {
+            "items": [
+                {
+                    "url": "https://github.com/acme/authly/blob/main/src/error.rs",
+                    "excerpt": "error variants returned by the API",
+                },
+                {
+                    "url": "https://github.com/acme/authly/blob/main/src/theme.rs",
+                    "excerpt": "colour palette for the terminal",
+                },
+            ]
+        }
+    }
+    [task] = resolve_task_evidence(impact, deps)
+    assert [item.url for item in task.evidence] == [
+        "https://github.com/acme/authly/blob/main/src/error.rs"
+    ]
+
+
 def test_resolver_leaves_unmatched_pages_empty_for_escalation() -> None:
     """The escalation path must stay reachable: no source matched."""
     impact = ImpactAnalysis(
