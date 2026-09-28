@@ -27,30 +27,14 @@ def _normalized_prefix(path_prefix: object) -> str | None:
     return cleaned or None
 
 
-@tool
-async def github_get_tree(
+async def _tree_result(
     owner: str,
     repo: str,
     ref: str,
-    path_prefix: str | None = None,
-    max_entries: int | None = None,
+    path_prefix: str | None,
+    max_entries: int | None,
 ) -> dict:
-    """List a bounded slice of a GitHub repository's git tree at a given ref.
-
-    Arguments:
-        owner: repository owner (user or organization)
-        repo: repository name
-        ref: branch, tag, or commit sha to list
-        path_prefix: optional repo-relative directory to narrow the listing
-            (for example "docs"); omit to list the whole repository
-        max_entries: optional cap on returned entries; clamped to
-            1..MAX_TREE_ENTRIES (default 500)
-
-    Returns ``{"entries": [...], "returned": n, "truncated": bool, "hint":
-    str}``. ``truncated: true`` means the listing is INCOMPLETE — narrow it with
-    ``path_prefix`` (or read the path directly) instead of concluding that a
-    path does not exist, and never re-issue the same un-narrowed call.
-    """
+    """Shared implementation; enforces the writer target and read budget."""
     from draftly.integrations.github.client import GitHubClient
     from draftly.tools.github.writer_scope import require_writer_target, reserve_writer_read
 
@@ -79,3 +63,30 @@ async def github_get_tree(
             "missing from a truncated listing."
         )
     return result
+
+
+@tool
+async def github_get_tree(
+    owner: str,
+    repo: str,
+    ref: str,
+    path_prefix: str | None = None,
+    max_entries: int | None = None,
+) -> dict:
+    """List a bounded slice of a GitHub repository's git tree at a given ref.
+
+    Arguments:
+        owner: repository owner (user or organization)
+        repo: repository name
+        ref: branch, tag, or commit sha to list
+        path_prefix: optional repo-relative directory to narrow the listing
+            (for example "docs"); omit to list the whole repository
+        max_entries: optional cap on returned entries; clamped to
+            1..MAX_TREE_ENTRIES (default 500)
+
+    Returns ``{"entries": [...], "returned": n, "truncated": bool, "hint":
+    str}``. ``truncated: true`` means the listing is INCOMPLETE — narrow it with
+    ``path_prefix`` (or read the path directly) instead of concluding that a
+    path does not exist, and never re-issue the same un-narrowed call.
+    """
+    return await _tree_result(owner, repo, ref, path_prefix, max_entries)

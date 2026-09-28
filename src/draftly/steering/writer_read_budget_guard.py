@@ -17,8 +17,6 @@ from typing import Any
 
 from strands.interventions import Guide, InterventionHandler, Proceed
 
-from draftly.tools.github.writer_scope import writer_read_key
-
 #: Tools whose calls consume the page writer's read budget. Draft assembly
 #: (start_draft/append_chunk/finalize_draft) is not a read and must never be
 #: steered by this handler.
@@ -92,6 +90,12 @@ def _read_key(tool_name: str, tool_input: dict[str, Any], scope: Any) -> tuple[s
     repository and head SHA, so those are used when the model omits them and
     the key is identical to the one ``reserve_writer_read`` records.
     """
+    # Function-local import: ``writer_scope`` imports ``draft_scope`` at module
+    # level, which pulls in the documentation agent package and this guard;
+    # a module-level import here makes ``writer_scope`` unimportable first
+    # (circular: writer_scope -> draft_scope -> ... -> guard -> writer_scope).
+    from draftly.tools.github.writer_scope import writer_read_key
+
     repository = str(getattr(scope, "repository", "") or "")
     owner, _, repo = repository.partition("/")
     return writer_read_key(
