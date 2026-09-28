@@ -814,12 +814,60 @@ def build_model_router(
     # `research` fallbacks. The only research-capable model was
     # nemotron-super-research on nebius_token_factory, so losing that provider
     # left TaskType.RESEARCH with no candidate and route() raised
-    # NoCandidateError. Both below were probed on the failing path -- a
+    # NoCandidateError. The mantle models were probed on the failing path -- a
     # non-streaming parse() with response_format, which is how strands emits
     # structured output for context/research agents:
     #   qwen3-coder-next  6.89s  finish=stop  reasoning=0  parsed=OK
     #   minimax-m2       17.40s  finish=stop  reasoning=0  parsed=OK
     # Both clear the 60s ProviderConfig.timeout that the primary cannot.
+    #
+    # Later regression (run cac818d0): with nebius exhausted, research landed
+    # on qwen3-coder-next and the swarm degenerated -- the agent kept proposing
+    # handoff_to_agent instead of concluding (~7s cadence, ~every turn). The
+    # kimi pair below is reasoning-tuned (decides *when to stop*) and is
+    # already live on the mantle endpoint for other roles, so it supplies the
+    # fallback chain ahead of the coder. Priority 2 < qwen3's 3 keeps it first
+    # in _order_candidates, and the priced kimi-k2-5 (0.60/2.50) also out-scores
+    # the unpriced coder on the cold-stats route() path.
+    registry.register_model(
+        ModelConfig(
+            name="research-mantle-kimi-k2-5",
+            provider="mantle",
+            model_id=_resolve_model_id(
+                "MANTLE_KIMI_K2_5_MODEL",
+                default="moonshotai.kimi-k2.5",
+            ),
+            capabilities=(
+                "research",
+                "tool_calling",
+                "structured_output",
+            ),
+            priority=2,
+
+            context_window=256000,
+            input_cost_per_1m_tokens=0.60,
+            output_cost_per_1m_tokens=2.50,
+        )
+    )
+
+    registry.register_model(
+        ModelConfig(
+            name="research-mantle-kimi-k2-thinking",
+            provider="mantle",
+            model_id=_resolve_model_id(
+                "MANTLE_KIMI_K2_THINKING_MODEL",
+                default="moonshotai.kimi-k2-thinking",
+            ),
+            capabilities=(
+                "research",
+                "tool_calling",
+                "structured_output",
+            ),
+            priority=2,
+
+        )
+    )
+
     registry.register_model(
         ModelConfig(
             name="research-mantle-qwen3-coder-next",
