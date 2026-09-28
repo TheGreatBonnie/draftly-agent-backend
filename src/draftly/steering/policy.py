@@ -671,6 +671,7 @@ _GITHUB_READ_ONLY_TOOLS = frozenset(
         "github_read_file",
         "github_get_file",
         "github_get_tree",
+        "github_list_tree",
         "github_search_code",
     }
 )

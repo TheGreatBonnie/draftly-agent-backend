@@ -17,6 +17,8 @@ from typing import Any
 
 from strands.interventions import Guide, InterventionHandler, Proceed
 
+from draftly.tools.github.compat import LEGACY_CANONICAL_TOOL_NAMES
+
 #: Tools whose calls consume the page writer's read budget. Draft assembly
 #: (start_draft/append_chunk/finalize_draft) is not a read and must never be
 #: steered by this handler.
@@ -25,6 +27,8 @@ _READ_TOOL_NAMES = frozenset(
         "github_read_file",
         "github_get_tree",
         "github_search_code",
+        "github_get_file",
+        "github_list_tree",
         "read_file",
         "list_directory",
         "get_files",
@@ -74,13 +78,18 @@ class WriterReadBudgetGuard(InterventionHandler):
         if not isinstance(tool_input, dict):
             return Proceed()
 
-        key = _read_key(str(tool_use.get("name")), tool_input, scope)
+        key = _read_key(_canonical_name(str(tool_use.get("name"))), tool_input, scope)
         reason = budget.failure(key)
         if reason is None:
             budget.reserve(key)
             return Proceed()
 
         return Guide(feedback=_feedback_for(reason, tool_input, budget))
+
+
+def _canonical_name(tool_name: str) -> str:
+    """Map legacy GitHub read names onto the canonical tool name."""
+    return LEGACY_CANONICAL_TOOL_NAMES.get(tool_name, tool_name)
 
 
 def _read_key(tool_name: str, tool_input: dict[str, Any], scope: Any) -> tuple[str, ...]:

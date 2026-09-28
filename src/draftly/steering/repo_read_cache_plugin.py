@@ -30,6 +30,7 @@ from draftly.agents.documentation.repo_read_cache import (
     cache_key,
     current_repo_read_cache,
 )
+from draftly.tools.github.compat import LEGACY_CANONICAL_TOOL_NAMES
 
 __all__ = ["RepoReadCachePlugin", "CachedResultTool"]
 
@@ -102,7 +103,7 @@ def _key_for(tool_use: dict) -> str | None:
         scope = current_draft_scope()
         ref = getattr(scope, "head_sha", None) or ""
     return cache_key(
-        tool_name=str(name),
+        tool_name=str(LEGACY_CANONICAL_TOOL_NAMES.get(name, name)),
         owner=str(args.get("owner") or args.get("org") or ""),
         repo=str(args.get("repo") or args.get("repository") or ""),
         path=str(args.get("path") or ""),
@@ -114,7 +115,7 @@ class RepoReadCachePlugin(Plugin):
     """Populate and serve the run-scoped GitHub read cache.
 
     Registered on every agent and inert unless a cache is installed, which makes
-    the three cacheable reads share one cache across a run's page writers
+    the four cacheable read names share one cache across a run's page writers
     without a single GitHub tool function changing.
     """
 

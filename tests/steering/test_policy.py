@@ -334,6 +334,15 @@ def test_research_policy_is_read_only_with_open_failure():
     assert policy.failure_mode is FailureMode.PROCEED
 
 
+def test_writer_policy_classifies_legacy_read_aliases_as_read_only() -> None:
+    from draftly.steering.decisions import AgentRole
+    from draftly.steering.policy import policy_for
+
+    policy = policy_for(AgentRole.WRITER)
+    assert policy.is_read_only_tool("github_get_file")
+    assert policy.is_read_only_tool("github_list_tree")
+
+
 def _readonly_runtime(role: AgentRole) -> SteeringRuntime:
     return (
         SteeringRuntime(

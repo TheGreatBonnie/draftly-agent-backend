@@ -1,9 +1,10 @@
 """The plugin serves cached GitHub reads by swapping the tool.
 
 Doing this in a hook rather than inside ``github_read_file`` means no GitHub
-tool function changes, and one plugin memoizes all three cacheable reads. A hit
-replaces ``event.selected_tool`` with a tool that replays the cached body; the
-model sees an ordinary tool result and never learns the cache exists.
+tool function changes, and one plugin memoizes all four cacheable read names.
+A hit replaces ``event.selected_tool`` with a tool that replays the cached
+body; the model sees an ordinary tool result and never learns the cache
+exists.
 """
 
 from __future__ import annotations
@@ -280,3 +281,51 @@ def test_a_supplied_ref_is_never_overwritten_by_the_scope(cache):
 def test_with_no_scope_an_omitted_ref_keys_as_empty(cache):
     RepoReadCachePlugin().after_tool_call(_after(_result("body"), ref=""))
     assert cache.get(_key(ref="")) == "body"
+
+
+def test_alias_and_canonical_reads_share_one_cache_key() -> None:
+    from draftly.steering.repo_read_cache_plugin import _key_for
+
+    canonical = _key_for(
+        {
+            "name": "github_read_file",
+            "owner": "org",
+            "repo": "repo",
+            "path": "oauth.py",
+            "ref": "abc123",
+        }
+    )
+    alias = _key_for(
+        {
+            "name": "github_get_file",
+            "owner": "org",
+            "repo": "repo",
+            "path": "oauth.py",
+            "ref": "abc123",
+        }
+    )
+    assert alias == canonical
+
+
+def test_list_tree_alias_shares_the_tree_cache_key() -> None:
+    from draftly.steering.repo_read_cache_plugin import _key_for
+
+    canonical = _key_for(
+        {
+            "name": "github_get_tree",
+            "owner": "org",
+            "repo": "repo",
+            "path_prefix": "docs",
+            "ref": "abc123",
+        }
+    )
+    alias = _key_for(
+        {
+            "name": "github_list_tree",
+            "owner": "org",
+            "repo": "repo",
+            "path_prefix": "docs",
+            "ref": "abc123",
+        }
+    )
+    assert alias == canonical

@@ -73,7 +73,7 @@ def test_search_code_is_not_cacheable():
 
 def test_ref_pinned_reads_are_cacheable():
     assert CACHEABLE_TOOLS == frozenset(
-        {"github_read_file", "github_get_file", "github_get_tree"}
+        {"github_read_file", "github_get_file", "github_get_tree", "github_list_tree"}
     )
 
 

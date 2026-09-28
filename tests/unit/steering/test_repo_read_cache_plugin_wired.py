@@ -47,7 +47,10 @@ def test_the_registered_plugin_exposes_both_hooks() -> None:
     assert _hook_events(plugin) == {BeforeToolCallEvent, AfterToolCallEvent}
 
 
-@pytest.mark.parametrize("name", ["github_read_file", "github_get_file", "github_get_tree"])
+@pytest.mark.parametrize(
+    "name",
+    ["github_read_file", "github_get_file", "github_get_tree", "github_list_tree"],
+)
 def test_a_cache_hit_reaches_the_hook_registry(name: str) -> None:
     """End to end through the agent: the registry is primed, the call is routed
     to the replay tool, and the caller never touches GitHub."""
@@ -59,10 +62,19 @@ def test_a_cache_hit_reaches_the_hook_registry(name: str) -> None:
         reset_repo_read_cache,
         set_repo_read_cache,
     )
+    from draftly.tools.github.compat import LEGACY_CANONICAL_TOOL_NAMES
 
     cache = RepoReadCache(max_entries=10, max_bytes=10_000)
+    # Aliases share the canonical cache slot (Task 3), so prime under the
+    # canonical name: a github_get_file call must hit the github_read_file key.
     cache.put(
-        cache_key(tool_name=name, owner="o", repo="r", path="a.py", ref="sha"),
+        cache_key(
+            tool_name=LEGACY_CANONICAL_TOOL_NAMES.get(name, name),
+            owner="o",
+            repo="r",
+            path="a.py",
+            ref="sha",
+        ),
         "cached body",
     )
     token = set_repo_read_cache(cache)

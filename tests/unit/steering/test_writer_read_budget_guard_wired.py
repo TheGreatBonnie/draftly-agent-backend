@@ -112,3 +112,44 @@ def test_exhausted_budget_reports_failure_for_new_paths(path: str) -> None:
 
     key = writer_read_key("github_read_file", owner="o", repo="r", path=path, ref="sha")
     assert budget.failure(key)
+
+
+def test_guard_charges_an_alias_read_to_the_canonical_budget_key() -> None:
+    """github_get_file must collide with the github_read_file budget entry.
+
+    The alias tool reserves under the canonical name (Task 1); if the guard
+    keyed the alias under its own name, one read would be charged twice and
+    the budget would halve.
+    """
+    from draftly.tools.github.writer_scope import reserve_writer_read
+
+    budget = WriterReadBudget(max_calls=1)
+    set_draft_scope(
+        DraftScope(
+            run_id="r1",
+            org_id="o1",
+            generation=1,
+            assigned_page_id="docs/a.md",
+            repository="TheGreatBonnie/authly",
+            head_sha="abc123",
+            read_budget=budget,
+        )
+    )
+    reserve_writer_read("github_read_file", "TheGreatBonnie", "authly", "a.py", "abc123")
+
+    guard = WriterReadBudgetGuard()
+    from strands.hooks.events import BeforeToolCallEvent
+    from strands.interventions import Guide
+
+    event = BeforeToolCallEvent(
+        agent=object(),
+        selected_tool=None,
+        tool_use={
+            "toolUseId": "t2",
+            "name": "github_get_file",
+            "input": {"path": "a.py"},
+        },
+        invocation_state={},
+    )
+
+    assert isinstance(guard.before_tool_call(event), Guide)

@@ -26,7 +26,7 @@ from contextvars import ContextVar, Token
 #: ref, so a cached copy could be stale even when every other input matches.
 #: No write tool is ever cached.
 CACHEABLE_TOOLS: frozenset[str] = frozenset(
-    {"github_read_file", "github_get_file", "github_get_tree"}
+    {"github_read_file", "github_get_file", "github_get_tree", "github_list_tree"}
 )
 
 #: Default bounds. 512 entries at 32 MiB is generous for a run (the 93 calls of
