@@ -81,7 +81,9 @@ def test_other_agent_options_also_reach_the_constructor() -> None:
     """
     manager = _Sessions()
 
-    agent = build_writer_agent(StubModel(), [], session_manager=manager, record_direct_tool_call=False)
+    agent = build_writer_agent(
+        StubModel(), [], session_manager=manager, record_direct_tool_call=False
+    )
 
     assert agent.record_direct_tool_call is False
 

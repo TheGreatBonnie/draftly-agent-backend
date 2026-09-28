@@ -167,8 +167,8 @@ def build_documentation_graph(
     ``context_limits`` does the same for the context agent, which has no handler
     of its own. Strands' ``Graph`` invokes a node as
     ``executor.stream_async(input, invocation_state=...)`` and forwards no
-    ``limits``, so the budget has to be applied by wrapping the node in
-    ``LimitedNode``.
+    ``limits``, so the budget is carried by the node wrapper
+    (``MemoryGroundedNode``).
     """
     # Lazy imports break the import cycle content_graph ↔ documentation_graph
     # (surface graphs are directly importable regardless of whether the
@@ -454,18 +454,17 @@ def build_documentation_graph(
     builder.set_entry_point("classify")
 
     # Context
-    context_node = context_agent
-    if memory is not None:
-        from draftly.agents.shared.memory_grounding import MemoryGroundedNode
+    from draftly.agents.shared.memory_grounding import MemoryGroundedNode
 
-        context_node = MemoryGroundedNode(context_agent, memory)
-    if context_limits:
-        # Outermost, so the cap applies on the memory path too. Strands takes
-        # `limits` per invocation and the Graph never forwards one, so without
-        # this wrapper the context agent's loop is unbounded (run ce8ea540).
-        from draftly.agents.shared.turn_budget import LimitedNode
-
-        context_node = LimitedNode(context_node, context_limits)
+    # Always wrapped, memory or not. Strands takes `limits` per invocation and
+    # its Graph forwards none, so without this the context agent's loop is
+    # unbounded (run ce8ea540). ``MemoryGroundedNode`` is the carrier rather
+    # than a dedicated wrapper because it already performs the
+    # ``AgentResult`` -> ``MultiAgentResult`` conversion the graph requires on
+    # its MultiAgentBase branch; a wrapper returning the inner result verbatim
+    # leaves the graph reading ``execution_time`` off an ``AgentResult``.
+    # ``memory=None`` passes the task through unchanged.
+    context_node = MemoryGroundedNode(context_agent, memory, limits=context_limits)
     builder.add_node(context_node, "context")
     builder.add_edge("classify", "context", condition=is_valid_surface)
 

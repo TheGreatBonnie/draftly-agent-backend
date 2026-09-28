@@ -708,7 +708,11 @@ def test_read_only_graph_agents_exclude_mutation_tools(model, tools, tmp_session
         "create_pull_request",
     }
     for node_id in ("context",):
-        names = set(graph.nodes[node_id].executor.tool_names)
+        # The context executor is a ``MemoryGroundedNode`` carrying the turn
+        # budget, so the agent is one level down. Read it explicitly: the node
+        # deliberately does not proxy attribute reads, because doing so would
+        # switch on Strands' ``hasattr(executor, "messages")`` paths.
+        names = set(graph.nodes[node_id].executor.inner.tool_names)
         assert not names & forbidden
 
     swarm = graph.nodes["research"].executor

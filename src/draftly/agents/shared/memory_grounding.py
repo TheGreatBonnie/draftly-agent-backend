@@ -75,12 +75,45 @@ async def _call_source(source: Any, query: str, *, limit: int, org_id: str | Non
 
 
 class MemoryGroundedNode(MultiAgentBase):
-    """Prepend recalled memory to the task, then delegate."""
+    """Prepend recalled memory to the task, then delegate.
 
-    def __init__(self, inner: MultiAgentBase | Agent, memory: Any) -> None:
+    Also the seam that injects a per-invocation Strands ``limits`` budget.
+    Strands takes loop budgets per invocation and its ``Graph`` invokes a node
+    as ``executor.stream_async(input, invocation_state=...)``, forwarding no
+    ``limits`` -- so a graph-level budget cannot reach the agent through the
+    edge, and a node that owns no handler of its own needs a wrapper to carry
+    one. The injection lives here rather than in a second wrapper because this
+    class already owns the ``AgentResult`` -> ``MultiAgentResult`` conversion
+    the graph requires; a wrapper that returned the inner result verbatim would
+    make the graph read ``execution_time`` off an ``AgentResult``.
+
+    ``memory=None`` is a supported mode (the task is returned unchanged), which
+    is what makes this usable as the context node's budget carrier on the
+    no-memory path too.
+    """
+
+    def __init__(
+        self,
+        inner: MultiAgentBase | Agent,
+        memory: Any,
+        limits: dict[str, Any] | None = None,
+    ) -> None:
         self.name = getattr(inner, "name", "grounded")
         self.inner = inner
         self.memory = memory
+        self.limits = limits
+
+    def _with_budget(self, kwargs: dict[str, Any]) -> dict[str, Any]:
+        """Default the loop budget; a caller-supplied ``limits`` wins.
+
+        The more specific caller (a test, a one-off tighter budget) is better
+        informed than the wrapper. With ``self.limits is None`` nothing is
+        injected, so an unconfigured budget never becomes an accidental
+        1-turn cap.
+        """
+        if self.limits is None or "limits" in kwargs:
+            return kwargs
+        return {**kwargs, "limits": self.limits}
 
     async def invoke_async(
         self,
@@ -93,7 +126,7 @@ class MemoryGroundedNode(MultiAgentBase):
         result = await self.inner.invoke_async(
             grounded_task,
             invocation_state=invocation_state,
-            **kwargs,
+            **self._with_budget(kwargs),
         )
         if (
             isinstance(result, AgentResult)
@@ -110,7 +143,7 @@ class MemoryGroundedNode(MultiAgentBase):
             result = await self.inner.invoke_async(
                 f"{grounded_task}{EVIDENCE_RETRY_SUFFIX}",
                 invocation_state=invocation_state,
-                **kwargs,
+                **self._with_budget(kwargs),
             )
             if (
                 isinstance(result, AgentResult)
