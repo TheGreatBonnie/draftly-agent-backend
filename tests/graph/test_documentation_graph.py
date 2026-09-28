@@ -21,6 +21,7 @@ from tests.graph.conftest import (
     RELEASE_TASK,
     docs_model,
     docs_workflow_wiring,
+    no_evidence_model,
     two_page_model,
 )
 from tests.stub_model import StubModel
@@ -342,17 +343,21 @@ async def test_document_without_workflow_fails_without_delivery(
 async def test_document_escalation_routes_to_human_review_without_changelog(
     model, tools, tmp_sessions, comment_factory
 ) -> None:
-    """Impact tasks without page-scoped evidence settle the page as
-    AWAITING_HUMAN_REVIEW: the workflow reports passed=False ready_for_review,
-    the docs branch skips the changelog, and the change routes to the graph's
-    delivery gate (deliver itself runs under review_policy never)."""
+    """A page no evidence source can reach settles as AWAITING_HUMAN_REVIEW:
+    the workflow reports passed=False ready_for_review, the docs branch skips
+    the changelog, and the change routes to the graph's delivery gate (deliver
+    itself runs under review_policy never).
+
+    The escalation used to be incidental: the plain stub had no impact-task
+    evidence and the context bundle never reached the planner. It is now
+    reached on purpose, via a zero-item context bundle."""
     factory, _ = comment_factory
     wiring = docs_workflow_wiring()
     graph = build_graph_for_run(
         "escalate-1",
         surface="pull_request",
         tools_registry=tools,
-        model=model,
+        model=no_evidence_model(),
         storage_dir=tmp_sessions,
         comment_factory=factory,
         page_workflow=wiring["page_workflow"],

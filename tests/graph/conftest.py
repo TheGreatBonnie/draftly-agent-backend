@@ -161,15 +161,28 @@ def two_page_model() -> StubModel:
 
 def docs_model() -> StubModel:
     """StubModel whose single-page impact task carries its evidence, so the
-    deterministic page-quality gate passes without escalating to human review
-    (impact.tasks without per-page evidence settle the page as
-    AWAITING_HUMAN_REVIEW)."""
+    deterministic page-quality gate passes without escalating to human review.
+    Since the context -> document edge landed, the plain stub also passes: its
+    EvidenceBundle already scopes to the page path."""
     base = dict(stub_model()._structured_outputs)
     impact = dict(base[ImpactAnalysis])
     first = dict(impact["tasks"][0])
     first["evidence"] = [{"id": "docs/widgets.md", "topic": "widgets"}]
     impact["tasks"] = [first]
     base[ImpactAnalysis] = impact
+    return StubModel(structured_outputs=base)
+
+
+def no_evidence_model() -> StubModel:
+    """StubModel that can reach no evidence source, so pages escalate.
+
+    The context agent returns a zero-item bundle and the impact task carries no
+    evidence, so all four resolver sources miss and the page settles as
+    AWAITING_HUMAN_REVIEW. This is how the escalation route is covered now that
+    context evidence normally reaches the planner.
+    """
+    base = dict(stub_model()._structured_outputs)
+    base[EvidenceBundle] = {"items": [], "summary": ""}
     return StubModel(structured_outputs=base)
 
 
