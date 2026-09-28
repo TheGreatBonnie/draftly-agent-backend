@@ -1249,3 +1249,26 @@ async def test_deliver_prompt_contains_approved_plan_and_changelog(
         "approved page-workflow files (paths) missing from deliver prompt"
     )
     assert CHANGELOG_MARKER in prompt_text, "changelog markdown missing from deliver prompt"
+
+
+def test_github_grounding_writer_registers_legacy_read_aliases(
+    model, tools, tmp_sessions
+) -> None:
+    """The GitHub-mode writer registers ``github_get_file`` / ``github_list_tree``
+    so model calls to those names execute instead of failing the page
+    (run 67d19310: four pages failed on the unregistered names)."""
+    wiring = docs_workflow_wiring()
+    graph = build_graph_for_run(
+        "writer-legacy-aliases-1",
+        surface="pull_request",
+        tools_registry=tools,
+        model=model,
+        storage_dir=tmp_sessions,
+        grounding="github",
+        page_workflow=wiring["page_workflow"],
+        drafts_repo=wiring["drafts_repo"],
+        agents=wiring["agents"],
+    )
+    write_handler = graph.nodes["document"].executor.handlers["write"]
+    names = {t.tool_name for t in write_handler.writer_factory.tools}
+    assert {"github_get_file", "github_list_tree", "github_read_file", "github_get_tree"} <= names

@@ -82,6 +82,7 @@ from draftly.tools.documentation.drafts import (
     get_drafted_docs,
     start_draft,
 )
+from draftly.tools.github.compat import github_get_file, github_list_tree
 from draftly.tools.repository.code_search import code_search
 from draftly.workflows.grounding import DOCS, GITHUB, LOCAL
 
@@ -341,12 +342,17 @@ def build_documentation_graph(
             "validate_links",
             "github_read_file",
             "github_get_tree",
+            # Legacy names the writer model reliably reaches for (run 67d19310):
+            # registered so those calls execute instead of tripping the guard.
+            "github_get_file",
+            "github_list_tree",
         }
         writer_repo_tools = [
             tool
             for tool in _dedupe(writer_repo_tools, _scope_read_only_tools(reg.github_intelligence))
             if _tool_name(tool) in allowed_writer_reads
         ]
+        writer_repo_tools = [*writer_repo_tools, github_get_file, github_list_tree]
     writer_tools = _dedupe(writer_repo_tools, [start_draft, append_chunk, finalize_draft])
     writer_builder = getattr(registry, "writer_agent", None) or build_writer_agent
     writer_factory = WriterFactory(
