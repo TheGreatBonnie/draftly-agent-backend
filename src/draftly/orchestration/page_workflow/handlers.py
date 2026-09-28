@@ -283,6 +283,26 @@ async def _current_artifact(
     return artifact
 
 
+def _no_artifact_error(page_id: str, progress: DraftProgress | None) -> ValueError:
+    """A writer invocation finished without a sealed artifact for ``page_id``.
+
+    Distinguishes the three real conditions so the executor's final task error
+    names the cause instead of the generic "page has no sealed artifact"
+    (run 67d19310: faq.md's draft was started but never finalized, and the
+    final error hid that).
+    """
+    if progress is None or progress.draft_id is None:
+        detail = "no draft was started"
+    elif not progress.sealed:
+        detail = (
+            f"draft {progress.draft_id} started with {progress.chunks} chunks "
+            "but was never finalized"
+        )
+    else:
+        detail = f"draft {progress.draft_id} reports sealed but no artifact row exists"
+    return ValueError(f"page {page_id!r} produced no sealed artifact: {detail}")
+
+
 class PageWriterHandler:
     """Invoke one fresh writer and promote exactly one sealed artifact."""
 
@@ -611,6 +631,7 @@ class PageWriterHandler:
                 progress=DraftProgress(),
             )
         )
+        progress: DraftProgress | None = None
         try:
             kwargs: dict[str, Any] = {}
             if self.limits is not None:
@@ -618,6 +639,8 @@ class PageWriterHandler:
             await self._invoke_writer(
                 agent, prompt, invocation_state, kwargs, page, workflow_task.task_id
             )
+            scope = current_draft_scope()
+            progress = scope.progress if scope is not None else None
         except Exception as exc:
             scope = current_draft_scope()
             progress = scope.progress if scope is not None else None
@@ -638,12 +661,17 @@ class PageWriterHandler:
         finally:
             reset_draft_scope(token)
 
-        artifact = await _current_artifact(
-            self.drafts_repo,
-            run_id=workflow_task.run_id,
-            page_id=page.id,
-            expected_version=version,
-        )
+        try:
+            artifact = await _current_artifact(
+                self.drafts_repo,
+                run_id=workflow_task.run_id,
+                page_id=page.id,
+                expected_version=version,
+            )
+        except ValueError as exc:
+            # A successful writer cycle that produced no sealed artifact is a
+            # page failure, not a repo inconsistency; report the draft truth.
+            raise _no_artifact_error(page.id, progress) from exc
         await self.page_repository.record_artifact(
             run_id=workflow_task.run_id,
             page_id=page.id,

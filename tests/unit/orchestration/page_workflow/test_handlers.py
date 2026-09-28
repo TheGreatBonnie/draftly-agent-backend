@@ -1296,3 +1296,46 @@ def test_compute_page_metrics_exposes_weighted_components_and_gate() -> None:
     )
     assert metrics[-1].threshold == 0.70
     assert metrics[-1].passed is True
+
+
+async def test_write_without_any_started_draft_reports_no_draft_was_started() -> None:
+    """A writer that completes without ever calling start_draft must fail with
+    a message naming that condition, not a bare 'has no sealed artifact'."""
+    page = _page_task()
+    drafts = _Drafts([])  # no sealed artifact for the page
+    pages = _Pages([_state(page.id)])
+    handler = PageWriterHandler(
+        writer_factory=_WriterFactory(),
+        drafts_repo=drafts,
+        page_repository=pages,
+    )
+
+    with pytest.raises(ValueError) as excinfo:
+        await handler(
+            _task(
+                task_type="write",
+                input_data={"task": page.model_dump()},
+            )
+        )
+
+    message = str(excinfo.value)
+    assert "produced no sealed artifact" in message
+    assert "no draft was started" in message
+    assert excinfo.value.__cause__ is not None
+
+
+async def test_no_artifact_error_distinguishes_started_but_unfinalized() -> None:
+    """The diagnostics distinguish a started-but-unfinalized draft from a
+    sealed-but-missing artifact row, matching the faq.md failure (run 67d19310:
+    the draft was started at chunks=0 but never finalized)."""
+    from draftly.agents.documentation.draft_scope import DraftProgress
+    from draftly.orchestration.page_workflow.handlers import _no_artifact_error
+
+    started = _no_artifact_error("docs/faq.md", DraftProgress(draft_id="d1", chunks=3))
+    assert "draft d1 started with 3 chunks but was never finalized" in str(started)
+
+    sealed = _no_artifact_error("docs/faq.md", DraftProgress(draft_id="d1", chunks=2, sealed=True))
+    assert "reports sealed but no artifact row exists" in str(sealed)
+
+    none = _no_artifact_error("docs/faq.md", None)
+    assert "no draft was started" in str(none)
