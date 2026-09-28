@@ -637,6 +637,32 @@ def build_model_router(
         )
     )
 
+    # Second candidate for the judging path. Under the production allowlist
+    # (DRAFTLY_ENABLED_PROVIDERS=mantle,mantle-openai,orcarouter,nvidia,
+    # openrouter) DOCUMENTATION_REVIEW resolved to review-orca alone: the
+    # requesty pair and nemotron-ultra-doc are all filtered out, so an orcarouter
+    # outage left the documentation judge with no failover at all. This model is
+    # priced (review-orca is not), so it also outranks it on the cold-stats
+    # route() path rather than merely tying and winning on priority.
+    registry.register_model(
+        ModelConfig(
+            name="verification-mantle-kimi-k2-5",
+            provider="mantle",
+            model_id=_resolve_model_id(
+                "MANTLE_KIMI_K2_5_MODEL",
+                default="moonshotai.kimi-k2.5",
+            ),
+            capabilities=(
+                "verification",
+                "tool_calling",
+            ),
+            priority=3,
+            context_window=256000,
+            input_cost_per_1m_tokens=0.60,
+            output_cost_per_1m_tokens=2.50,
+        )
+    )
+
 
 
 
