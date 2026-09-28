@@ -1,6 +1,6 @@
 # Legacy GitHub Read Aliases + Writer Failure Diagnostics — Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Stop page-writer failures caused by the model calling the unregistered tool names `github_get_file` / `github_list_tree` (register them as aliases of the canonical GitHub read tools), and make the "page has no sealed artifact" error report what actually happened instead of masking the root cause.
 
@@ -38,7 +38,7 @@
   - `async def _tree_result(owner: str, repo: str, ref: str, path_prefix: str | None, max_entries: int | None) -> dict` in `get_tree.py`
   - In `compat.py`: `LEGACY_CANONICAL_TOOL_NAMES: dict[str, str] == {"github_get_file": "github_read_file", "github_list_tree": "github_get_tree"}`, plus `github_get_file` and `github_list_tree` as `tool`-decorated async functions with `.tool_name` equal to their legacy names. Task 2/3 import `LEGACY_CANONICAL_TOOL_NAMES` and the two tools from `draftly.tools.github.compat`.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Create `tests/unit/tools/github/test_compat.py`:
 
@@ -140,12 +140,12 @@ async def test_list_tree_alias_reserves_the_canonical_read_budget_key(
     assert fake.calls[0][0] == "get_tree_bounded"
 ```
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- [x] **Step 2: Run the tests to verify they fail**
 
 Run: `.venv/bin/pytest tests/unit/tools/github/test_compat.py -v`
 Expected: FAIL with `ModuleNotFoundError: No module named 'draftly.tools.github.compat'`
 
-- [ ] **Step 3: Extract the shared implementations**
+- [x] **Step 3: Extract the shared implementations**
 
 Modify `src/draftly/tools/github/read_file.py` to:
 
@@ -217,7 +217,7 @@ and the end of `github_get_tree` becomes:
     return await _tree_result(owner, repo, ref, path_prefix, max_entries)
 ```
 
-- [ ] **Step 4: Add the alias tools**
+- [x] **Step 4: Add the alias tools**
 
 Create `src/draftly/tools/github/compat.py`:
 
@@ -274,17 +274,17 @@ async def github_list_tree(
     return await _tree_result(owner, repo, ref, path_prefix, max_entries)
 ```
 
-- [ ] **Step 5: Run the tests to verify they pass**
+- [x] **Step 5: Run the tests to verify they pass**
 
 Run: `.venv/bin/pytest tests/unit/tools/github/test_compat.py -v`
 Expected: PASS (5 tests).
 
-- [ ] **Step 6: Run the existing GitHub/steering tests for regressions**
+- [x] **Step 6: Run the existing GitHub/steering tests for regressions**
 
 Run: `.venv/bin/pytest tests/unit/tools tests/steering/test_tool_registry_guard.py tests/steering/test_unregistered_tool_skips_judge.py -q`
 Expected: PASS (the extraction is behavior-preserving; the guard tests use fake registries without aliases).
 
-- [ ] **Step 7: Lint and commit**
+- [x] **Step 7: Lint and commit**
 
 ```bash
 ruff check src/draftly/tools/github/read_file.py src/draftly/tools/github/get_tree.py src/draftly/tools/github/compat.py tests/unit/tools/github/test_compat.py
@@ -304,7 +304,7 @@ git commit -m "feat(tools): register legacy github_get_file/github_list_tree ali
 - Consumes: `github_get_file`, `github_list_tree` from `draftly.tools.github.compat` (Task 1); the existing graph fixtures `model`, `tools`, `tmp_sessions`, `build_graph_for_run`, `docs_workflow_wiring()` in `tests/graph/test_documentation_graph.py`.
 - Produces: the GitHub-grounding writer's `writer_factory.tools` list now includes the two alias tools. No new public API — consumers assert via `write_handler.writer_factory.tools` (as `test_writer_limits_forwarded_to_page_writer_handler` already asserts the handler).
 
-- [ ] **Step 1: Write the failing graph test**
+- [x] **Step 1: Write the failing graph test**
 
 Append to `tests/graph/test_documentation_graph.py`:
 
@@ -332,12 +332,12 @@ def test_github_grounding_writer_registers_legacy_read_aliases(
     assert {"github_get_file", "github_list_tree", "github_read_file", "github_get_tree"} <= names
 ```
 
-- [ ] **Step 2: Run the test to verify it fails**
+- [x] **Step 2: Run the test to verify it fails**
 
 Run: `.venv/bin/pytest tests/graph/test_documentation_graph.py::test_github_grounding_writer_registers_legacy_read_aliases -v`
 Expected: FAIL — `github_get_file` / `github_list_tree` not in the writer tool names.
 
-- [ ] **Step 3: Register the aliases for the writer**
+- [x] **Step 3: Register the aliases for the writer**
 
 In `src/draftly/orchestration/graphs/documentation_graph.py`:
 
@@ -379,12 +379,12 @@ After the comprehension that builds `writer_repo_tools` (currently lines 345-349
         writer_repo_tools = [*writer_repo_tools, github_get_file, github_list_tree]
 ```
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [x] **Step 4: Run the tests to verify they pass**
 
 Run: `.venv/bin/pytest tests/graph/test_documentation_graph.py -q`
 Expected: PASS (new test + existing graph tests; the aliases are only appended inside the `if grounding == GITHUB:` branch, so LOCAL-grounding tests are untouched).
 
-- [ ] **Step 5: Lint and commit**
+- [x] **Step 5: Lint and commit**
 
 ```bash
 ruff check src/draftly/orchestration/graphs/documentation_graph.py tests/graph/test_documentation_graph.py
@@ -407,7 +407,7 @@ git commit -m "feat(graph): register legacy github read aliases for the github-g
 - Consumes: `LEGACY_CANONICAL_TOOL_NAMES` from `draftly.tools.github.compat` (Task 1).
 - Produces: no new public names. Behavior contract: for tool names `github_get_file` / `github_list_tree`, the writer policy reports `is_read_only_tool(...) == True`; `WriterReadBudgetGuard` pre-checks budget under the canonical key; `RepoReadCachePlugin._key_for` returns the same key as the canonical call.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Append to `tests/steering/test_policy.py`:
 
@@ -494,12 +494,12 @@ def test_list_tree_alias_shares_the_tree_cache_key() -> None:
 
 Note: the writer-read guard test file already has an autouse `_no_scope_leak` fixture that calls `set_draft_scope(None)` before/after — the new test inherits it.
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- [x] **Step 2: Run the tests to verify they fail**
 
 Run: `.venv/bin/pytest tests/steering/test_policy.py::test_writer_policy_classifies_legacy_read_aliases_as_read_only tests/unit/steering/test_writer_read_budget_guard_wired.py::test_guard_charges_an_alias_read_to_the_canonical_budget_key tests/unit/steering/test_repo_read_cache_plugin.py::test_alias_and_canonical_reads_share_one_cache_key tests/unit/steering/test_repo_read_cache_plugin.py::test_list_tree_alias_shares_the_tree_cache_key -v`
 Expected: FAIL — `github_list_tree` not read-only; `github_get_file` not in `_READ_TOOL_NAMES` handling; alias cache keys differ from canonical.
 
-- [ ] **Step 3: Classify the alias names in the steering policy**
+- [x] **Step 3: Classify the alias names in the steering policy**
 
 In `src/draftly/steering/policy.py`, add `"github_list_tree"` to `_GITHUB_READ_ONLY_TOOLS` (lines 669-676):
 
@@ -515,7 +515,7 @@ _GITHUB_READ_ONLY_TOOLS = frozenset(
 )
 ```
 
-- [ ] **Step 4: Canonicalize alias names in the read-budget guard**
+- [x] **Step 4: Canonicalize alias names in the read-budget guard**
 
 In `src/draftly/steering/writer_read_budget_guard.py`:
 
@@ -557,7 +557,7 @@ In `before_tool_call`, key the budget under the canonical name (the current body
         key = _read_key(_canonical_name(str(tool_use.get("name"))), tool_input, scope)
 ```
 
-- [ ] **Step 5: Canonicalize alias names in the repo-read cache**
+- [x] **Step 5: Canonicalize alias names in the repo-read cache**
 
 In `src/draftly/agents/documentation/repo_read_cache.py`, extend `CACHEABLE_TOOLS` (lines 28-30):
 
@@ -595,12 +595,12 @@ Replace the first argument with:
 
 Update the module docstring in `tests/unit/steering/test_repo_read_cache_plugin.py` ("one plugin memoizes all three cacheable reads", line 4) to say "all four cacheable read names" so the count stays truthful. (`src/draftly/steering/repo_read_cache_plugin.py`'s own docstring names no count and needs no change.)
 
-- [ ] **Step 6: Run the tests to verify they pass**
+- [x] **Step 6: Run the tests to verify they pass**
 
 Run: `.venv/bin/pytest tests/steering/test_policy.py tests/unit/steering/test_writer_read_budget_guard_wired.py tests/unit/steering/test_repo_read_cache_plugin.py tests/unit/steering/test_repo_read_cache_plugin_wired.py -q`
 Expected: PASS.
 
-- [ ] **Step 7: Lint and commit**
+- [x] **Step 7: Lint and commit**
 
 ```bash
 ruff check src/draftly/steering/policy.py src/draftly/steering/writer_read_budget_guard.py src/draftly/agents/documentation/repo_read_cache.py src/draftly/steering/repo_read_cache_plugin.py tests/steering/test_policy.py tests/unit/steering/test_writer_read_budget_guard_wired.py tests/unit/steering/test_repo_read_cache_plugin.py
@@ -622,7 +622,7 @@ git commit -m "feat(steering): treat legacy github read alias names as canonical
   - `def _no_artifact_error(page_id: str, progress: DraftProgress | None) -> ValueError` in `handlers.py`.
   - `PageWriterHandler.__call__` now raises that enriched `ValueError` (instead of the bare `_current_artifact` `ValueError`) whenever a **successful** writer invocation leaves no sealed artifact.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Append to `tests/unit/orchestration/page_workflow/test_handlers.py`:
 
@@ -670,12 +670,12 @@ async def test_no_artifact_error_distinguishes_started_but_unfinalized() -> None
     assert "no draft was started" in str(none)
 ```
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- [x] **Step 2: Run the tests to verify they fail**
 
 Run: `.venv/bin/pytest tests/unit/orchestration/page_workflow/test_handlers.py -k "no_draft_was_started or no_artifact_error" -v`
 Expected: FAIL — `ModuleNotFoundError`/`ImportError` for `_no_artifact_error`, and the handler raises the bare `"has no sealed artifact"` message.
 
-- [ ] **Step 3: Add the diagnostic builder and enrich the handler**
+- [x] **Step 3: Add the diagnostic builder and enrich the handler**
 
 In `src/draftly/orchestration/page_workflow/handlers.py`, add immediately after `_current_artifact` (after line 283):
 
@@ -753,12 +753,12 @@ In `PageWriterHandler.__call__`, replace the invocation block and the artifact f
         return artifact.model_dump(exclude={"content"})
 ```
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [x] **Step 4: Run the tests to verify they pass**
 
 Run: `.venv/bin/pytest tests/unit/orchestration/page_workflow/test_handlers.py -q`
 Expected: PASS (both new tests + all existing handler tests).
 
-- [ ] **Step 5: Lint and commit**
+- [x] **Step 5: Lint and commit**
 
 ```bash
 ruff check src/draftly/orchestration/page_workflow/handlers.py tests/unit/orchestration/page_workflow/test_handlers.py
@@ -772,22 +772,22 @@ git commit -m "fix(page-workflow): report why a page produced no sealed artifact
 
 **Files:** none (verification only).
 
-- [ ] **Step 1: Run the touched test suites together**
+- [x] **Step 1: Run the touched test suites together**
 
 Run: `.venv/bin/pytest tests/unit/tools/github tests/graph/test_documentation_graph.py tests/steering/test_policy.py tests/unit/steering/test_writer_read_budget_guard_wired.py tests/unit/steering/test_repo_read_cache_plugin.py tests/unit/steering/test_repo_read_cache_plugin_wired.py tests/unit/orchestration/page_workflow/test_handlers.py -q`
 Expected: PASS.
 
-- [ ] **Step 2: Run the broader writer/steering suites for regressions**
+- [x] **Step 2: Run the broader writer/steering suites for regressions**
 
 Run: `.venv/bin/pytest tests/steering tests/unit/steering tests/unit/agents/documentation tests/unit/tools -q`
 Expected: PASS.
 
-- [ ] **Step 3: Static checks**
+- [x] **Step 3: Static checks**
 
 Run: `ruff check src/draftly tests && .venv/bin/mypy src/draftly/tools/github/compat.py src/draftly/tools/github/read_file.py src/draftly/tools/github/get_tree.py src/draftly/steering/writer_read_budget_guard.py src/draftly/steering/repo_read_cache_plugin.py src/draftly/orchestration/page_workflow/handlers.py`
 Expected: clean (ruff) and no new mypy errors. (`DraftProgress | None` uses the already-imported `DraftProgress`; mypy accepts the `| None` union on Python 3.11.)
 
-- [ ] **Step 4: Commit any stragglers and refresh the knowledge graph**
+- [x] **Step 4: Commit any stragglers and refresh the knowledge graph**
 
 ```bash
 git status --short
@@ -795,3 +795,45 @@ graphify update .
 ```
 
 Expected: working tree clean after any final commits; `graphify update .` exits 0 (AST-only, no API cost).
+
+---
+
+## Execution notes (session `ses_f1a04efbbffef4usxCWU8I4SPj`, committed 2026-09-28)
+
+Executed inline (not via subagents). All 29 steps completed; four commits on
+`feature/documentation-workflow-replacement`:
+
+1. `5b04284` feat(tools) — Task 1
+2. `4721c8b` feat(graph) — Task 2
+3. `ce3b8ef` feat(steering) — Task 3
+4. `b726a87` fix(page-workflow) — Task 4
+
+Three deliberate deviations, each root-caused before acting:
+
+- **Import cycle (Task 1):** `draftly.tools.github.writer_scope` could not be
+  imported first in a process: module-level `writer_scope → draft_scope →
+  documentation/__init__ → writer → writer_read_budget_guard` re-imported
+  `writer_read_key` from the still-partial `writer_scope`. The Task 1 tests
+  surface it by importing the scope module directly. Fixed at the root: the
+  guard now imports `writer_read_key` lazily inside `_read_key` (function-local
+  imports are the codebase's own convention for exactly this cycle).
+- **Wired cache test (Task 3):** `test_repo_read_cache_plugin_wired.py`
+  `test_a_cache_hit_reaches_the_hook_registry[github_get_file]` primed the
+  cache under the alias name; canonicalization makes the alias look up the
+  canonical slot. Updated the test to prime via
+  `LEGACY_CANONICAL_TOOL_NAMES.get(name, name)` and extended the parametrize
+  list to all four cacheable names. The replay tool still mirrors the
+  requested name, so the assertion was unchanged.
+- **Task 3 straggler:** `test_repo_read_cache.py::test_ref_pinned_reads_are_cacheable`
+  asserted the exact `CACHEABLE_TOOLS` set; updated for `github_list_tree` and
+  amended into the Task 3 commit (each commit stays green).
+
+Verified: 131 touched-suite tests pass; broader steering/documentation/tools
+suites pass except two pre-existing
+`test_search_arg_coercion.py` failures (confirmed failing with these changes
+stashed — out of scope). ruff is clean on all 17 touched files (the repo tree
+carries unrelated pre-existing violations where `app/api`, `evaluation`, etc.).
+mypy reports no errors on any line these changes touched; the 11 errors in
+`repo_read_cache_plugin.py` / `handlers.py` are pre-existing annotation debt at
+lines outside the diff hunks, and bare `mypy src` cannot run in this checkout
+(editable-install double-module quirk on untouched files).
