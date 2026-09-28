@@ -9,8 +9,11 @@ failure mode is invisible from the call site.
 from __future__ import annotations
 
 import asyncio
+import inspect
+from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
 from strands_evals.types import EvaluationData
 
 from draftly.evaluation.evaluators.completeness import COMPLETENESS_RUBRIC
@@ -74,3 +77,58 @@ def test_changelog_judge_prompt_also_carries_evidence() -> None:
         [{"id": "docs/widgets.md", "topic": "widgets"}],
     )
     assert "docs/widgets.md" in prompt
+
+
+# --- the in-graph rubric must stop naming a section it never receives ---------
+
+
+def test_in_graph_rubric_judge_prompt_has_no_dangling_env_state_reference() -> None:
+    """The in-graph graders never set uses_environment_state, so the rubric
+    must not tell the judge to read <ActualEnvironmentState>."""
+    from draftly.evaluation.evaluators import groundedness
+
+    prompt = _prompt_for(
+        build_docs_rubric_grader(
+            object(), groundedness.GRAPH_GROUNDEDNESS_RUBRIC + "\n\n" + COMPLETENESS_RUBRIC
+        ),
+        "# Widgets\n\nCall configure().",
+        [{"id": "docs/widgets.md", "topic": "widgets"}],
+    )
+    assert "docs/widgets.md" in prompt
+    assert "ActualEnvironmentState" not in prompt
+
+
+def test_offline_groundedness_evaluator_still_receives_env_state() -> None:
+    """Guard: the offline runner legitimately uses the env-state rubric, and
+    this change must not touch it."""
+    from draftly.evaluation.evaluators.groundedness import build_groundedness_evaluator
+
+    evaluator = build_groundedness_evaluator(model=None)
+    prompt = str(
+        evaluator._build_prompt(
+            EvaluationData(
+                input="",
+                actual_output="# Widgets",
+                actual_environment_state=[
+                    {"name": "review_gate", "state": {"result_status": "INTERRUPTED"}}
+                ],
+            )
+        )
+    )
+    assert "<ActualEnvironmentState>" in prompt
+    assert "INTERRUPTED" in prompt
+
+
+@pytest.mark.parametrize(
+    "module_name",
+    ["documentation_graph", "issue_graph", "support_graph"],
+)
+def test_every_graph_wires_the_in_graph_rubric(module_name) -> None:
+    """Wiring guard, not behaviour: all three graphs build the rubric by the
+    same expression, and a mechanical swap that misses one would leave the
+    dangling reference in place with no behavioural test able to see it."""
+    import importlib
+
+    module = importlib.import_module(f"draftly.orchestration.graphs.{module_name}")
+    source = Path(inspect.getfile(module)).read_text()
+    assert "GRAPH_GROUNDEDNESS_RUBRIC" in source

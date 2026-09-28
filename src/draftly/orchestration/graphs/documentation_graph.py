@@ -47,7 +47,7 @@ from strands.multiagent import GraphBuilder
 from strands.session.session_manager import SessionManager
 
 from draftly.evaluation.evaluators.completeness import COMPLETENESS_RUBRIC
-from draftly.evaluation.evaluators.groundedness import GROUNDEDNESS_RUBRIC
+from draftly.evaluation.evaluators.groundedness import GRAPH_GROUNDEDNESS_RUBRIC
 from draftly.orchestration.graphs.tool_scoping import (
     scope_read_only_tools as _scope_read_only_tools,
 )
@@ -215,7 +215,7 @@ def build_documentation_graph(
     # from the resolved reviewer model; OutputEvaluator is lazy so this is
     # safe offline.
     docs_rubric_grader = build_docs_rubric_grader(
-        grader_model, rubric=GROUNDEDNESS_RUBRIC + "\n\n" + COMPLETENESS_RUBRIC
+        grader_model, rubric=GRAPH_GROUNDEDNESS_RUBRIC + "\n\n" + COMPLETENESS_RUBRIC
     )
     changelog_rubric_grader = build_changelog_rubric_grader(grader_model)
 

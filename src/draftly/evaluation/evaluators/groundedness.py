@@ -33,6 +33,27 @@ GROUNDEDNESS_RUBRIC = (
     "based on groundedness."
 )
 
+#: Groundedness rubric for the in-graph rubric graders (documentation, issue and
+#: support graphs). None of them set ``uses_environment_state``, so they cannot
+#: render ``<ActualEnvironmentState>``; they hand the judge an ``<Evidence>``
+#: block instead (see ``nodes.rubric_grader._EvidenceAwareEvaluator``). Use this
+#: one in-graph and ``GROUNDEDNESS_RUBRIC`` in the offline runner, which does
+#: supply the environment state.
+#:
+#: The two rubrics differ only where their evidence channel differs, so keep
+#: them in step: this one references ``<Evidence>`` and drops the offline
+#: rubric's diff-conditional and ReviewGate/INTERRUPTED clauses, which describe
+#: conditions that cannot arise in a graph run. Everything else is shared text.
+GRAPH_GROUNDEDNESS_RUBRIC = (
+    "Assess whether the documentation is grounded in the given scope and the "
+    "evidence listed under <Evidence> — without inventing APIs, endpoints, or "
+    "behavior that are not supported. Treat every API, method, parameter, and "
+    "behavior named in the documentation as traceable if it appears in the "
+    "provided evidence or the referenced source. Any claim must be traceable to "
+    "the evidence, the change being documented, or the provided evidence "
+    "content. Score 0-1 based on groundedness."
+)
+
 
 def build_groundedness_evaluator(
     model: Any = None, uses_environment_state: bool = True

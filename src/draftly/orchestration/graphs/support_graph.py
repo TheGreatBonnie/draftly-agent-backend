@@ -14,7 +14,7 @@ from strands.session.session_manager import SessionManager
 
 from draftly.app.composition.tools import filter_grounded_tools
 from draftly.evaluation.evaluators.completeness import COMPLETENESS_RUBRIC
-from draftly.evaluation.evaluators.groundedness import GROUNDEDNESS_RUBRIC
+from draftly.evaluation.evaluators.groundedness import GRAPH_GROUNDEDNESS_RUBRIC
 from draftly.orchestration.graphs.documentation_graph import (
     DEFAULT_EVALUATOR_MAX_ITERATIONS,
     DEFAULT_EXECUTION_TIMEOUT,
@@ -120,7 +120,7 @@ def build_support_graph(
     grader_model = resolve_model_for_role(model, "documentation_reviewer")
 
     docs_rubric_grader = build_docs_rubric_grader(
-        grader_model, rubric=GROUNDEDNESS_RUBRIC + "\n\n" + COMPLETENESS_RUBRIC
+        grader_model, rubric=GRAPH_GROUNDEDNESS_RUBRIC + "\n\n" + COMPLETENESS_RUBRIC
     )
 
     registry = agents
