@@ -79,13 +79,24 @@ class EvidenceItem(BaseModel):
     """A single evidence item: what it points at and what it covers.
 
     LLM research output is validated as ``EvidenceItem`` (Strands builds a
-    structured-output tool named after the model class). ``id``/``url`` hold
-    the concrete source locator, ``topic`` the coverage topic the draft must
-    address, and ``excerpt`` a short quote. Unknown keys survive validation
+    structured-output tool named after the model class). When the evidence is
+    page-scoped, ``id`` is the documentation page it supports and the writer is
+    required to cite that page; ``topic`` is the coverage topic the draft must
+    address and ``excerpt`` a short quote. ``url`` is a source locator for
+    material that is not a documentation page. Unknown keys survive validation
     so legacy freeform payloads keep working.
     """
 
-    id: str = Field(default="", max_length=EVIDENCE_ID_MAX_CHARS)
+    id: str = Field(
+        default="",
+        max_length=EVIDENCE_ID_MAX_CHARS,
+        description=(
+            "Path or URL of the documentation page this evidence supports. "
+            "For page-scoped evidence this MUST be exactly equal to the task's "
+            "path, and the draft must cite it. Use url instead for source "
+            "material that is not a documentation page."
+        ),
+    )
     url: str = Field(default="", max_length=EVIDENCE_URL_MAX_CHARS)
     topic: str = Field(default="", max_length=EVIDENCE_TOPIC_MAX_CHARS)
     excerpt: str = Field(default="", max_length=EVIDENCE_EXCERPT_MAX_CHARS)
@@ -108,7 +119,14 @@ class DocumentationTask(BaseModel):
     action: str = "update"  # only "update" | "create" (validated by plan_tasks/downstream)
     reason: str = ""
     related_symbols: list[str] = Field(default_factory=list)
-    evidence: list[EvidenceItem] = Field(default_factory=list)
+    evidence: list[EvidenceItem] = Field(
+        default_factory=list,
+        description=(
+            "Page-scoped evidence for this task. Attach at least one item and "
+            "set each item's id to exactly this task's path. A task with no "
+            "evidence escalates to human review without being evaluated."
+        ),
+    )
     requirements: list[str] = Field(default_factory=list)
     bundle_id: str | None = None
     # Set by the workflow from the original event, never trusted from the plan.

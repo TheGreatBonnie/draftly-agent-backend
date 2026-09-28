@@ -624,6 +624,13 @@ Prefer `update` for existing pages;
 `create` only for a path that is genuinely absent from the tree. Every entry
 in affected_documents must be a real path you observed.
 
+Evidence rules:
+- Every task MUST carry page-scoped evidence. A task with no evidence is never
+  evaluated and goes straight to human review.
+- Each evidence item's ``id`` MUST be exactly the task's ``path``; the draft is
+  held to citing it. Put source locators (file paths, line ranges, URLs) in the
+  ``excerpt``, not in ``id``.
+
 {guardrail_toolset}
 
 {guardrail_refusal}
