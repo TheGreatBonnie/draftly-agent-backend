@@ -14,6 +14,7 @@ from contextvars import ContextVar
 from typing import Any
 
 import structlog
+from strands.types.exceptions import MaxTokensReachedException
 
 from draftly.models.factory import build_model_router
 
@@ -64,6 +65,22 @@ def resolve_concrete_model(router: Any = None, *, index: int = 0) -> Any:
     config = configs[min(index, len(configs) - 1)]
     provider = registry.get_provider(config.provider)
     return provider.create_model(config)
+
+
+def _is_max_tokens_event(event: Any) -> bool:
+    """True when ``event`` is the terminating ``stop`` event of a truncated run.
+
+    Strands delivers the provider's final event as ``{"stop": (..., stop_reason)}``
+    for both the streaming and ``structured_output`` paths, so this one shape
+    covers both. ``max_tokens`` means the model was cut off mid-response: the
+    stream completed, so nothing raised, but the output is unusable.
+    """
+    if not isinstance(event, dict):
+        return False
+    stop = event.get("stop")
+    if not isinstance(stop, (tuple, list)) or len(stop) < 3:
+        return False
+    return stop[2] == "max_tokens"
 
 
 def _is_timeout(exc: BaseException) -> bool:
@@ -199,11 +216,30 @@ class PaymentAwareModel:
     ) -> Any:
         attempt = 0
         while True:
+            truncated = False
             try:
                 call = getattr(self._inner, method)
                 async for event in call(*args, **kwargs):
+                    # A `max_tokens` response is a *complete* stream whose
+                    # final event says it was cut off. Strands only raises for
+                    # it in the event loop, downstream of this wrapper, so the
+                    # signal has to be read here or the node dies unrotated
+                    # (run ce8ea540).
+                    if _is_max_tokens_event(event):
+                        truncated = True
                     yield event
-                return
+                if not truncated:
+                    return
+                if attempt >= self._MAX_FAILOVERS:
+                    raise MaxTokensReachedException(
+                        message=(
+                            "Model stopped generating due to maximum token limit "
+                            f"and no fallback remained after {attempt} failover(s)."
+                        )
+                    )
+                attempt += 1
+                self._failover(MaxTokensReachedException("max_tokens"))
+                continue
             except Exception as exc:
                 if attempt >= self._MAX_FAILOVERS or not self._is_failover_failure(exc):
                     raise

@@ -29,6 +29,25 @@ class EventClassification(BaseModel):
     reason: str = Field(description="Short justification for the classification")
 
 
+#: Field-length ceilings for ``EvidenceItem``.
+#:
+#: Strands' ``structured_output`` path is non-streaming, so an
+#: ``EvidenceBundle`` must materialise inside ONE response against ONE
+#: per-call ``max_tokens``. With no ceiling, a model that pastes file contents
+#: into ``excerpt`` spends the whole budget on evidence and never emits the
+#: tool call's closing brace — strands reports ``max_tokens`` and strands'
+#: own recovery discards the partial message (run ``ce8ea540``; the same shape
+#: truncated the writer's 679-tool-call JSON earlier).
+#:
+#: The ceilings live in the schema, not in a prompt, so they reach the model as
+#: ``maxLength`` in the generated tool definition and it can budget against
+#: them. They are deliberately far above a real citation.
+EVIDENCE_EXCERPT_MAX_CHARS = 2_000
+EVIDENCE_TOPIC_MAX_CHARS = 500
+EVIDENCE_URL_MAX_CHARS = 2_000
+EVIDENCE_ID_MAX_CHARS = 500
+
+
 class EvidenceItem(BaseModel):
     """A single evidence item: what it points at and what it covers.
 
@@ -39,10 +58,10 @@ class EvidenceItem(BaseModel):
     so legacy freeform payloads keep working.
     """
 
-    id: str = ""
-    url: str = ""
-    topic: str = ""
-    excerpt: str = ""
+    id: str = Field(default="", max_length=EVIDENCE_ID_MAX_CHARS)
+    url: str = Field(default="", max_length=EVIDENCE_URL_MAX_CHARS)
+    topic: str = Field(default="", max_length=EVIDENCE_TOPIC_MAX_CHARS)
+    excerpt: str = Field(default="", max_length=EVIDENCE_EXCERPT_MAX_CHARS)
 
     model_config = ConfigDict(extra="allow")
 

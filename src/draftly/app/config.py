@@ -37,6 +37,12 @@ class StrandsConfig(BaseModel):
     #: per-run budget instead of relying on the provider's per-response
     #: truncation recovery (the writer starvation root cause in run 3ef0d570).
     writer_output_tokens: int = 48_000
+    #: Strands ``limits`` turns cap for the documentation *context* agent.
+    #: One turn is one model call plus tool execution. Evidence gathering runs
+    #: read_file/get_tree/get_diff/PR-read (run ce8ea540 used 6+2+2+1 before it
+    #: died), so a handful of turns of headroom over that is real work; the cap
+    #: exists so an unbounded agent cannot decide how much a run spends.
+    context_max_turns: int = 12
 
     # ------------------------------------------------------------------
     # Agent steering (spec: 2026-09-10-agent-steering-design)
@@ -191,6 +197,8 @@ class Settings(BaseSettings):
     # Page-writer loop budgets (Strands `limits` for the write agent).
     strands_writer_max_turns: int = 60
     strands_writer_output_tokens: int = 48_000
+    # Documentation context-agent loop budget (Strands `limits`).
+    strands_context_max_turns: int = 12
 
     # ------------------------------------------------------------------
     # Agent steering (spec: 2026-09-10-agent-steering-design)
@@ -221,6 +229,7 @@ class Settings(BaseSettings):
             review_policy=self.strands_review_policy,
             writer_max_turns=self.strands_writer_max_turns,
             writer_output_tokens=self.strands_writer_output_tokens,
+            context_max_turns=self.strands_context_max_turns,
             steering_enabled=self.strands_steering_enabled,
             steering_enforcement_enabled=self.strands_steering_enforcement_enabled,
             steering_policy_version=self.strands_steering_policy_version,

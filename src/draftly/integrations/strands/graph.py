@@ -119,6 +119,18 @@ def build_graph_for_run(
         graph_kwargs.pop("research_plan", None)
         graph_kwargs.pop("progress_sink", None)
         graph_kwargs.pop("writer_limits", None)
+        graph_kwargs.pop("context_limits", None)
+    elif graph_kwargs.get("context_limits") is None:
+        # Default to the configured context turn budget rather than leaving the
+        # node unbounded when a caller forgets the kwarg: an unbounded context
+        # agent is exactly what killed run ce8ea540, so "unset" must not mean
+        # "no ceiling". Production passes it explicitly via
+        # ``WorkflowContext.graph_limits()``.
+        from draftly.app.config import Settings
+
+        graph_kwargs["context_limits"] = {
+            "turns": Settings().strands.context_max_turns,
+        }
 
     # Grounding mode (local checkout vs GitHub API vs docs-only) is a
     # documentation-graph concern; other builders must not receive it.

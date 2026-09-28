@@ -139,4 +139,9 @@ class WorkflowContext:
             if writer_output_tokens is not None:
                 writer_limits["output_tokens"] = writer_output_tokens
             limits["writer_limits"] = writer_limits
+        # Same treatment for the documentation context agent: it has no handler
+        # of its own, so the graph wraps the node to inject the budget.
+        context_turns = getattr(strands, "context_max_turns", None)
+        if context_turns is not None:
+            limits["context_limits"] = {"turns": context_turns}
         return limits

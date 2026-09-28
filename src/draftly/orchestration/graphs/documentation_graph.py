@@ -141,6 +141,7 @@ def build_documentation_graph(
     progress_sink: Any | None = None,
     page_workflow: Any = None,
     writer_limits: Any = None,
+    context_limits: Any = None,
 ):
     """Build the unified Draftly Graph for documentation workflows.
 
@@ -162,6 +163,12 @@ def build_documentation_graph(
     "output_tokens": 48000}``) to every page-writer invocation so an
     unbounded agent loop stops at a deterministic cap instead of relying on
     the provider's per-response truncation recovery.
+
+    ``context_limits`` does the same for the context agent, which has no handler
+    of its own. Strands' ``Graph`` invokes a node as
+    ``executor.stream_async(input, invocation_state=...)`` and forwards no
+    ``limits``, so the budget has to be applied by wrapping the node in
+    ``LimitedNode``.
     """
     # Lazy imports break the import cycle content_graph ↔ documentation_graph
     # (surface graphs are directly importable regardless of whether the
@@ -452,6 +459,13 @@ def build_documentation_graph(
         from draftly.agents.shared.memory_grounding import MemoryGroundedNode
 
         context_node = MemoryGroundedNode(context_agent, memory)
+    if context_limits:
+        # Outermost, so the cap applies on the memory path too. Strands takes
+        # `limits` per invocation and the Graph never forwards one, so without
+        # this wrapper the context agent's loop is unbounded (run ce8ea540).
+        from draftly.agents.shared.turn_budget import LimitedNode
+
+        context_node = LimitedNode(context_node, context_limits)
     builder.add_node(context_node, "context")
     builder.add_edge("classify", "context", condition=is_valid_surface)
 
