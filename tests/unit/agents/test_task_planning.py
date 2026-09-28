@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from structlog.testing import capture_logs
-
 from draftly.agents.documentation.planning import (
     plan_tasks,
     resolve_task_evidence,
@@ -244,14 +242,28 @@ def test_resolver_matches_page_across_singular_plural_tokens() -> None:
     ]
 
 
-def test_resolver_logs_why_pages_could_not_be_resolved() -> None:
+def test_resolver_logs_why_pages_could_not_be_resolved(monkeypatch) -> None:
     """An empty-evidence warning must say which source was empty.
 
     ``page_evidence_empty`` reported only the failing paths, so diagnosing run
     c6d18ea0 meant reconstructing the resolver's inputs from a 1214-line log.
     The event must carry the dependency keys, the item count it read, and how
     many pages each source rescued.
+
+    Captured by swapping the module logger, not via ``capture_logs()``: the
+    latter depends on structlog's global configuration and silently captures
+    nothing once another test has reconfigured it.
     """
+    import draftly.agents.documentation.planning as planning
+
+    events: list[dict] = []
+
+    class _Capture:
+        def warning(self, event, **kwargs):
+            events.append({"event": event, **kwargs})
+
+    monkeypatch.setattr(planning, "logger", _Capture())
+
     unresolved = "docs/explanation/faq.md"
     impact = ImpactAnalysis(
         action="update",
@@ -270,14 +282,17 @@ def test_resolver_logs_why_pages_could_not_be_resolved() -> None:
         "research": "## Research Summary: PR #67",
     }
 
-    with capture_logs() as events:
-        resolve_task_evidence(impact, deps)
+    resolve_task_evidence(impact, deps)
 
-    [event] = [e for e in events if e.get("event") == "page_evidence_empty"]
+    [event] = [e for e in events if e["event"] == "page_evidence_empty"]
     assert sorted(event["deps"]) == ["context", "research"]
     assert event["items"] == 1
     assert event["unresolved_pages"] == [unresolved]
     assert event["resolved_pages"] == 1
+    assert event["sources"] == {
+        "docs/explanation/faq.md": "none",
+        "docs/how-to/oauth-login-flow.md": "topic_affinity",
+    }
 
 
 def test_resolver_leaves_unmatched_pages_empty_for_escalation() -> None:
