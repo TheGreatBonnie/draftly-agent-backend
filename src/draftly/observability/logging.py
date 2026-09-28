@@ -50,7 +50,27 @@ def _build_formatter(environment: str) -> structlog.stdlib.ProcessorFormatter:
     if environment == "development":
         render_processors: list[structlog.typing.Processor] = [
             structlog.stdlib.ProcessorFormatter.remove_processors_meta,
-            structlog.dev.ConsoleRenderer(),
+            # `ConsoleRenderer` defaults to structlog's `rich_traceback`, whose
+            # `show_locals` defaults to True (structlog/dev.py:420). That prints
+            # every local of every frame, and the frames here hold Strands'
+            # `invocation_state`, which transitively holds each node's
+            # `Agent.messages` -- so one failed node rendered its own
+            # conversation, `reasoningContent` included, into the log sink.
+            #
+            # Run 9ab7a0a0: 169 log records in a file of 31,558 lines; the other
+            # 31,330 lines (97.6% of the bytes) were two such renders of the
+            # same exception as it propagated through strands' graph handler
+            # and our own `task_failed`. The trace is still there and still
+            # readable; only the frame contents are gone.
+            #
+            # This is not a no-op for a terminal -- locals are what you want
+            # when you are stepping through a failure by hand. It is a no-op
+            # for a log sink, which is what this handler is: the container
+            # inherits `environment = "development"` (config.py:103) whenever
+            # ENVIRONMENT is unset, so "development" is the *deployed* branch.
+            structlog.dev.ConsoleRenderer(
+                exception_formatter=structlog.dev.RichTracebackFormatter(show_locals=False),
+            ),
         ]
     else:
         render_processors = [
