@@ -14,9 +14,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from draftly.app.api.auth import get_verified_token
 from draftly.persistence.repositories.reviews import ReviewRecord, review_counts_from_records
 
-router = APIRouter(
-    prefix="/reviews", tags=["reviews"], dependencies=[Depends(get_verified_token)]
-)
+router = APIRouter(prefix="/reviews", tags=["reviews"], dependencies=[Depends(get_verified_token)])
 
 
 def review_to_dict(record: ReviewRecord) -> dict[str, Any]:
@@ -167,9 +165,7 @@ def build_review_display(
             document.get("risk"),
         ),
         "evaluation": {
-            "overall_score": _score(
-                evaluation.get("overall_score", evaluation.get("score"))
-            ),
+            "overall_score": _score(evaluation.get("overall_score", evaluation.get("score"))),
             "dimensions": dimensions,
             "reasons": [str(reason) for reason in reasons],
             "count": count,
@@ -277,7 +273,7 @@ async def list_reviews(
             limit=max(1, min(limit, 200)),
         )
         total = len(items)
-        counts = review_counts_from_records(items)
+        counts = await review_counts_from_records(items, getattr(repo, "database", None))
         next_cursor = None
     enriched = [await review_to_dict_enriched(r, request) for r in items]
     return {

@@ -9,8 +9,10 @@ from fastapi.testclient import TestClient
 
 from draftly.app.api.auth import get_verified_token
 from draftly.app.api.routes.reviews import router
-from draftly.persistence.repositories.reviews import review_counts_from_records
-from draftly.persistence.repositories.reviews import ReviewRecord
+from draftly.persistence.repositories.reviews import (
+    ReviewRecord,
+    review_counts_from_records,
+)
 
 
 def record(rid: str = "rev-1", org_id: str = "org-1", status: str = "pending") -> ReviewRecord:
@@ -48,7 +50,9 @@ class FakeRepo:
         return {
             "items": rows[:limit],
             "total": len(rows),
-            "counts": review_counts_from_records([r for r in self.rows if r.org_id == org_id]),
+            "counts": await review_counts_from_records(
+                [r for r in self.rows if r.org_id == org_id]
+            ),
             "next_cursor": "next-page" if len(rows) > limit else None,
         }
 
@@ -66,11 +70,7 @@ def make_app(repo: FakeRepo) -> FastAPI:
     app.state.draftly = type(
         "State",
         (),
-        {
-            "dependencies": type(
-                "Deps", (), {"repositories": type("R", (), {"reviews": repo})()}
-            )()
-        },
+        {"dependencies": type("Deps", (), {"repositories": type("R", (), {"reviews": repo})()})()},
     )()
     return app
 

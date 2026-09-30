@@ -63,8 +63,15 @@ def _normalized_score(value: Any) -> float | None:
     return max(0.0, min(100.0, score))
 
 
-def review_counts_from_records(records: Iterable[ReviewRecord]) -> dict[str, int]:
-    """Calculate review queue counters from organization-scoped records."""
+async def review_counts_from_records(
+    records: Iterable[ReviewRecord], db: Any = None
+) -> dict[str, int]:
+    """Calculate review queue counters from organization-scoped records.
+
+    `db` is optional and only used to read page scores for the urgent counter;
+    without it the count falls back to risk alone, which is how this behaved
+    before page scores were available here.
+    """
     counts = {
         "pending": 0,
         "urgent": 0,
@@ -82,21 +89,76 @@ def review_counts_from_records(records: Iterable[ReviewRecord]) -> dict[str, int
         detail = record.detail if isinstance(record.detail, dict) else {}
         classification = detail.get("classification")
         classification = classification if isinstance(classification, dict) else {}
-        risk = str(
-            classification.get("risk")
-            or classification.get("risk_level")
-            or classification.get("urgency")
-            or detail.get("risk")
-            or ""
-        ).strip().lower()
-        evaluation = detail.get("evaluation")
-        evaluation = evaluation if isinstance(evaluation, dict) else {}
-        score = _normalized_score(
-            evaluation.get("overall_score", evaluation.get("score"))
+        risk = (
+            str(
+                classification.get("risk")
+                or classification.get("risk_level")
+                or classification.get("urgency")
+                or detail.get("risk")
+                or ""
+            )
+            .strip()
+            .lower()
         )
+        # Documentation reviews write no legacy `evaluation.overall_score`, so
+        # the page average stands in for it. Without this, "low score" never
+        # contributed to the urgent count for any documentation review.
+        page_scores = await _final_page_scores(db, record.thread_id)
+        score = _review_score(detail, page_scores)
         if risk in {"high", "critical"} or (score is not None and score < 80):
             counts["urgent"] += 1
     return counts
+
+
+async def _final_page_scores(db: Any, run_id: str | None) -> list[float]:
+    """Scores for the latest evaluation of each page in a run.
+
+    The raw evaluation table keeps one row per attempt, so averaging it would
+    fold superseded failures into the result. Joining on each page's
+    `latest_artifact_id` keeps only the final score, matching what the UI shows.
+    """
+    if not run_id or db is None:
+        return []
+    rows = await db.fetch_all(
+        """
+        SELECT e.score
+        FROM documentation_page_states AS s
+        JOIN documentation_page_evaluations AS e
+          ON e.run_id = s.run_id AND e.artifact_id = s.latest_artifact_id
+        WHERE s.run_id = $1 AND e.score IS NOT NULL
+        """,
+        run_id,
+    )
+    return [float(row["score"]) for row in rows if row and row.get("score") is not None]
+
+
+def _review_score(detail: dict, page_scores: list[float]) -> float | None:
+    """The score the review queue should judge urgency by, on a 0-100 scale."""
+    evaluation = detail.get("evaluation")
+    evaluation = evaluation if isinstance(evaluation, dict) else {}
+    score = _normalized_score(evaluation.get("overall_score", evaluation.get("score")))
+    if score is not None:
+        return score
+    if not page_scores:
+        return None
+    return sum(page_scores) / len(page_scores)
+
+
+#: The review queue reads newest-first, matching the detail pages.
+REVIEW_SORT_DIRECTION = "DESC"
+
+
+def review_page_clauses(direction: str = REVIEW_SORT_DIRECTION) -> tuple[str, str]:
+    """Build the ORDER BY fragment and keyset comparison for a sort direction.
+
+    The sort and the cursor predicate have to walk the same way. Asking for
+    rows *after* the last row while sorting newest-first would re-serve the
+    previous page forever, so both are derived from one direction here.
+    """
+    if direction not in {"ASC", "DESC"}:
+        raise ValueError(f"Unsupported review sort direction: {direction!r}")
+    comparison = ">" if direction == "ASC" else "<"
+    return f"ORDER BY created_at {direction}, id {direction}", comparison
 
 
 def _encode_cursor(record: ReviewRecord) -> str:
@@ -258,16 +320,15 @@ class ReviewsRepository:
         if org_id:
             params.append(org_id)
             clauses.append(f"org_id = ${len(params)}")
+        order_by, comparison = review_page_clauses()
         if cursor:
             created_at, review_id = _decode_cursor(cursor)
             params.extend([created_at, review_id])
-            clauses.append(
-                f"(created_at, id) > (${len(params) - 1}, ${len(params)})"
-            )
+            clauses.append(f"(created_at, id) {comparison} (${len(params) - 1}, ${len(params)})")
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         query = f"""
         SELECT * FROM reviews {where}
-        ORDER BY created_at ASC, id ASC
+        {order_by}
         LIMIT ${len(params) + 1}
         """
         params.append(limit)
@@ -275,14 +336,15 @@ class ReviewsRepository:
         return [self._row_to_record(row) for row in rows]
 
     async def review_count_summary(self, *, org_id: str) -> dict[str, Any]:
+        # Order is irrelevant here - the rows are only aggregated into counters.
         rows = await self.database.fetch_all(
-            "SELECT * FROM reviews WHERE org_id = $1 ORDER BY created_at ASC, id ASC",
+            "SELECT * FROM reviews WHERE org_id = $1",
             org_id,
         )
         records = [self._row_to_record(row) for row in rows]
         return {
             "total": len(records),
-            "counts": review_counts_from_records(records),
+            "counts": await review_counts_from_records(records, self.database),
         }
 
     async def list_reviews_page(
