@@ -271,6 +271,16 @@ class ModelRouter:
 
         provider = self.registry.get_provider(config.provider)
 
+        # Honour DRAFTLY_ENABLED_PROVIDERS. Without this check a model pinned to a
+        # provider outside the allowlist is instantiated anyway, and startup dies
+        # with "REQUESTY_API_KEY is not configured." even though Requesty was
+        # explicitly disabled.
+        if not provider.is_enabled():
+            raise RuntimeError(
+                f"Provider '{config.provider}' is disabled by "
+                f"DRAFTLY_ENABLED_PROVIDERS, but model '{model_name}' resolves to it."
+            )
+
         return provider.create_model(config)
 
     def resolve_capability(

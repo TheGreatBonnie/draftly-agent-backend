@@ -1,3 +1,5 @@
+from dataclasses import replace
+
 from .config import EmbeddingConfig, ModelConfig
 from .providers.base import ModelProvider
 
@@ -15,7 +17,23 @@ class ModelRegistry:
     def register_provider(
         self,
         provider: ModelProvider,
+        *,
+        enabled_providers: set[str] | None = None,
     ) -> None:
+        """Register a provider.
+
+        ``enabled_providers`` is the ``DRAFTLY_ENABLED_PROVIDERS`` allowlist.
+        ``None`` means "no allowlist configured", which enables everything.
+        Otherwise a provider outside the allowlist is registered with
+        ``enabled=False`` so ``ModelProvider.is_enabled()`` -- the only gate
+        ``ModelRouter.resolve()`` consults -- reports it as unusable.
+
+        Without this, ``ProviderConfig.enabled`` keeps its ``True`` default and
+        the allowlist is inert on the startup path.
+        """
+        if enabled_providers is not None and provider.name not in enabled_providers:
+            provider.config = replace(provider.config, enabled=False)
+
         self._providers[provider.name] = provider
 
     def register_model(

@@ -215,7 +215,8 @@ def build_model_router(
                 base_url=os.getenv("NVIDIA_BASE_URL"),
                 priority=10,
             )
-        )
+        ),
+        enabled_providers=enabled_providers,
     )
 
     registry.register_provider(
@@ -226,7 +227,8 @@ def build_model_router(
                 base_url=os.getenv("REQUESTY_BASE_URL"),
                 priority=20,
             )
-        )
+        ),
+        enabled_providers=enabled_providers,
     )
 
     registry.register_provider(
@@ -237,7 +239,8 @@ def build_model_router(
                 base_url=os.getenv("ORCAROUTER_BASE_URL"),
                 priority=30,
             )
-        )
+        ),
+        enabled_providers=enabled_providers,
     )
 
     registry.register_provider(
@@ -248,7 +251,8 @@ def build_model_router(
                 base_url=os.getenv("OPENROUTER_BASE_URL"),
                 priority=40,
             )
-        )
+        ),
+        enabled_providers=enabled_providers,
     )
 
     registry.register_provider(
@@ -259,7 +263,8 @@ def build_model_router(
                 base_url=os.getenv("AWS_REGION", "us-east-1"),
                 priority=5,  # High priority for Bedrock models
             )
-        )
+        ),
+        enabled_providers=enabled_providers,
     )
 
     registry.register_provider(
@@ -270,7 +275,8 @@ def build_model_router(
                 base_url=os.getenv("MANTLE_ENDPOINT_URL"),
                 priority=3,  # Highest priority for Mantle models
             )
-        )
+        ),
+        enabled_providers=enabled_providers,
     )
 
     registry.register_provider(
@@ -281,7 +287,8 @@ def build_model_router(
                 base_url=os.getenv("MANTLE_OPENAI_ENDPOINT_URL"),
                 priority=3,  # Same account, translated frontend (grok/gemma)
             )
-        )
+        ),
+        enabled_providers=enabled_providers,
     )
 
     registry.register_provider(
@@ -292,7 +299,8 @@ def build_model_router(
                 base_url=os.getenv("NEBIUS_TOKEN_FACTORY_BASE_URL"),
                 priority=15,
             )
-        )
+        ),
+        enabled_providers=enabled_providers,
     )
 
     # ---------------------------------------------------------
@@ -1166,8 +1174,9 @@ def build_embedding_router(
                     api_key=api_key,
                     base_url=os.getenv(base_url_var),
                 )
-            )
-        )
+            ),
+        enabled_providers=enabled_providers,
+    )
 
     model_id = _resolve_model_id(
         "EMBEDDING_MODEL_ID",
