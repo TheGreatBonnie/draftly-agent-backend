@@ -1,0 +1,48 @@
+# Applies database migrations for the free-tier deployment.
+#
+# WHY THIS EXISTS: render.free.yaml has no `preDeployCommand`. Render states
+# the pre-deploy command is "available for paid web services, private
+# services, and background workers", so the free web service silently
+# ignores it. On the paid Blueprint (render.yaml) migrations still run via
+# preDeployCommand; on the free path they run here instead.
+#
+# `scripts/bootstrap.py` is idempotent -- it skips statements that fail with
+# "already exists" / "duplicate" -- so re-running it is safe.
+
+name: migrate
+
+on:
+  push:
+    branches:
+      - render-deployment
+  workflow_dispatch:
+
+# Never let two migration runs overlap.
+concurrency:
+  group: migrate
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  migrate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      ENVIRONMENT: production
+      LOG_LEVEL: INFO
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          version: "0.12.10"
+
+      - name: Install dependencies
+        run: uv sync --frozen --no-dev
+
+      - name: Run migrations
+        run: python scripts/bootstrap.py

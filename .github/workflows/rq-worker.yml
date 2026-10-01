@@ -1,0 +1,91 @@
+# Runs the Draftly RQ worker as a short-lived job so no always-on worker
+# host is required. Render has no free tier for `type: worker`, and a
+# continuously-polling RQ worker costs real money on every per-second
+# billing platform. Draining the queue and exiting costs minutes, and
+# standard GitHub-hosted runner minutes are free in public repositories.
+#
+# Triggers:
+#   schedule         - every 5 min (GitHub's minimum schedule interval)
+#   workflow_dispatch - manual, for demos where 5 min is too slow to wait
+#
+# Runner: MUST stay `ubuntu-latest`. Larger runners are billed even for
+# public repositories.
+
+name: rq-worker
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+# GitHub disables scheduled workflows in public repos after 60 days of
+# repository inactivity. Manually run once from the Actions tab to re-enable.
+concurrency:
+  group: rq-worker
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  worker:
+    runs-on: ubuntu-latest
+    # GitHub-hosted jobs hard-stop at 6h. 350 min leaves headroom for the
+    # 330-minute internal timeout plus warm shutdown.
+    timeout-minutes: 350
+    env:
+      RQ_BURST: "1"
+      ENVIRONMENT: production
+      LOG_LEVEL: INFO
+      RQ_ENABLED: "true"
+      STRANDS_SESSION_STORAGE: database
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      REDIS_URL: ${{ secrets.REDIS_URL }}
+    steps:
+      # MUST pin the ref. For `schedule`, GITHUB_SHA is the last commit on the
+      # DEFAULT branch (master), which does not contain resolve_burst_mode().
+      # Checking out master would run worker.work() with burst=False, block on
+      # BLPOP forever, and get SIGKILLed by `timeout 330` on every run.
+      # This is also what lets the workflow file live on master (required for
+      # schedule/workflow_dispatch to fire at all) while running the code from
+      # render-deployment that actually has the burst gate.
+      - uses: actions/checkout@v4
+        with:
+          ref: render-deployment
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          version: "0.12.10"
+
+      - name: Install dependencies
+        run: uv sync --frozen --no-dev
+
+      # The worker expects a PEM file on disk at this path (it reads the
+      # same value Render mounts as a secret file). It must be written at
+      # runtime: .dockerignore and the public repo both rule out committing it.
+      - name: Materialize GitHub App private key
+        run: |
+          mkdir -p /etc/secrets
+          printf '%s\n' "$GITHUB_APP_PRIVATE_KEY" > /etc/secrets/github-app-private-key.pem
+          chmod 600 /etc/secrets/github-app-private-key.pem
+
+      # burst=True (set via RQ_BURST) makes RQ return as soon as all queues
+      # are empty -- no SIGTERM needed. `timeout 330` is only a backstop
+      # for a job that hangs. Do NOT add `--max-idle-time`: that is an `rq`
+      # CLI flag, and workers/rq_worker.py does not parse argv.
+      - name: Drain the queues
+        run: timeout 330 python -m workers.rq_worker
+        env:
+          GITHUB_PRIVATE_KEY_PATH: /etc/secrets/github-app-private-key.pem
+          GITHUB_APP_ID: ${{ secrets.GITHUB_APP_ID }}
+          GITHUB_APP_SLUG: ${{ secrets.GITHUB_APP_SLUG }}
+
+      - name: Upload logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rq-worker-logs
+          path: /tmp/*.log
+          retention-days: 3
+          if-no-files-found: ignore
