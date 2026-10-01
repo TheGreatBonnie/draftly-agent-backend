@@ -13,7 +13,6 @@ from fastapi.responses import JSONResponse
 from draftly.app.api.auth import get_verified_token
 from draftly.app.api.evaluation_schemas import (
     CursorPage,
-    EvaluationAggregateSummary,
     EvaluationCaseResult,
     EvaluationCatalog,
     EvaluationRunDetail,
@@ -43,8 +42,10 @@ def _evaluations(request: Request) -> Any:
 def _summary_payload(item: dict[str, Any]) -> dict[str, Any]:
     metrics = item.get("metrics") or {}
     raw_status = str(item.get("status") or "failed").lower()
-    status = raw_status if raw_status in {"queued", "running", "cancelled", "skipped"} else (
-        "passed" if item.get("passed") else "failed"
+    status = (
+        raw_status
+        if raw_status in {"queued", "running", "cancelled", "skipped"}
+        else ("passed" if item.get("passed") else "failed")
     )
     started_at = item.get("started_at")
     completed_at = item.get("completed_at")
@@ -55,10 +56,12 @@ def _summary_payload(item: dict[str, Any]) -> dict[str, Any]:
         if isinstance(completed_at, str):
             completed_at = datetime.fromisoformat(completed_at.replace("Z", "+00:00"))
         duration_ms = max(0, round((completed_at - started_at).total_seconds() * 1000))
-    datasets = list(dict.fromkeys(
-        [str(row.get("dataset")) for row in metrics.get("granular", []) if row.get("dataset")]
-        + [str(value) for value in metrics.get("evaluation_types", [])]
-    ))
+    datasets = list(
+        dict.fromkeys(
+            [str(row.get("dataset")) for row in metrics.get("granular", []) if row.get("dataset")]
+            + [str(value) for value in metrics.get("evaluation_types", [])]
+        )
+    )
     return EvaluationRunSummary.model_validate(
         {
             "id": str(item.get("id") or ""),
@@ -133,18 +136,49 @@ async def list_evaluations(
     return {"items": items, "total": len(items), "next_cursor": None}
 
 
+def _page_quality(request: Request) -> Any:
+    deps = getattr(request.app.state.draftly, "dependencies", None)
+    repo = getattr(getattr(deps, "repositories", None), "page_quality", None)
+    if repo is None:
+        raise HTTPException(status_code=503, detail="Store unavailable")
+    return repo
+
+
 @router.get("/summary")
 async def evaluation_summary(
     request: Request,
     token: dict = Depends(get_verified_token),
-    days: int = 30,
+    days: int = 14,
 ) -> dict[str, Any]:
+    """Org-wide page quality over the latest artifact for each page.
+
+    This used to serve harness aggregates from the (empty) evaluations table;
+    it now reads documentation_page_evaluations directly. The harness
+    repository is untouched -- only this route's data source changed.
+    """
     if days not in {1, 7, 14, 30}:
         raise HTTPException(status_code=422, detail="days must be one of 1, 7, 14, 30")
-    result = await _evaluations(request).aggregate_summary(
-        org_id=str(token.get("org_id") or ""), days=days
-    )
-    return EvaluationAggregateSummary.model_validate(result).model_dump(mode="json")
+    return await _page_quality(request).summary(str(token.get("org_id") or ""), days)
+
+
+@router.get("/pages")
+async def page_quality_pages(
+    request: Request,
+    token: dict = Depends(get_verified_token),
+    limit: int = 50,
+    cursor: str | None = None,
+) -> dict[str, Any]:
+    """Page evaluations across every run, worst score first.
+
+    Declared before /{evaluation_id} so the literal path is not swallowed.
+    """
+    try:
+        items, total, next_cursor = await _page_quality(request).pages(
+            str(token.get("org_id") or ""), limit=limit, cursor=cursor
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    return {"items": items, "total": total, "next_cursor": next_cursor}
 
 
 @router.get("/catalog")
@@ -161,9 +195,7 @@ async def list_evaluation_cases(
     cursor: str | None = None,
 ) -> dict[str, Any]:
     repo = _evaluations(request)
-    if await repo.get_run_summary(
-        org_id=str(token.get("org_id") or ""), run_id=run_id
-    ) is None:
+    if await repo.get_run_summary(org_id=str(token.get("org_id") or ""), run_id=run_id) is None:
         raise HTTPException(status_code=404, detail="Evaluation run not found")
     items, next_cursor = await repo.list_case_results(
         org_id=str(token.get("org_id") or ""),
@@ -212,9 +244,7 @@ async def get_evaluation(
     """Fetch a single evaluation run for the caller's organization."""
     repo = _evaluations(request)
     item = await repo.get(evaluation_id=evaluation_id)
-    if item is None or str(item.get("org_id") or "") != str(
-        token.get("org_id") or ""
-    ):
+    if item is None or str(item.get("org_id") or "") != str(token.get("org_id") or ""):
         raise HTTPException(status_code=404, detail="Evaluation not found")
     return {"item": item}
 
@@ -292,7 +322,10 @@ async def run_evaluations(
             )
             return JSONResponse(status_code=202, content=response)
         result = await worker.run_task(
-            "evaluation.loop", org_id=org_id, run_id=run_id, live=requested_live,
+            "evaluation.loop",
+            org_id=org_id,
+            run_id=run_id,
+            live=requested_live,
             datasets=payload.datasets,
         )
         return {"status": "completed", "result": result, "run_id": run_id}

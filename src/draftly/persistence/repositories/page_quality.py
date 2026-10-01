@@ -122,21 +122,36 @@ class PageQualityRepository:
     ) -> tuple[list[dict[str, Any]], int, str | None]:
         """Page evaluations across every run, worst score first.
 
-        The cursor is ``"<score>:<page_id>"`` from the previous page, so paging
-        is a keyset walk on (score, page_id) and stays stable while scores move.
-        Unscored pages sort last: unknown is not the worst.
+        The cursor is ``"<score>:<page_id>:<run_id>"`` from the previous page:
+        a keyset walk on (score, page_id, run_id). The run_id tiebreak is
+        load-bearing -- the same page is evaluated in many runs, so
+        (score, page_id) alone is not a total order and the walk would skip
+        same-page siblings. Unscored pages sort last: unknown is not the worst.
         """
         clamped = max(1, min(limit, 200))
         params: list[Any] = [org_id, clamped + 1]
         cursor_clause = ""
         if cursor:
-            raw_score, _, page_id = cursor.partition(":")
+            # Split from the right: run_id is last, score is first, and the
+            # page_id in the middle may itself contain colons.
+            head, sep, tail_run = cursor.rpartition(":")
+            if not sep or not head:
+                raise ValueError(f"invalid cursor: {cursor!r}")
+            raw_score, _, tail_page = head.partition(":")
+            if not tail_page:
+                # A two-part cursor is missing the run_id tiebreak; accepting
+                # it would silently walk the wrong order.
+                raise ValueError(f"invalid cursor: {cursor!r}")
             if raw_score in ("", "null", "None"):
-                cursor_clause = "AND e.score IS NULL AND s.page_id > $3"
-                params.append(page_id)
+                cursor_clause = "AND e.score IS NULL AND (s.page_id, e.run_id) > ($3, $4)"
+                params.extend([tail_page, tail_run])
             else:
-                cursor_clause = "AND (e.score, s.page_id) < ($3::float, $4)"
-                params.extend([raw_score, page_id])
+                try:
+                    score_floor = float(raw_score)
+                except ValueError:
+                    raise ValueError(f"invalid cursor: {cursor!r}")
+                cursor_clause = "AND (e.score, s.page_id, e.run_id) > ($3::float, $4, $5)"
+                params.extend([score_floor, tail_page, tail_run])
         rows = await self.database.fetch_all(
             f"""
             SELECT
@@ -149,7 +164,7 @@ class PageQualityRepository:
             {_LATEST_PAGES_JOIN}
             WHERE s.org_id = $1
               {cursor_clause}
-            ORDER BY e.score ASC NULLS LAST, s.page_id ASC
+            ORDER BY e.score ASC NULLS LAST, s.page_id ASC, e.run_id ASC
             LIMIT $2
             """,
             *params,
@@ -158,9 +173,10 @@ class PageQualityRepository:
         items = rows[:clamped]
         next_cursor = None
         if has_more and items:
-            last_score = items[-1].get("score")
-            last_score_token = "null" if last_score is None else str(last_score)
-            next_cursor = f"{last_score_token}:{items[-1].get('page_id')}"
+            last = items[-1]
+            last_score = last.get("score")
+            last_token = "null" if last_score is None else str(last_score)
+            next_cursor = f"{last_token}:{last.get('page_id')}:{last.get('run_id')}"
         return (
             [
                 {

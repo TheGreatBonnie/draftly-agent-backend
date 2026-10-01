@@ -194,3 +194,117 @@ def test_run_evaluations_fallback_forwards_live_flag() -> None:
 
     assert resp.status_code == 200
     assert captured["live"] is True
+
+
+class FakePageQualityRepo:
+    """Stands in for PageQualityRepository at the route boundary."""
+
+    def __init__(self) -> None:
+        self.summary_calls: list[tuple[str, int]] = []
+        self.page_calls: list[dict[str, Any]] = []
+
+    async def summary(self, org_id: str, days: int) -> dict[str, Any]:
+        self.summary_calls.append((org_id, days))
+        return {
+            "average_score": 62.0,
+            "total_runs": 2,
+            "scored_pages": 7,
+            "total_pages": 9,
+            "passed": 5,
+            "needs_revision": 1,
+            "awaiting_human": 1,
+            "by_metric": [{"metric": "detail", "average_score": 100.0, "sample_count": 7}],
+            "trend": [{"date": "2026-09-28", "average_score": 62.0, "run_count": 1}],
+        }
+
+    async def pages(
+        self, org_id: str, *, limit: int = 50, cursor: str | None = None
+    ) -> tuple[list[dict[str, Any]], int, str | None]:
+        self.page_calls.append({"org_id": org_id, "limit": limit, "cursor": cursor})
+        return (
+            [
+                {
+                    "page_id": "p1",
+                    "path": "docs/a.md",
+                    "status": "revision_required",
+                    "score": 40.0,
+                    "run_id": "run-1",
+                    "updated_at": "2026-09-28T00:00:00Z",
+                }
+            ],
+            1,
+            None,
+        )
+
+
+def make_page_quality_app() -> tuple[FastAPI, FakePageQualityRepo]:
+    repo = FakePageQualityRepo()
+    app = FastAPI()
+    app.include_router(router)
+    app.dependency_overrides[get_verified_token] = lambda: {"org_id": "org-1"}
+    app.state.draftly = SimpleNamespace(
+        dependencies=SimpleNamespace(
+            repositories=SimpleNamespace(
+                evaluations=EvaluationRepository(
+                    store=DatabaseEvaluationsStore(client=FakeDatabase())
+                ),
+                page_quality=repo,
+            )
+        )
+    )
+    return app, repo
+
+
+def test_summary_serves_page_quality_not_harness_aggregates() -> None:
+    app, repo = make_page_quality_app()
+    client = TestClient(app)
+
+    resp = client.get("/evaluations/summary", params={"days": 7})
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["scored_pages"] == 7
+    assert body["total_pages"] == 9
+    assert body["by_metric"][0]["metric"] == "detail"
+    assert repo.summary_calls == [("org-1", 7)]
+
+
+def test_summary_rejects_unsupported_days() -> None:
+    app, _ = make_page_quality_app()
+    assert TestClient(app).get("/evaluations/summary", params={"days": 3}).status_code == 422
+
+
+def test_pages_endpoint_is_org_scoped_and_forwards_cursor() -> None:
+    app, repo = make_page_quality_app()
+    client = TestClient(app)
+
+    resp = client.get("/evaluations/pages", params={"limit": 20, "cursor": "0.3:p0:run-9"})
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["items"][0]["path"] == "docs/a.md"
+    assert body["items"][0]["score"] == 40.0
+    assert repo.page_calls[0] == {"org_id": "org-1", "limit": 20, "cursor": "0.3:p0:run-9"}
+
+
+def test_pages_literal_route_is_not_swallowed_by_evaluation_id() -> None:
+    # /{evaluation_id} is greedy; /pages must be declared before it.
+    app, _ = make_page_quality_app()
+    resp = TestClient(app).get("/evaluations/pages")
+
+    assert resp.status_code == 200
+    assert "items" in resp.json()
+
+
+def test_pages_maps_a_malformed_cursor_to_422() -> None:
+    class BadCursorRepo(FakePageQualityRepo):
+        async def pages(self, org_id: str, *, limit: int = 50, cursor=None):  # type: ignore[override]
+            raise ValueError("invalid cursor: 'bogus'")
+
+    app = FastAPI()
+    app.include_router(router)
+    app.dependency_overrides[get_verified_token] = lambda: {"org_id": "org-1"}
+    app.state.draftly = SimpleNamespace(
+        dependencies=SimpleNamespace(repositories=SimpleNamespace(page_quality=BadCursorRepo()))
+    )
+    assert TestClient(app).get("/evaluations/pages", params={"cursor": "bogus"}).status_code == 422

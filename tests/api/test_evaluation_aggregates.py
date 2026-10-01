@@ -16,18 +16,24 @@ class AggregateRepo:
 
     async def list_runs(self, **kwargs: Any):
         self.calls.append(("list_runs", kwargs))
-        return ([{
-            "id": "evaluation-1",
-            "org_id": "org-1",
-            "run_id": "run-1",
-            "evaluation_type": "documentation",
-            "score": 92,
-            "passed": True,
-            "status": "completed",
-            "metrics": {"cases": 2, "passed": 2, "failed": 0},
-            "started_at": "2026-09-10T08:00:00+00:00",
-            "completed_at": "2026-09-10T08:00:02+00:00",
-        }], 1, "next-run")
+        return (
+            [
+                {
+                    "id": "evaluation-1",
+                    "org_id": "org-1",
+                    "run_id": "run-1",
+                    "evaluation_type": "documentation",
+                    "score": 92,
+                    "passed": True,
+                    "status": "completed",
+                    "metrics": {"cases": 2, "passed": 2, "failed": 0},
+                    "started_at": "2026-09-10T08:00:00+00:00",
+                    "completed_at": "2026-09-10T08:00:02+00:00",
+                }
+            ],
+            1,
+            "next-run",
+        )
 
     async def get_run_detail(self, **kwargs: Any):
         self.calls.append(("get_run_detail", kwargs))
@@ -44,16 +50,18 @@ class AggregateRepo:
                 "started_at": "2026-09-10T08:00:00+00:00",
                 "completed_at": "2026-09-10T08:00:02+00:00",
             },
-            "cases": [{
-                "id": "case-result-1",
-                "evaluation_id": "evaluation-1",
-                "run_id": "run-1",
-                "dataset": "documentation",
-                "case_id": "oauth-auth",
-                "metric": "expected_contains",
-                "score": 100,
-                "passed": True,
-            }],
+            "cases": [
+                {
+                    "id": "case-result-1",
+                    "evaluation_id": "evaluation-1",
+                    "run_id": "run-1",
+                    "dataset": "documentation",
+                    "case_id": "oauth-auth",
+                    "metric": "expected_contains",
+                    "score": 100,
+                    "passed": True,
+                }
+            ],
             "next_cases_cursor": "next-case",
             "detail_available": True,
         }
@@ -72,6 +80,20 @@ class AggregateRepo:
             "by_metric": [],
         }
 
+    async def summary(self, org_id: str, days: int) -> dict[str, Any]:
+        self.calls.append(("summary", {"org_id": org_id, "days": days}))
+        return {
+            "average_score": None,
+            "total_runs": 0,
+            "scored_pages": 0,
+            "total_pages": 0,
+            "passed": 0,
+            "needs_revision": 0,
+            "awaiting_human": 0,
+            "by_metric": [],
+            "trend": [],
+        }
+
     def catalog(self):
         self.calls.append(("catalog", {}))
         return {
@@ -85,7 +107,9 @@ def make_app(repo: AggregateRepo) -> FastAPI:
     app.include_router(router)
     app.dependency_overrides[get_verified_token] = lambda: {"org_id": "org-1"}
     app.state.draftly = SimpleNamespace(
-        dependencies=SimpleNamespace(repositories=SimpleNamespace(evaluations=repo))
+        dependencies=SimpleNamespace(
+            repositories=SimpleNamespace(evaluations=repo, page_quality=repo)
+        )
     )
     return app
 
@@ -138,8 +162,11 @@ def test_empty_summary_window_is_explicitly_null() -> None:
 
     assert response.status_code == 200
     assert response.json()["average_score"] is None
-    assert response.json()["pass_rate"] is None
-    assert repo.calls[-1][1] == {"org_id": "org-1", "days": 14}
+    assert response.json()["scored_pages"] == 0
+    assert response.json()["total_pages"] == 0
+    assert response.json()["by_metric"] == []
+    assert response.json()["trend"] == []
+    assert repo.calls[-1] == ("summary", {"org_id": "org-1", "days": 14})
 
 
 def test_catalog_returns_dataset_and_evaluator_definitions() -> None:

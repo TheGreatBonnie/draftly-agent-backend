@@ -49,6 +49,7 @@ from draftly.persistence.repositories.jobs import JobRepositoryImpl
 from draftly.persistence.repositories.knowledge import KnowledgeRepository
 from draftly.persistence.repositories.memory import MemoryRepository
 from draftly.persistence.repositories.onboarding import OnboardingRepository
+from draftly.persistence.repositories.page_quality import PageQualityRepository
 from draftly.persistence.repositories.repository_config import RepositoryConfigRepository
 from draftly.persistence.repositories.reviewers import ReviewersRepository
 from draftly.persistence.repositories.reviews import ReviewsRepository
@@ -253,6 +254,7 @@ class RepositoryDependencies:
     page_workflow: PageWorkflowRepository
     github_installations: GitHubInstallationsRepository
     evaluations: EvaluationRepository
+    page_quality: PageQualityRepository
     support: SupportRepository
     feedback: FeedbackRepository
     documentation_gaps: DocumentationGapRepository
@@ -329,6 +331,8 @@ def build_repositories(
         ),
     )
 
+    page_quality = PageQualityRepository(database=database)
+
     support = SupportRepository(
         database=database,
     )
@@ -399,6 +403,7 @@ def build_repositories(
         page_workflow=page_workflow,
         github_installations=github_installations,
         evaluations=evaluations,
+        page_quality=page_quality,
         support=support,
         feedback=feedback,
         documentation_gaps=documentation_gaps,

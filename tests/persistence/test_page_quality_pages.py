@@ -72,7 +72,7 @@ async def test_pages_paginates_and_reports_a_cursor() -> None:
 
     assert len(items) == 2
     assert total == 2
-    assert next_cursor == "0.4:p1"
+    assert next_cursor == "0.4:p1:run-1"
     # Fetched one extra row to detect the next page.
     sql, params = client.calls[-1]
     assert params[1] == 3
@@ -82,14 +82,29 @@ async def test_pages_applies_the_cursor_predicate() -> None:
     client = PagesClient([row(page_id="p2")])
     repo = PageQualityRepository(client)
 
-    await repo.pages("org-1", limit=20, cursor="0.3:p0")
+    await repo.pages("org-1", limit=20, cursor="0.3:p0:run-9")
 
     sql, params = client.calls[-1]
-    assert "e.score" in sql and "s.page_id" in sql
-    # Keyset predicate matches the ASC sort: strictly worse rows come next.
-    assert "(e.score, s.page_id) <" in sql
-    assert params[2] == "0.3"
+    # The run_id tiebreak is load-bearing: the same page is evaluated in many
+    # runs, so (score, page_id) alone is not a total order and the walk would
+    # skip same-page siblings.
+    assert "(e.score, s.page_id, e.run_id) >" in sql
+    assert "ORDER BY e.score ASC NULLS LAST, s.page_id ASC, e.run_id ASC" in sql
+    # Typed as a float in Python: asyncpg refuses str for a float slot.
+    assert params[2] == pytest.approx(0.3)
+    assert isinstance(params[2], float)
     assert params[3] == "p0"
+    assert params[4] == "run-9"
+
+
+async def test_pages_rejects_a_malformed_cursor() -> None:
+    client = PagesClient([])
+    repo = PageQualityRepository(client)
+
+    with pytest.raises(ValueError, match="invalid cursor"):
+        await repo.pages("org-1", limit=20, cursor="not-a-score:p0:run-1")
+    with pytest.raises(ValueError, match="invalid cursor"):
+        await repo.pages("org-1", limit=20, cursor="0.3:p0")
 
 
 async def test_pages_clamps_the_limit() -> None:
@@ -106,7 +121,7 @@ async def test_pages_walks_the_unscored_tail_by_page_id() -> None:
     client = PagesClient([row(page_id="p9", score=None)])
     repo = PageQualityRepository(client)
 
-    await repo.pages("org-1", limit=20, cursor="null:p1")
+    await repo.pages("org-1", limit=20, cursor="null:p1:run-1")
 
     sql, params = client.calls[-1]
     assert "e.score IS NULL" in sql
@@ -120,4 +135,4 @@ async def test_pages_emits_a_null_cursor_for_an_unscored_last_row() -> None:
 
     _items, _total, next_cursor = await repo.pages("org-1", limit=1)
 
-    assert next_cursor == "null:p1"
+    assert next_cursor == "null:p1:run-1"
