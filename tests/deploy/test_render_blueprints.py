@@ -112,3 +112,35 @@ def test_worker_command_runs_the_rq_worker(blueprint: str, command: str):
         f"{blueprint}: worker dockerCommand must invoke `python -m "
         f"workers.rq_worker`. Found: {argv!r}"
     )
+
+
+@pytest.mark.parametrize("blueprint,command", WEB_COMMANDS)
+def test_docker_command_avoids_render_pre_substitution(blueprint: str, command: str):
+    """No `${...}` in dockerCommand: Render pre-substitutes it and corrupts the string.
+
+    Render resolves `${PORT` before the container shell ever sees the command.
+    Shell default syntax `${PORT:-10000}` is therefore mangled into
+    `10000:-10000}`, which uvicorn rejects:
+
+        Error: Invalid value for '--port': '10000:-10000}' is not a valid integer.
+
+    `$PORT` is substituted correctly, and Render always sets PORT on a web
+    service, so the shell default is unnecessary.
+    """
+    assert "${" not in command, (
+        f"{blueprint}: dockerCommand must not use ${{...}} syntax. Render "
+        f"pre-substitutes it and leaves the remainder, breaking the command. "
+        f"Use $PORT instead. Found: {command!r}"
+    )
+
+
+@pytest.mark.parametrize("blueprint,command", WEB_COMMANDS)
+def test_docker_command_port_value_is_a_clean_token(blueprint: str, command: str):
+    """The token after --port must expand to a bare integer."""
+    argv = shlex.split(command)
+    port_token = argv[argv.index("--port") + 1]
+
+    assert ":" not in port_token and "}" not in port_token, (
+        f"{blueprint}: --port value {port_token!r} would expand to something "
+        f"other than a plain integer"
+    )

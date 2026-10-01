@@ -41,8 +41,13 @@ services:
     # as a single argv token, so a nested shell wrapper arrives unsplit and
     # fails with status 127 ("<whole string>: not found"). `exec` is a shell
     # builtin, not a binary, so it must not be argv[0] either. uvicorn is on
-    # PATH via the image's ENV PATH, and Render's shell expands ${PORT:-10000}.
-    dockerCommand: uvicorn draftly.app.api.app:app --host 0.0.0.0 --port ${PORT:-10000}
+    # PATH via the image's ENV PATH.
+    # Use plain $PORT, not shell-default syntax: Render pre-substitutes a
+    # dollar-brace variable before the container shell ever sees the command,
+    # which mangles the default-value suffix into "10000:-10000}" and makes
+    # uvicorn exit with "Invalid value for '--port'". Render always sets PORT
+    # on a web service, so a shell default is unnecessary anyway.
+    dockerCommand: uvicorn draftly.app.api.app:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /health
     # No maxShutdownDelaySeconds: Render rejects it for free tier services
     # ("max shutdown delay is not supported for free tier services"), even
