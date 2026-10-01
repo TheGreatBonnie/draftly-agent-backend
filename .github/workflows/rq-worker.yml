@@ -45,7 +45,7 @@ jobs:
       # constructs GitHubClient. With no per-workflow installation id set,
       # GitHubAuth() raises "GITHUB_TOKEN is not configured." and the worker
       # exits before draining a single job.
-      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GITHUB_TOKEN: ${{ secrets.DRAFTLY_GITHUB_TOKEN }}
       # Provider credentials. The worker executes the queued jobs, so it needs
       # these to call any model; without them every job raises
       # "MANTLE_API_KEY is not configured." Keep in sync with the provider keys
@@ -82,7 +82,7 @@ jobs:
       # would silently write an empty file.
       - name: Materialize GitHub App private key
         env:
-          GITHUB_APP_PRIVATE_KEY: ${{ secrets.GITHUB_APP_PRIVATE_KEY }}
+          GITHUB_APP_PRIVATE_KEY: ${{ secrets.DRAFTLY_GITHUB_APP_PRIVATE_KEY }}
         run: |
           mkdir -p /etc/secrets
           printf '%s\n' "$GITHUB_APP_PRIVATE_KEY" > /etc/secrets/github-app-private-key.pem
@@ -99,8 +99,8 @@ jobs:
         run: timeout 330 uv run python -m workers.rq_worker
         env:
           GITHUB_PRIVATE_KEY_PATH: /etc/secrets/github-app-private-key.pem
-          GITHUB_APP_ID: ${{ secrets.GITHUB_APP_ID }}
-          GITHUB_APP_SLUG: ${{ secrets.GITHUB_APP_SLUG }}
+          GITHUB_APP_ID: ${{ secrets.DRAFTLY_GITHUB_APP_ID }}
+          GITHUB_APP_SLUG: ${{ secrets.DRAFTLY_GITHUB_APP_SLUG }}
 
       - name: Upload logs on failure
         if: failure()
