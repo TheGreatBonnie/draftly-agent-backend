@@ -157,19 +157,27 @@ Create a Blueprint from `render.free.yaml` instead of `render.yaml`
 (New → Blueprint → select branch `render-deployment` → set the Blueprint path
 to `render.free.yaml`). Set the same `sync: false` secrets as sections 3 and 4.
 
-Four differences from the paid Blueprint:
+Five differences from the paid Blueprint:
 
 - both services run on the `free` plan;
 - `draftly-kv` opens its external connection to `0.0.0.0/0` so the Actions
   runner can reach it (GitHub's egress ranges are too large and too shifting
   to allowlist individually);
-- there is no `draftly-worker` service; and
+- there is no `draftly-worker` service;
 - **there is no `preDeployCommand`.** Render states the pre-deploy command is
   "available for paid web services, private services, and background workers",
   so a free web service silently ignores it. Migrations must run from the
   `migrate` workflow instead — see 7.3. This is the single easiest mistake to
   make here: without it the API boots against an unmigrated schema and fails
-  with a generic database error.
+  with a generic database error; and
+- **there is no `maxShutdownDelaySeconds`.** Render rejects the Blueprint with
+  `max shutdown delay is not supported for free tier services`. The key is
+  valid in the Blueprint schema but gated by plan, so it must be omitted
+  entirely rather than set to a smaller value. See 7.6 for the consequence.
+
+Note that Render gates some keys by compute plan *after* schema validation, so
+a Blueprint can validate cleanly and still be rejected at apply time. If one is
+rejected, remove the key rather than lowering its value.
 
 Free Key Value is **25 MB, single-instance, and in-memory only**. Queued jobs
 are lost whenever the instance restarts, which Render may do at any time.
@@ -258,6 +266,11 @@ push event is evaluated against the pushed ref.
 - Queue latency is up to 5 minutes on the scheduled path.
 - A job still running when the 330-minute timeout fires is killed and
   recovered on the next boot by `reconcile_stale_on_boot`.
+- **No graceful shutdown window.** Free services cannot use
+  `maxShutdownDelaySeconds`, so Render kills them on its own schedule rather
+  than draining. In-flight HTTP requests and open SSE dashboard streams can be
+  dropped without warning on a spin-down or deploy. The paid Blueprint keeps
+  `maxShutdownDelaySeconds: 120`; the free path cannot.
 - `draftly-kv` is in-memory: a restart drops queued jobs.
 - The free web service spins down after 15 minutes idle, which can drop a
   long-lived SSE dashboard stream.
