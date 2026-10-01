@@ -52,3 +52,16 @@ def test_burst_reads_os_environ_by_default(monkeypatch: pytest.MonkeyPatch):
 
     monkeypatch.delenv("RQ_BURST", raising=False)
     assert resolve_burst_mode() is False
+
+
+def test_unexpected_worker_loop_failure_is_propagated() -> None:
+    """Modal must see a failed invocation when RQ's work loop crashes."""
+    from unittest.mock import Mock
+
+    from workers.rq_worker import run_worker_loop
+
+    worker = Mock()
+    worker.work.side_effect = RuntimeError("redis connection lost")
+
+    with pytest.raises(RuntimeError, match="redis connection lost"):
+        run_worker_loop(worker, burst=True, log=Mock())

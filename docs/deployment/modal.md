@@ -17,12 +17,20 @@ The worker runs with:
 - cron schedule `* * * * *`;
 - `RQ_BURST=1`, which exits after the queues are drained;
 - at most one container, preventing overlapping queue drains;
+- up to two concurrent schedule inputs in that container, with a nonblocking
+  gate that skips a new tick while an earlier drain is still running;
 - 0.125 CPU and 512 MiB memory;
 - a 21,000-second timeout for a long-running queued job; and
 - a two-second scale-down window after the process exits.
 
 The API must give the worker an externally reachable TLS Redis URL. A Render
 private-network URL is not reachable from Modal.
+
+The 21,000-second function deadline is the effective upper bound for one RQ
+job even though RQ itself has no job timeout. The worker's startup stale-run
+reconciliation repairs application runs orphaned by forced termination. Jobs
+that can legitimately exceed this limit require checkpointing before using
+this deployment profile.
 
 ## 1. Install and authenticate
 
@@ -104,6 +112,15 @@ with:
 ```bash
 uv run --extra dev modal billing report --for today --show-resources
 ```
+
+At Modal's published CPU example rate (about $0.00001314 per physical
+core-second) and memory example rate (about $0.00000222 per GiB-second), this
+function's 0.125-core/0.5-GiB request costs about $0.00000275 per active
+second. Even a container active continuously for a 30-day month is about
+$7.12 of CPU and memory, before network charges, and a normal burst workload
+costs less because it scales to zero. This remains within the $30 monthly
+Starter compute credit under those assumptions. Confirm current rates with
+`modal billing rates` and set a billing alert; published rates can change.
 
 If a deployment is unhealthy, redeploy the previous known-good commit from
 `modal-deployment`. For an immediate retry, run the local entrypoint shown

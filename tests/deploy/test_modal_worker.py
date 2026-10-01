@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import subprocess
+import threading
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+import pytest
 import yaml
 
 from infra.modal import rq_worker as modal_worker
@@ -27,6 +29,7 @@ def test_modal_worker_has_bounded_single_container_runtime() -> None:
     assert modal_worker.MEMORY_MB == 512
     assert modal_worker.TIMEOUT_SECONDS == 21_000
     assert modal_worker.MAX_CONTAINERS == 1
+    assert modal_worker.MAX_CONCURRENT_INPUTS == 2
     assert modal_worker.SCALEDOWN_WINDOW_SECONDS == 2
 
 
@@ -64,6 +67,19 @@ def test_worker_process_uses_the_container_user_and_entrypoint(monkeypatch) -> N
     }
 
 
+def test_overlapping_schedule_input_skips_a_duplicate_drain(monkeypatch) -> None:
+    """A cron tick arriving during a long job must not queue another drain."""
+    active_drain = threading.Lock()
+    active_drain.acquire()
+    monkeypatch.setattr(
+        modal_worker,
+        "run_worker_process",
+        lambda: pytest.fail("duplicate drain must not start"),
+    )
+
+    assert modal_worker.run_worker_if_idle(active_drain) is False
+
+
 def test_modal_deployment_tracks_the_modal_branch() -> None:
     """A push to the deployment branch must publish the matching worker code."""
     workflow = _deployment_workflow()
@@ -72,8 +88,11 @@ def test_modal_deployment_tracks_the_modal_branch() -> None:
     assert workflow["on"]["push"]["paths"] == [
         "infra/modal/**",
         "docker/Dockerfile.render",
+        ".dockerignore",
+        "README.md",
         "pyproject.toml",
         "uv.lock",
+        "scripts/bootstrap.py",
         "src/**",
         "workers/**",
         ".github/workflows/deploy-modal-worker.yml",
@@ -121,6 +140,23 @@ def test_render_blueprints_do_not_deploy_a_worker() -> None:
         blueprint = yaml.safe_load((REPO_ROOT / filename).read_text())
 
         assert all(service["type"] != "worker" for service in blueprint["services"])
+
+
+def test_render_queues_are_reachable_from_modal() -> None:
+    """Each Render queue must expose its TLS endpoint to the external worker."""
+    for filename in ("render.yaml", "render.free.yaml"):
+        blueprint = yaml.safe_load((REPO_ROOT / filename).read_text())
+        queues = [
+            service
+            for service in blueprint["services"]
+            if service["type"] == "keyvalue"
+        ]
+
+        assert queues
+        assert all(
+            {rule["source"] for rule in queue["ipAllowList"]} == {"0.0.0.0/0"}
+            for queue in queues
+        )
 
 
 def test_render_api_tracks_the_modal_deployment_branch() -> None:

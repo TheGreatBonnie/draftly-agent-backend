@@ -7,8 +7,11 @@ on:
     paths:
       - infra/modal/**
       - docker/Dockerfile.render
+      - .dockerignore
+      - README.md
       - pyproject.toml
       - uv.lock
+      - scripts/bootstrap.py
       - src/**
       - workers/**
       - .github/workflows/deploy-modal-worker.yml

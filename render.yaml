@@ -5,7 +5,9 @@ services:
     plan: 256mb
     maxmemoryPolicy: noeviction
     persistenceMode: journal-snapshot
-    ipAllowList: []
+    ipAllowList:
+      - source: 0.0.0.0/0
+        description: modal-worker
 
   - type: web
     name: draftly-api

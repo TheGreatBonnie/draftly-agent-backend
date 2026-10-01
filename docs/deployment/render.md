@@ -99,10 +99,11 @@ The Modal worker cannot use Render's private `REDIS_URL`. Copy the external TLS
 connection string from the Render Key Value service into the Modal Secret as
 `REDIS_URL`; it should use `rediss://`.
 
-The free Blueprint permits external connections with `0.0.0.0/0` because Modal
+Both Blueprints permit external connections with `0.0.0.0/0` because Modal
 does not have a fixed egress address in this setup. The queue is protected by
-its password, but exposing it broadly is a security tradeoff. Use a paid
-networking option with restricted egress for a hardened production deployment.
+its password and TLS, but exposing it broadly is a security tradeoff. Use a
+paid networking option with restricted egress for a hardened production
+deployment.
 
 Free Render Key Value is small, single-instance, and in-memory. Queued jobs can
 be lost when it restarts. Use the paid persistent Blueprint for durable queue

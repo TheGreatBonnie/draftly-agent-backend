@@ -41,6 +41,17 @@ def resolve_burst_mode(env: Mapping[str, str] | None = None) -> bool:
     return source.get("RQ_BURST") == "1"
 
 
+def run_worker_loop(worker: Any, *, burst: bool, log: Any) -> None:
+    """Run RQ and preserve failures for the hosting platform to observe."""
+    try:
+        worker.work(burst=burst)
+    except KeyboardInterrupt:
+        log.info("RQ worker interrupted")
+    except Exception:
+        log.exception("RQ worker failed")
+        raise
+
+
 class InitLockAwareWorker(SimpleWorker):
     """SimpleWorker that releases the per-org init lock after an
     ``onboarding.initialize`` job finishes (success or failure).
@@ -140,11 +151,7 @@ def main() -> None:
     )
 
     try:
-        worker.work(burst=burst)
-    except KeyboardInterrupt:
-        log.info("RQ worker interrupted")
-    except Exception:
-        log.exception("RQ worker failed")
+        run_worker_loop(worker, burst=burst, log=log)
     finally:
         conn.close()
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import subprocess
+import threading
 from pathlib import Path
 
 import modal
@@ -14,7 +15,10 @@ CPU_CORES = 0.125
 MEMORY_MB = 512
 TIMEOUT_SECONDS = 21_000
 MAX_CONTAINERS = 1
+MAX_CONCURRENT_INPUTS = 2
 SCALEDOWN_WINDOW_SECONDS = 2
+
+_DRAIN_LOCK = threading.Lock()
 
 RUNTIME_ENV = {
     "ENVIRONMENT": "production",
@@ -45,6 +49,17 @@ def run_worker_process() -> None:
     )
 
 
+def run_worker_if_idle(lock: threading.Lock = _DRAIN_LOCK) -> bool:
+    """Run one drain, or skip when another scheduled input is still active."""
+    if not lock.acquire(blocking=False):
+        return False
+    try:
+        run_worker_process()
+        return True
+    finally:
+        lock.release()
+
+
 @app.function(
     image=image,
     secrets=[worker_secret],
@@ -56,9 +71,10 @@ def run_worker_process() -> None:
     max_containers=MAX_CONTAINERS,
     scaledown_window=SCALEDOWN_WINDOW_SECONDS,
 )
+@modal.concurrent(max_inputs=MAX_CONCURRENT_INPUTS)
 def drain_rq() -> None:
     """Drain every configured RQ queue and exit when no work remains."""
-    run_worker_process()
+    run_worker_if_idle()
 
 
 @app.local_entrypoint()
