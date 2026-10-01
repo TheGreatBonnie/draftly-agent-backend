@@ -1,0 +1,104 @@
+services:
+  - type: keyvalue
+    name: draftly-kv
+    region: oregon
+    plan: 256mb
+    maxmemoryPolicy: noeviction
+    persistenceMode: journal-snapshot
+    ipAllowList: []
+
+  - type: web
+    name: draftly-api
+    runtime: docker
+    region: oregon
+    plan: 1c-2g
+    branch: render-deployment
+    autoDeployTrigger: commit
+    dockerfilePath: ./docker/Dockerfile.render
+    dockerContext: .
+    dockerCommand: /bin/sh -c 'exec uvicorn draftly.app.api.app:app --host 0.0.0.0 --port "${PORT:-10000}"'
+    preDeployCommand: python scripts/bootstrap.py
+    healthCheckPath: /health
+    maxShutdownDelaySeconds: 120
+    envVars:
+      - key: ENVIRONMENT
+        value: production
+      - key: LOG_LEVEL
+        value: INFO
+      - key: RQ_ENABLED
+        value: "true"
+      - key: STRANDS_SESSION_STORAGE
+        value: database
+      - key: DATABASE_URL
+        sync: false
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: draftly-kv
+          property: connectionString
+      - key: DRAFTLY_ENABLED_PROVIDERS
+        sync: false
+      - key: FRONTEND_URL
+        sync: false
+      - key: ALLOWED_ORIGINS
+        sync: false
+      - key: PUBLIC_API_URL
+        sync: false
+      - key: APP_URL
+        sync: false
+      - key: REVIEW_DASHBOARD_URL
+        sync: false
+      - key: CLERK_PUBLISHABLE_KEY
+        sync: false
+      - key: CLERK_SECRET_KEY
+        sync: false
+      - key: CLERK_SIGNING_SECRET
+        sync: false
+      - key: GITHUB_APP_ID
+        sync: false
+      - key: GITHUB_APP_SLUG
+        sync: false
+      - key: GITHUB_CLIENT_ID
+        sync: false
+      - key: GITHUB_CLIENT_SECRET
+        sync: false
+      - key: GITHUB_WEBHOOK_SECRET
+        sync: false
+      - key: GITHUB_PRIVATE_KEY_PATH
+        value: /etc/secrets/github-app-private-key.pem
+
+  - type: worker
+    name: draftly-worker
+    runtime: docker
+    region: oregon
+    plan: 1c-2g
+    branch: render-deployment
+    autoDeployTrigger: commit
+    dockerfilePath: ./docker/Dockerfile.render
+    dockerContext: .
+    dockerCommand: python -m workers.rq_worker
+    maxShutdownDelaySeconds: 300
+    envVars:
+      - key: ENVIRONMENT
+        value: production
+      - key: LOG_LEVEL
+        value: INFO
+      - key: RQ_ENABLED
+        value: "true"
+      - key: STRANDS_SESSION_STORAGE
+        value: database
+      - key: DATABASE_URL
+        sync: false
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: draftly-kv
+          property: connectionString
+      - key: DRAFTLY_ENABLED_PROVIDERS
+        sync: false
+      - key: GITHUB_APP_ID
+        sync: false
+      - key: GITHUB_APP_SLUG
+        sync: false
+      - key: GITHUB_PRIVATE_KEY_PATH
+        value: /etc/secrets/github-app-private-key.pem

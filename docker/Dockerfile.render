@@ -1,0 +1,42 @@
+ARG PYTHON_VERSION=3.11
+ARG UV_VERSION=0.12.10
+
+FROM ghcr.io/astral-sh/uv:${UV_VERSION} AS uv
+
+FROM python:${PYTHON_VERSION}-slim-bookworm AS builder
+
+ENV UV_COMPILE_BYTECODE=1 \
+    UV_LINK_MODE=copy
+
+COPY --from=uv /uv /uvx /usr/local/bin/
+
+WORKDIR /app
+
+COPY pyproject.toml uv.lock README.md ./
+RUN uv sync --frozen --no-dev --no-install-project
+
+FROM python:${PYTHON_VERSION}-slim-bookworm AS runtime
+
+ENV PATH="/app/.venv/bin:${PATH}" \
+    PYTHONPATH="/app/src" \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates git \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd --gid 1000 render-secrets \
+    && useradd --uid 10001 --gid render-secrets --create-home draftly
+
+WORKDIR /app
+
+COPY --from=builder --chown=draftly:render-secrets /app/.venv ./.venv
+COPY --chown=draftly:render-secrets src ./src
+COPY --chown=draftly:render-secrets workers ./workers
+COPY --chown=draftly:render-secrets scripts/bootstrap.py ./scripts/bootstrap.py
+
+USER draftly
+
+EXPOSE 10000
+
+CMD ["uvicorn", "draftly.app.api.app:app", "--host", "0.0.0.0", "--port", "10000"]

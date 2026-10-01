@@ -231,8 +231,7 @@ Before building the API image, read [API container packaging status](#8-api-cont
 
 ```bash
 # Build and push images
-docker build -f docker/Dockerfile.api -t draftly-api:latest .
-docker build -f docker/Dockerfile.worker -t draftly-worker:latest .
+docker build -f docker/Dockerfile.render -t draftly-backend:latest .
 docker push ...
 
 # Update ECS service (example)
@@ -289,9 +288,8 @@ Structured logs use `structlog` and output JSON. Key log events:
 
 ## 7. File Reference
 
-- `docker/Dockerfile` — Base image
-- `docker/Dockerfile.api` — API image (port 8000)
-- `docker/Dockerfile.worker` — Worker image (background processing)
+- `docker/Dockerfile.render` — Shared hardened API and worker image
+- `render.yaml` — Render Web Service, Background Worker, and Key Value Blueprint
 - `src/draftly/app/config.py` — All configuration with defaults
 - `src/draftly/workflows/runner.py` — WorkflowRunner (execution engine)
 - `src/draftly/workflows/context.py` — WorkflowContext (dependency bundle)
@@ -299,20 +297,24 @@ Structured logs use `structlog` and output JSON. Key log events:
 - `src/draftly/review/resume.py` — Review-resume helper
 - `src/draftly/observability/metrics.py` — Prometheus metrics
 
-## 8. API container packaging status
+## 8. Container packaging
 
-The [backend README](../../README.md#run-draftly) uses native API startup. The current [API Dockerfile](../../docker/Dockerfile.api) declares `CMD ["python", "main.py"]`, but copies only the virtual environment and `src/` into its runtime stage. It does not copy `main.py`. Its build stage also installs the project without explicitly copying the `README.md` referenced by the package manifest.
-
-The following are the intended build/run commands, **not a verified working deployment**. Correct the image's package inputs and runtime entry point before using them. This documentation change does not modify the Dockerfile.
+The API and RQ worker share one production image. It contains the application,
+worker entry point, bundled skills, migrations, and database bootstrap script;
+it excludes local environment files and secrets.
 
 ```bash
-docker build -f docker/Dockerfile.api -t draftly-api .
+docker build -f docker/Dockerfile.render -t draftly-backend .
 docker run --rm --env-file .env \
-  -p 8000:8000 \
+  -p 10000:10000 \
   -e REDIS_URL=redis://host.docker.internal:6379/0 \
-  draftly-api
+  draftly-backend
 ```
 
 On macOS and Windows, use `host.docker.internal` for host services reached from a container; configure the database hostname similarly if PostgreSQL runs on the host. Redis and the database are separate dependencies, and queued work also needs a running RQ worker. See [Redis and worker alternatives](redis.md#11-compose-and-rq-worker-alternatives).
 
-The `.env` must include model and embedding-provider access as well as database and Redis configuration. GitHub App operations additionally need the configured private key available at `GITHUB_PRIVATE_KEY_PATH`. No image build, cloud deployment, or end-to-end container run was performed as part of this README review.
+The `.env` must include model and embedding-provider access as well as database
+and Redis configuration. Mount the GitHub App private key read-only and set
+`GITHUB_PRIVATE_KEY_PATH` to the mounted path. See the
+[Render deployment guide](render.md) for the production Blueprint and secret
+configuration.

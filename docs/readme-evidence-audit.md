@@ -43,8 +43,7 @@ Searches included tracked files and an additional filesystem walk excluding `.gi
 | Integrated outcome | Dataset and route implementation | Merged PR → run → required review → approved delivery is expected, not demonstrated here |
 | Evaluation CLI | [Script](../scripts/run_evaluation.py) | `--live` and `--datasets` supported; inspect result status/errors because main returns zero after printing batch output |
 | Evaluation portability | [Dataset directory](../src/draftly/evaluation/datasets/) | Machine-specific repository paths and organization/project identifiers require adaptation |
-| API container | [Dockerfile.api](../docker/Dockerfile.api) | Runtime omits main.py; build also omits explicit README copy; document intended commands with packaging limitation |
-| Worker container | [Dockerfile.worker](../docker/Dockerfile.worker) | Copies secrets into image; preserve operational details and explicitly identify sensitive image handling |
+| API and worker container | [Dockerfile.render](../docker/Dockerfile.render) | Shared non-root image contains the API, worker, migrations, and bootstrap script while excluding local secrets |
 
 ## Editorial decisions
 

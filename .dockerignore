@@ -41,6 +41,7 @@ Thumbs.db
 .env
 .env.local
 .env.*.local
+secrets/
 
 # Docker
 docker-compose.override.yml
@@ -71,5 +72,6 @@ temp/
 .simulation/
 context/
 infra/
-scripts/
+scripts/**
+!scripts/bootstrap.py
 tests/

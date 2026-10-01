@@ -19,14 +19,16 @@ services:
   rq-worker:
     build:
       context: .
-      dockerfile: docker/Dockerfile.worker
-    command: ["workers.rq_worker"]
+      dockerfile: docker/Dockerfile.render
+    command: ["python", "-m", "workers.rq_worker"]
     env_file:
       - .env
     environment:
       - REDIS_URL=redis://redis:6379/0
       - DATABASE_URL=${DATABASE_URL}
-      - GITHUB_PRIVATE_KEY_PATH=secrets/private-key.pem
+      - GITHUB_PRIVATE_KEY_PATH=/etc/secrets/github-app-private-key.pem
+    volumes:
+      - ./secrets/private-key.pem:/etc/secrets/github-app-private-key.pem:ro
     depends_on:
       redis:
         condition: service_healthy

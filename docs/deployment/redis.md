@@ -295,12 +295,14 @@ Recreating Redis drops queued but unprocessed jobs. Drain the queues first or ex
 
 That worker reads `.env`, overrides `REDIS_URL` to `redis://redis:6379/0`, and waits for the Redis health check. Configure the same pgvector/cache settings for plain Redis. This command does not start the API.
 
-The current [worker Dockerfile](../../docker/Dockerfile.worker) copies the local `secrets/` directory into the image. Compose sets `GITHUB_PRIVATE_KEY_PATH=secrets/private-key.pem`; make the configured key available for GitHub App operations. A mounted key alone does not remove a key already baked into an image. Treat such an image as sensitive and do not publish it. Native workers avoid this container packaging issue.
+The shared [Render Dockerfile](../../docker/Dockerfile.render) never copies the
+local `secrets/` directory. Compose mounts the GitHub App key read-only at
+`/etc/secrets/github-app-private-key.pem`, matching the Render production path.
 
 To build and run a standalone worker locally with a read-only key mount:
 
 ```bash
-docker build -f docker/Dockerfile.worker -t draftly-worker .
+docker build -f docker/Dockerfile.render -t draftly-worker .
 docker run --rm --env-file .env \
   -e REDIS_URL=redis://host.docker.internal:6379/0 \
   -e GITHUB_PRIVATE_KEY_PATH=/run/secrets/private-key.pem \

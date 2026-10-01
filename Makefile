@@ -60,8 +60,9 @@ migrate:
 	python scripts/bootstrap.py
 
 docker-build:
-	docker build -f docker/Dockerfile.api -t draftly/api:latest .
-	docker build -f docker/Dockerfile.worker -t draftly/worker:latest .
+	docker build -f docker/Dockerfile.render -t draftly/backend:latest .
+	docker tag draftly/backend:latest draftly/api:latest
+	docker tag draftly/backend:latest draftly/worker:latest
 
 docker-push:
 	aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin $$(aws sts get-caller-identity --query Account --output text).dkr.ecr.us-east-1.amazonaws.com

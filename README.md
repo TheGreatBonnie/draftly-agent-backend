@@ -208,7 +208,8 @@ docker compose -f docker-compose.redis.yml exec redis redis-cli ping
 
 The Redis check should return `PONG`. The bootstrap script applies SQL migrations in filename order and checks connectivity. It handles some duplicate-object errors by skipping; it is not a version-tracking migration system.
 
-Start the worker container (builds `docker/Dockerfile.worker` and runs `workers.rq_worker` inside Docker):
+Start the worker container (builds the shared `docker/Dockerfile.render` image
+and runs `workers.rq_worker` inside Docker):
 
 ```bash
 docker compose -f docker-compose.redis.yml up -d --build rq-worker
@@ -388,6 +389,7 @@ Keep environment-specific procedures outside this entry-point README:
 
 - [Deploy to Amazon Bedrock AgentCore Runtime](docs/deployment/agentcore.md)
 - [Run, rebuild, and troubleshoot Redis and RQ workers](docs/deployment/redis.md#11-compose-and-rq-worker-alternatives)
+- [Deploy the API and worker to Render](docs/deployment/render.md)
 - [Prepare a production deployment](docs/deployment/production.md)
 
 ## Deploy to Amazon Bedrock AgentCore Runtime
