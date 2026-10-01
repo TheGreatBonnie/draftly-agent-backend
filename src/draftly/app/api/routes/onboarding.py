@@ -231,13 +231,6 @@ async def connect_github(
     from draftly.persistence.repositories.organizations import update_org_github
 
     info = await get_installation_info(body.installation_id)
-    owned = await request.app.state.draftly.dependencies.integrations.database.fetch_one(
-        "SELECT id FROM github_installations WHERE installation_id = $1 AND org_id = $2",
-        body.installation_id,
-        org_id,
-    )
-    if not owned:
-        raise HTTPException(status_code=403, detail="Complete GitHub authorization first")
     account = info.get("account")
     github_org = account.get("login") if isinstance(account, dict) else None
     if not isinstance(github_org, str) or not github_org:
