@@ -16,7 +16,12 @@ services:
     autoDeployTrigger: commit
     dockerfilePath: ./docker/Dockerfile.render
     dockerContext: .
-    dockerCommand: /bin/sh -c 'exec uvicorn draftly.app.api.app:app --host 0.0.0.0 --port "${PORT:-10000}"'
+    # No `/bin/sh -c` wrapper and no `exec` prefix. Render passes dockerCommand
+    # as a single argv token, so a nested shell wrapper arrives unsplit and
+    # fails with status 127 ("<whole string>: not found"). `exec` is a shell
+    # builtin, not a binary, so it must not be argv[0] either. uvicorn is on
+    # PATH via the image's ENV PATH, and Render's shell expands ${PORT:-10000}.
+    dockerCommand: uvicorn draftly.app.api.app:app --host 0.0.0.0 --port ${PORT:-10000}
     preDeployCommand: python scripts/bootstrap.py
     healthCheckPath: /health
     maxShutdownDelaySeconds: 120
@@ -38,6 +43,11 @@ services:
           property: connectionString
       - key: DRAFTLY_ENABLED_PROVIDERS
         sync: false
+      # requesty MUST stay in this list: factory.py hardcodes
+      # provider="requesty" for stage-research/stage-review/stage-rubric-grader,
+      # and the *_MODEL env vars override only the model id, not the provider.
+      - key: REQUESTY_API_KEY
+        sync: false
       - key: FRONTEND_URL
         sync: false
       - key: ALLOWED_ORIGINS
@@ -53,6 +63,12 @@ services:
       - key: CLERK_SECRET_KEY
         sync: false
       - key: CLERK_SIGNING_SECRET
+        sync: false
+      # GITHUB_TOKEN is mandatory: build_integrations() constructs
+      # GitHubClient unconditionally, and with no per-workflow installation id
+      # at startup the client builds GitHubAuth(), which raises
+      # "GITHUB_TOKEN is not configured." and the app exits before /health.
+      - key: GITHUB_TOKEN
         sync: false
       - key: GITHUB_APP_ID
         sync: false
@@ -95,6 +111,10 @@ services:
           name: draftly-kv
           property: connectionString
       - key: DRAFTLY_ENABLED_PROVIDERS
+        sync: false
+      # Same startup requirement as the web service: the worker calls
+      # create_application() and so constructs GitHubAuth().
+      - key: GITHUB_TOKEN
         sync: false
       - key: GITHUB_APP_ID
         sync: false

@@ -246,6 +246,19 @@ so verify the `enabled_providers_unknown` startup log line.
 Four provider keys cover five enabled providers: `mantle-openai` reuses
 `MANTLE_API_KEY` and differs only by endpoint.
 
+**`requesty` must stay in `DRAFTLY_ENABLED_PROVIDERS`.** `factory.py` hardcodes
+`provider="requesty"` for the three stage models (`stage-research`,
+`stage-review`, `stage-rubric-grader`). `RESEARCH_MODEL`, `REVIEW_MODEL`, and
+`RUBRIC_GRADER_MODEL` override only the model *id*, never the provider. The
+allowlist is enforced by `ModelRouter.is_enabled()`, so omitting Requesty makes
+startup raise `Provider 'requesty' is disabled by DRAFTLY_ENABLED_PROVIDERS`
+and the deploy crash-loops. `REQUESTY_API_KEY` is therefore mandatory too.
+
+`GITHUB_TOKEN` is also mandatory and is easy to miss: `build_integrations()`
+constructs `GitHubClient` unconditionally, and with no per-workflow
+installation id set at startup the client builds `GitHubAuth()`, which raises
+`GITHUB_TOKEN is not configured.` before the server binds its port.
+
 These are needed on the **web service**, not only on the worker. The API builds
 a `ModelRouter` at startup (`dependencies.build_models`), so provider
 credentials must be present at deploy time. The same four values must also be
@@ -290,8 +303,10 @@ Add these under Settings → Secrets and variables → Actions:
 | `ORCAROUTER_API_KEY` | OrcaRouter |
 | `NVIDIA_API_KEY` | NVIDIA |
 | `OPENROUTER_API_KEY` | OpenRouter |
+| `REQUESTY_API_KEY` | Required — the stage models are pinned to the requesty provider (7.2) |
+| `GITHUB_TOKEN` | Required — a GitHub personal access token; startup fails without it (7.2) |
 
-The four provider keys are required here for the same reason they are required
+The provider keys are required here for the same reason they are required
 on the Render web service: the worker runs the queued jobs, so a job that calls
 a model raises `MANTLE_API_KEY is not configured.` without them. Note that the
 worker builds a full `ModelRouter` at startup, yet does not fail immediately —
@@ -360,6 +375,12 @@ push event is evaluated against the pushed ref.
    after a manual dispatch
 4. `draftly-api` logs show no Redis or database connection errors
 5. `GET /health` returns `200` after a deploy
+
+Note that `GET /health/ready` currently returns `500`. This is a pre-existing
+bug unrelated to deployment — `api/routes/health.py` reads
+`application.dependencies.memory`, but `ApplicationDependencies` has no `memory`
+field, so the handler raises `AttributeError`. Use `/health` for liveness, which
+is what `healthCheckPath` is set to.
 
 ### 7.7 Known limits
 

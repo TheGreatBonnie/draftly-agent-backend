@@ -1,0 +1,116 @@
+"""Env vars without which the API (and the worker) cannot start.
+
+These are not optional integrations. `create_application()` ->
+`build_dependencies()` constructs them unconditionally during startup, so a
+missing value raises and the process exits **before** the server binds its
+port. Render then reports a crash-looping deploy with no `/health` at all,
+which is hard to diagnose without knowing the exact variable.
+
+Verified by running the built image and removing one variable at a time:
+
+* ``GITHUB_TOKEN``       -> RuntimeError: GITHUB_TOKEN is not configured.
+                            `build_integrations()` always builds `GitHubClient`,
+                            and `GitHubClient.__init__` falls back to
+                            `GitHubAuth()` when no installation id is set.
+                            The installation id is a ContextVar that is `None`
+                            outside a workflow run.
+* ``DATABASE_URL``       -> ConnectionRefusedError; the DatabaseClient connects
+                            in `start()`.
+* provider API keys      -> "No healthy Draftly model was available." The router
+                            resolves `fast`/`reasoning`/`research` models at
+                            startup, and `create_model()` raises when its key is
+                            absent.
+
+Slack and Discord are guarded (`if settings.slack_bot_token`), so they are
+deliberately absent from the required set.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+import yaml
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
+#: Vars whose absence prevents the process from starting.
+MANDATORY = (
+    "DATABASE_URL",
+    "GITHUB_TOKEN",
+    "REDIS_URL",
+    "CLERK_PUBLISHABLE_KEY",
+)
+
+
+def _web_services(blueprint: str) -> list[dict]:
+    doc = yaml.safe_load((REPO_ROOT / blueprint).read_text())
+    return [s for s in doc["services"] if s["type"] == "web"]
+
+
+@pytest.mark.parametrize("blueprint", ["render.yaml", "render.free.yaml"])
+@pytest.mark.parametrize("key", MANDATORY)
+def test_web_service_declares_mandatory_var(blueprint: str, key: str):
+    """The Blueprint must request every startup-mandatory variable."""
+    for service in _web_services(blueprint):
+        declared = {e["key"] for e in service.get("envVars", [])}
+        assert key in declared, (
+            f"{blueprint}/{service['name']}: {key} is not declared. Without it "
+            f"the app raises during startup and Render sees a crash loop, not a "
+            f"failing health check."
+        )
+
+
+@pytest.mark.parametrize("blueprint", ["render.yaml", "render.free.yaml"])
+def test_mandatory_vars_are_not_hardcoded(blueprint: str):
+    """Mandatory credentials must be `sync: false`, never inline values."""
+    for service in _web_services(blueprint):
+        for entry in service.get("envVars", []):
+            if entry["key"] in MANDATORY:
+                assert "value" not in entry, (
+                    f"{blueprint}/{service['name']}: {entry['key']} must be "
+                    f"`sync: false`, not an inline value in a public repo"
+                )
+
+
+def test_worker_declares_github_token():
+    """The worker builds the same app, so it needs GITHUB_TOKEN too."""
+    workflow = (REPO_ROOT / ".github/workflows/rq-worker.yml").read_text()
+    assert "GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}" in workflow, (
+        "rq-worker.yml must pass GITHUB_TOKEN; the worker calls "
+        "create_application() and exits without it"
+    )
+
+
+def test_worker_declares_provider_keys():
+    """Provider keys must reach the worker, which executes the queued jobs."""
+    workflow = (REPO_ROOT / ".github/workflows/rq-worker.yml").read_text()
+    for key in (
+        "MANTLE_API_KEY",
+        "ORCAROUTER_API_KEY",
+        "NVIDIA_API_KEY",
+        "OPENROUTER_API_KEY",
+    ):
+        assert f"{key}: ${{{{ secrets.{key} }}}}" in workflow, (
+            f"rq-worker.yml must pass {key}; without it queued jobs fail with "
+            f"'{key} is not configured.'"
+        )
+
+def test_requesty_key_is_declared_everywhere():
+    """factory.py hardcodes provider="requesty" for the stage models.
+
+    `RESEARCH_MODEL` / `REVIEW_MODEL` / `RUBRIC_GRADER_MODEL` override only the
+    model *id*; the provider is a literal in factory.py. Since the allowlist is
+    now enforced by `ModelRouter.is_enabled()`, omitting Requesty raises
+    "Provider 'requesty' is disabled by DRAFTLY_ENABLED_PROVIDERS" at startup.
+    """
+    for blueprint in ("render.yaml", "render.free.yaml"):
+        for service in _web_services(blueprint):
+            declared = {e["key"] for e in service.get("envVars", [])}
+            assert "REQUESTY_API_KEY" in declared, (
+                f"{blueprint}/{service['name']}: REQUESTY_API_KEY is required "
+                f"because the stage models are pinned to the requesty provider"
+            )
+
+    workflow = (REPO_ROOT / ".github/workflows/rq-worker.yml").read_text()
+    assert "REQUESTY_API_KEY: ${{ secrets.REQUESTY_API_KEY }}" in workflow
