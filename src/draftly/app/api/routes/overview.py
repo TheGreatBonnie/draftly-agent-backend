@@ -34,7 +34,7 @@ class OverviewSystem(BaseModel):
     agents_total: int
     data_sources_connected: int
     data_sources_total: int
-    evaluations_status: Literal["Running", "Idle", "Failed", "Unknown"]
+    evaluations_status: Literal["Running", "Idle", "Failed", "Unknown", "Needs review"]
     scheduler_status: Literal["Healthy", "Idle", "Unavailable"]
 
 
