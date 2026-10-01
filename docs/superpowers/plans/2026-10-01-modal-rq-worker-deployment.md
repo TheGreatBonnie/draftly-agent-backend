@@ -50,11 +50,11 @@
 
 ## Task 5: Verification
 
-- [ ] Run deployment, worker, and authentication tests.
-- [ ] Run the full test and lint suites.
-- [ ] Build the shared Docker image.
-- [ ] Run `graphify update .`.
-- [ ] Verify no secret material is staged.
+- [x] Run deployment, worker, and authentication tests.
+- [x] Run the full test and lint suites (repository-wide lint exposes unrelated baseline violations; changed files pass).
+- [x] Build the shared Docker image.
+- [x] Run `graphify update .`.
+- [x] Verify no secret material is staged.
 
 ## Acceptance Criteria
 
