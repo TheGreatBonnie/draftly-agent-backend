@@ -1,0 +1,37 @@
+name: deploy-modal-worker
+
+on:
+  push:
+    branches:
+      - modal-deployment
+    paths:
+      - infra/modal/**
+      - docker/Dockerfile.render
+      - pyproject.toml
+      - uv.lock
+      - src/**
+      - workers/**
+      - .github/workflows/deploy-modal-worker.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-modal-worker
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+      MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+      MODAL_ENVIRONMENT: main
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          version: "0.12.10"
+      - run: uv sync --frozen --extra dev
+      - run: uv run modal deploy --strategy rolling infra/modal/rq_worker.py

@@ -4,9 +4,20 @@ from __future__ import annotations
 
 import subprocess
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
+import yaml
+
 from infra.modal import rq_worker as modal_worker
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+WORKFLOW_PATH = REPO_ROOT / ".github/workflows/deploy-modal-worker.yml"
+
+
+def _deployment_workflow() -> dict[str, Any]:
+    assert WORKFLOW_PATH.exists(), "Modal deployment workflow is missing"
+    return yaml.load(WORKFLOW_PATH.read_text(), Loader=yaml.BaseLoader)
 
 
 def test_modal_worker_has_bounded_single_container_runtime() -> None:
@@ -51,3 +62,47 @@ def test_worker_process_uses_the_container_user_and_entrypoint(monkeypatch) -> N
         "user": "draftly",
         "group": "render-secrets",
     }
+
+
+def test_modal_deployment_tracks_the_modal_branch() -> None:
+    """A push to the deployment branch must publish the matching worker code."""
+    workflow = _deployment_workflow()
+
+    assert workflow["on"]["push"]["branches"] == ["modal-deployment"]
+    assert workflow["on"]["push"]["paths"] == [
+        "infra/modal/**",
+        "docker/Dockerfile.render",
+        "pyproject.toml",
+        "uv.lock",
+        "src/**",
+        "workers/**",
+        ".github/workflows/deploy-modal-worker.yml",
+    ]
+
+
+def test_modal_deployment_uses_only_modal_credentials() -> None:
+    """Application credentials belong in Modal Secret, not GitHub Actions."""
+    workflow = _deployment_workflow()
+    env = workflow["jobs"]["deploy"]["env"]
+
+    assert env == {
+        "MODAL_TOKEN_ID": "${{ secrets.MODAL_TOKEN_ID }}",
+        "MODAL_TOKEN_SECRET": "${{ secrets.MODAL_TOKEN_SECRET }}",
+        "MODAL_ENVIRONMENT": "main",
+    }
+
+
+def test_modal_deployment_uses_locked_dependencies_and_rolling_strategy() -> None:
+    """CI must deploy reproducibly without interrupting an active drain."""
+    workflow = _deployment_workflow()
+    steps = workflow["jobs"]["deploy"]["steps"]
+    uses = [step.get("uses") for step in steps]
+    commands = [step.get("run") for step in steps]
+
+    assert "actions/checkout@v4" in uses
+    assert "astral-sh/setup-uv@v5" in uses
+    assert "uv sync --frozen --extra dev" in commands
+    assert (
+        "uv run modal deploy --strategy rolling infra/modal/rq_worker.py"
+        in commands
+    )
