@@ -16,9 +16,7 @@ class EmptyDocuments:
 
 
 class EmptyReviews:
-    async def list_reviews(
-        self, *, status: str | None, org_id: str, limit: int
-    ) -> list[object]:
+    async def list_reviews(self, *, status: str | None, org_id: str, limit: int) -> list[object]:
         return []
 
 
@@ -27,6 +25,11 @@ class EmptyEvaluations:
         self, *, org_id: str, evaluation_type: None, limit: int
     ) -> list[dict[str, str]]:
         return []
+
+
+class EmptyPageQuality:
+    async def summary(self, org_id: str, days: int) -> dict[str, object]:
+        return {}
 
 
 def test_overview_returns_a_snapshot_for_the_verified_organization() -> None:
@@ -39,6 +42,7 @@ def test_overview_returns_a_snapshot_for_the_verified_organization() -> None:
                 documents=EmptyDocuments(),
                 reviews=EmptyReviews(),
                 evaluations=EmptyEvaluations(),
+                page_quality=EmptyPageQuality(),
             )
         )
     )
@@ -66,6 +70,7 @@ def test_overview_rejects_an_unsupported_activity_range() -> None:
                 documents=EmptyDocuments(),
                 reviews=EmptyReviews(),
                 evaluations=EmptyEvaluations(),
+                page_quality=EmptyPageQuality(),
             )
         )
     )
