@@ -48,6 +48,12 @@ def _web_services(blueprint: str) -> list[dict]:
     return [s for s in doc["services"] if s["type"] == "web"]
 
 
+def _application_services(blueprint: str) -> list[dict]:
+    """Return services that build the Draftly application container."""
+    doc = yaml.safe_load((REPO_ROOT / blueprint).read_text())
+    return [s for s in doc["services"] if s["type"] in {"web", "worker"}]
+
+
 @pytest.mark.parametrize("blueprint", ["render.yaml", "render.free.yaml"])
 @pytest.mark.parametrize("key", MANDATORY)
 def test_web_service_declares_mandatory_var(blueprint: str, key: str):
@@ -71,6 +77,20 @@ def test_mandatory_vars_are_not_hardcoded(blueprint: str):
                     f"{blueprint}/{service['name']}: {entry['key']} must be "
                     f"`sync: false`, not an inline value in a public repo"
                 )
+
+
+@pytest.mark.parametrize("blueprint", ["render.yaml", "render.free.yaml"])
+def test_application_services_receive_the_github_app_key_inline(blueprint: str):
+    """Containers without a secret-file mount must receive PEM material inline."""
+    for service in _application_services(blueprint):
+        entries = {entry["key"]: entry for entry in service.get("envVars", [])}
+        assert entries.get("GITHUB_APP_PRIVATE_KEY") == {
+            "key": "GITHUB_APP_PRIVATE_KEY",
+            "sync": False,
+        }, f"{blueprint}/{service['name']}: inline GitHub App PEM is not requested"
+        assert "GITHUB_PRIVATE_KEY_PATH" not in entries, (
+            f"{blueprint}/{service['name']}: declares a PEM path but mounts no secret file"
+        )
 
 
 def test_worker_declares_github_token():

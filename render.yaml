@@ -80,8 +80,13 @@ services:
         sync: false
       - key: GITHUB_WEBHOOK_SECRET
         sync: false
-      - key: GITHUB_PRIVATE_KEY_PATH
-        value: /etc/secrets/github-app-private-key.pem
+      # The App private key is injected as PEM text, not as a file: nothing in
+      # this image materialises /etc/secrets/github-app-private-key.pem, so
+      # GITHUB_PRIVATE_KEY_PATH alone left generate_jwt() raising FileNotFoundError
+      # and every GitHub App call returned HTTP 500. app_auth._load_private_key()
+      # reads GITHUB_APP_PRIVATE_KEY first and falls back to the path.
+      - key: GITHUB_APP_PRIVATE_KEY
+        sync: false
 
   - type: worker
     name: draftly-worker
@@ -120,5 +125,7 @@ services:
         sync: false
       - key: GITHUB_APP_SLUG
         sync: false
-      - key: GITHUB_PRIVATE_KEY_PATH
-        value: /etc/secrets/github-app-private-key.pem
+      # Same as the web service: PEM text via GITHUB_APP_PRIVATE_KEY. The RQ
+      # worker calls the GitHub App API too, so it needs a working key.
+      - key: GITHUB_APP_PRIVATE_KEY
+        sync: false

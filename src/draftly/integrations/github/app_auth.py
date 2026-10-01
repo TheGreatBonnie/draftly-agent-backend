@@ -25,14 +25,53 @@ def _get_private_key_path() -> str:
     return path if path else ""
 
 
+def _get_private_key_material() -> str:
+    """PEM supplied directly by the environment, with escaped newlines restored.
+
+    Container platforms inject secrets as environment variables, not files, so
+    the PEM usually arrives as one long single-line string. Deployments that do
+    materialise a file keep using _get_private_key_path().
+    """
+    material = os.getenv("GITHUB_APP_PRIVATE_KEY", "")
+    return material.replace("\\n", "\n") if material else ""
+
+
 def _get_webhook_secret() -> str:
     return os.getenv("GITHUB_WEBHOOK_SECRET", "")
 
 
+def _load_private_key() -> str:
+    """Resolve the App private key from the environment.
+
+    Order: inline PEM material, then a file on disk. A configured-but-absent
+    path used to raise a bare FileNotFoundError from Path.read_text(), which
+    surfaced as an opaque HTTP 500 on every GitHub App API call. Name the
+    variables instead so the failure is diagnosable from the response.
+    """
+    material = _get_private_key_material()
+    if material.strip():
+        return material
+
+    path = _get_private_key_path()
+    if path:
+        try:
+            return Path(path).read_text()
+        except OSError as exc:
+            raise RuntimeError(
+                f"GitHub App private key not readable at GITHUB_PRIVATE_KEY_PATH={path!r} "
+                f"({exc.__class__.__name__}). Either mount the PEM file at that path or "
+                "set GITHUB_APP_PRIVATE_KEY to the PEM contents."
+            ) from exc
+
+    raise RuntimeError(
+        "GitHub App private key is not configured. Set GITHUB_APP_PRIVATE_KEY to the PEM "
+        "contents, or GITHUB_PRIVATE_KEY_PATH to a readable PEM file."
+    )
+
+
 def generate_jwt() -> str:
     """Generate a JWT signed with the App's private key for GitHub API authentication."""
-    private_key_path = Path(_get_private_key_path())
-    private_key = private_key_path.read_text()
+    private_key = _load_private_key()
 
     payload = {
         "iat": int(time.time()) - 60,

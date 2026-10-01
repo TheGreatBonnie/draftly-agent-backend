@@ -104,8 +104,10 @@ services:
         sync: false
       - key: GITHUB_WEBHOOK_SECRET
         sync: false
-      - key: GITHUB_PRIVATE_KEY_PATH
-        value: /etc/secrets/github-app-private-key.pem
+      # Render injects PEM text as an environment value; this Blueprint does
+      # not mount a secret file inside the container.
+      - key: GITHUB_APP_PRIVATE_KEY
+        sync: false
       # Provider credentials. The API process itself builds a ModelRouter at
       # startup (dependencies.build_models), so these are required on the web
       # service too -- not only on the Actions worker. Without them
