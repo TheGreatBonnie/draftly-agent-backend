@@ -36,14 +36,26 @@ class FakeReviews:
         ][:limit]
 
 
-class FakeEvaluations:
-    def __init__(self, items: list[dict[str, Any]]) -> None:
-        self._items = items
+class FakePageQuality:
+    """Stands in for PageQualityRepository at the overview boundary."""
 
-    async def search(
-        self, *, org_id: str, evaluation_type: None, limit: int
-    ) -> list[dict[str, Any]]:
-        return [item for item in self._items if item["org_id"] == org_id][:limit]
+    def __init__(self, summary: dict[str, Any] | None = None) -> None:
+        self._summary = summary or {
+            "average_score": None,
+            "total_runs": 0,
+            "scored_pages": 0,
+            "total_pages": 0,
+            "passed": 0,
+            "needs_revision": 0,
+            "awaiting_human": 0,
+            "by_metric": [],
+            "trend": [],
+        }
+        self.calls: list[tuple[str, int]] = []
+
+    async def summary(self, org_id: str, days: int) -> dict[str, Any]:
+        self.calls.append((org_id, days))
+        return self._summary
 
 
 class FakeJobs:
@@ -114,20 +126,14 @@ class ConcurrentReviews(FakeReviews):
         return await super().list_reviews(status=status, org_id=org_id, limit=limit)
 
 
-class ConcurrentEvaluations(FakeEvaluations):
+class ConcurrentPageQuality(FakePageQuality):
     def __init__(self, barrier: ReadBarrier) -> None:
-        super().__init__([])
+        super().__init__()
         self.barrier = barrier
 
-    async def search(
-        self, *, org_id: str, evaluation_type: None, limit: int
-    ) -> list[dict[str, Any]]:
+    async def summary(self, org_id: str, days: int) -> dict[str, Any]:
         await self.barrier.arrive()
-        return await super().search(
-            org_id=org_id,
-            evaluation_type=evaluation_type,
-            limit=limit,
-        )
+        return await super().summary(org_id, days)
 
 
 class FakeGitHubInstallations:
@@ -155,39 +161,95 @@ def _empty_application() -> SimpleNamespace:
             repositories=SimpleNamespace(
                 documents=FakeDocuments([]),
                 reviews=FakeReviews([]),
-                evaluations=FakeEvaluations([]),
+                page_quality=FakePageQuality(),
             ),
             integrations=SimpleNamespace(database=object()),
         )
     )
 
 
-def test_evaluation_summary_exposes_only_dashboard_quality_dimensions() -> None:
-    evaluations = [
-        {
-            "score": 0.8,
-            "created_at": datetime(2026, 9, 9, tzinfo=UTC),
-            "metrics": {
-                "granular": [
-                    {"metric": "completeness", "score": 0.8},
-                    {"metric": "correctness", "score": 0.9},
-                    {"metric": "groundedness", "score": 0.7},
-                    {"metric": "relevance", "score": 0.85},
-                    {"metric": "expected_tools", "score": 1.0},
-                    {"metric": "node:content_blog", "score": 0.95},
-                ]
-            },
-        }
-    ]
+def _page_quality_summary(**overrides: Any) -> dict[str, Any]:
+    summary: dict[str, Any] = {
+        "average_score": 62.4,
+        "total_runs": 2,
+        "scored_pages": 7,
+        "total_pages": 9,
+        "passed": 5,
+        "needs_revision": 1,
+        "awaiting_human": 1,
+        "by_metric": [
+            {"metric": "detail", "average_score": 100.0, "sample_count": 7},
+            {"metric": "quality_score", "average_score": 62.4, "sample_count": 7},
+        ],
+        "trend": [
+            {"date": "2026-09-27", "average_score": 60.0, "run_count": 1},
+            {"date": "2026-09-28", "average_score": 65.0, "run_count": 1},
+        ],
+    }
+    summary.update(overrides)
+    return summary
 
-    summary, _, _ = overview._evaluation_summary(evaluations)
 
-    assert summary["dimensions"] == [
-        {"name": "completeness", "value": 80.0},
-        {"name": "correctness", "value": 90.0},
-        {"name": "groundedness", "value": 70.0},
-        {"name": "relevance", "value": 85.0},
-    ]
+def test_page_quality_maps_metrics_to_dimensions_and_trend() -> None:
+    evaluation, failed, status = overview._page_quality_evaluation_summary(_page_quality_summary())
+
+    assert evaluation == {
+        "average_score": 62.4,
+        "trend": 5.0,
+        "dimensions": [
+            {"name": "detail", "value": 100.0},
+            {"name": "quality_score", "value": 62.4},
+        ],
+    }
+    assert failed == 2
+    assert status == "Needs review"
+
+
+def test_page_quality_skips_unscored_metrics() -> None:
+    evaluation, _, _ = overview._page_quality_evaluation_summary(
+        _page_quality_summary(
+            by_metric=[
+                {"metric": "detail", "average_score": None, "sample_count": 0},
+            ]
+        )
+    )
+
+    assert evaluation["dimensions"] == []
+
+
+def test_page_quality_reports_unknown_when_nothing_is_scored() -> None:
+    evaluation, failed, status = overview._page_quality_evaluation_summary(
+        _page_quality_summary(
+            average_score=None,
+            scored_pages=0,
+            total_pages=0,
+            passed=0,
+            needs_revision=0,
+            awaiting_human=0,
+            by_metric=[],
+            trend=[],
+        )
+    )
+
+    assert evaluation == {"average_score": None, "trend": None, "dimensions": []}
+    assert failed == 0
+    assert status == "Unknown"
+
+
+def test_page_quality_is_idle_when_every_page_passed() -> None:
+    _, _, status = overview._page_quality_evaluation_summary(
+        _page_quality_summary(needs_revision=0, awaiting_human=0)
+    )
+
+    assert status == "Idle"
+
+
+def test_page_quality_trend_needs_two_scored_days() -> None:
+    evaluation, _, _ = overview._page_quality_evaluation_summary(
+        _page_quality_summary(trend=[{"date": "2026-09-28", "average_score": 65.0, "run_count": 1}])
+    )
+
+    assert evaluation["trend"] is None
 
 
 @pytest.mark.asyncio
@@ -250,33 +312,35 @@ async def test_overview_aggregates_org_scoped_document_review_and_evaluation_sig
                     ]
                 ),
                 reviews=FakeReviews([pending, decided]),
-                evaluations=FakeEvaluations(
-                    [
-                        {
-                            "id": "evaluation-latest",
-                            "org_id": "org-a",
-                            "score": 0.9,
-                            "status": "running",
-                            "created_at": now,
-                            "metrics": {"granular": [{"metric": "Correctness", "score": 0.9}]},
-                        },
-                        {
-                            "id": "evaluation-earlier",
-                            "org_id": "org-a",
-                            "score": 80,
-                            "status": "completed",
-                            "created_at": yesterday,
-                            "metrics": {"granular": [{"metric": "Correctness", "score": 80}]},
-                        },
-                        {
-                            "id": "evaluation-foreign",
-                            "org_id": "org-b",
-                            "score": 0,
-                            "status": "failed",
-                            "created_at": now,
-                            "metrics": {},
-                        },
-                    ]
+                page_quality=FakePageQuality(
+                    _page_quality_summary(
+                        average_score=85.0,
+                        total_runs=2,
+                        scored_pages=2,
+                        total_pages=2,
+                        passed=2,
+                        needs_revision=0,
+                        awaiting_human=0,
+                        by_metric=[
+                            {
+                                "metric": "correctness",
+                                "average_score": 85.0,
+                                "sample_count": 2,
+                            }
+                        ],
+                        trend=[
+                            {
+                                "date": yesterday.date().isoformat(),
+                                "average_score": 80.0,
+                                "run_count": 1,
+                            },
+                            {
+                                "date": now.date().isoformat(),
+                                "average_score": 90.0,
+                                "run_count": 1,
+                            },
+                        ],
+                    )
                 ),
             )
         )
@@ -300,7 +364,7 @@ async def test_overview_aggregates_org_scoped_document_review_and_evaluation_sig
         "integration_issues": 3,
         "stale_documentation": 1,
     }
-    assert snapshot["system"]["evaluations_status"] == "Running"
+    assert snapshot["system"]["evaluations_status"] == "Idle"
     assert snapshot["recent_changes"] == [
         {
             "id": "doc-a",
@@ -481,7 +545,7 @@ async def test_overview_starts_independent_source_reads_concurrently() -> None:
     application.dependencies.integrations.database = None
     application.dependencies.repositories.documents = ConcurrentDocuments(barrier)
     application.dependencies.repositories.reviews = ConcurrentReviews(barrier)
-    application.dependencies.repositories.evaluations = ConcurrentEvaluations(barrier)
+    application.dependencies.repositories.page_quality = ConcurrentPageQuality(barrier)
 
     snapshot = await asyncio.wait_for(
         build_overview_snapshot(application, "org-a", 14),

@@ -3,15 +3,55 @@
 from __future__ import annotations
 
 import asyncio
-from collections import defaultdict
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from draftly.persistence.repositories.github import list_github_workflows_record
 
-DASHBOARD_EVALUATION_DIMENSIONS = frozenset(
-    {"completeness", "correctness", "groundedness", "relevance"}
-)
+
+def _page_quality_evaluation_summary(
+    page_quality: dict[str, Any],
+) -> tuple[dict[str, Any], int, str]:
+    """Adapt a PageQualityRepository summary to the overview snapshot shape.
+
+    The snapshot keeps its harness-era keys (average_score, trend, dimensions)
+    so the frontend needs no change; only the data source moved. Trend is the
+    last scored day minus the first scored day, or None when fewer than two
+    days carry scores.
+    """
+    by_metric = page_quality.get("by_metric") or []
+    dimensions = sorted(
+        (
+            {"name": str(metric.get("metric")), "value": float(metric.get("average_score"))}
+            for metric in by_metric
+            if metric.get("metric") and metric.get("average_score") is not None
+        ),
+        key=lambda item: item["name"],
+    )
+    scored_days = [
+        float(point.get("average_score"))
+        for point in page_quality.get("trend") or []
+        if point.get("average_score") is not None
+    ]
+    trend = round(scored_days[-1] - scored_days[0], 2) if len(scored_days) >= 2 else None
+    needs_work = int(page_quality.get("needs_revision") or 0) + int(
+        page_quality.get("awaiting_human") or 0
+    )
+    if int(page_quality.get("total_pages") or 0) == 0:
+        status = "Unknown"
+    elif needs_work:
+        status = "Needs review"
+    else:
+        status = "Idle"
+    return (
+        {
+            "average_score": page_quality.get("average_score"),
+            "trend": trend,
+            "dimensions": dimensions,
+        },
+        needs_work,
+        status,
+    )
 
 
 def _value(record: Any, key: str, default: Any = None) -> Any:
@@ -102,58 +142,6 @@ def _mean(scores: list[float]) -> float | None:
 
 def _sort_key(record: Any, field: str) -> datetime:
     return _utc_datetime(_value(record, field)) or datetime.min.replace(tzinfo=UTC)
-
-
-def _evaluation_summary(evaluations: list[Any]) -> tuple[dict[str, Any], int, str]:
-    ordered = sorted(evaluations, key=lambda item: _sort_key(item, "created_at"), reverse=True)
-    scores = [
-        score for item in ordered if (score := _normalize_score(_value(item, "score"))) is not None
-    ]
-    average = _mean(scores)
-    half = len(scores) // 2
-    trend = None
-    if half:
-        latest = _mean(scores[:half])
-        previous = _mean(scores[half : half * 2])
-        if latest is not None and previous is not None:
-            trend = round(latest - previous, 2)
-
-    dimensions: dict[str, list[float]] = defaultdict(list)
-    for evaluation in ordered:
-        metrics = _value(evaluation, "metrics", {})
-        granular = metrics.get("granular", []) if isinstance(metrics, dict) else []
-        for item in granular if isinstance(granular, list) else []:
-            if not isinstance(item, dict) or not item.get("metric"):
-                continue
-            metric_name = str(item["metric"]).strip().lower()
-            if metric_name not in DASHBOARD_EVALUATION_DIMENSIONS:
-                continue
-            score = _normalize_score(item.get("score"))
-            if score is not None:
-                dimensions[metric_name].append(score)
-
-    statuses = [_normalized_status(_value(item, "status")) for item in ordered]
-    if any(status in {"running", "queued"} for status in statuses):
-        status = "Running"
-    elif statuses and statuses[0] == "failed":
-        status = "Failed"
-    elif statuses:
-        status = "Idle"
-    else:
-        status = "Unknown"
-
-    return (
-        {
-            "average_score": average,
-            "trend": trend,
-            "dimensions": [
-                {"name": name, "value": _mean(values)}
-                for name, values in sorted(dimensions.items())
-            ],
-        },
-        sum(status == "failed" for status in statuses),
-        status,
-    )
 
 
 def _recent_changes(documents: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -325,7 +313,7 @@ async def build_overview_snapshot(application: Any, org_id: str, days: int) -> d
         documents,
         pending_reviews,
         reviews,
-        evaluations,
+        page_quality,
         workflows,
         integration_health,
         scheduler_status,
@@ -335,11 +323,7 @@ async def build_overview_snapshot(application: Any, org_id: str, days: int) -> d
         repositories.documents.list_by_org(org_id=org_id, limit=1000),
         repositories.reviews.list_reviews(status="pending", org_id=org_id, limit=200),
         repositories.reviews.list_reviews(status=None, org_id=org_id, limit=1000),
-        repositories.evaluations.search(
-            org_id=org_id,
-            evaluation_type=None,
-            limit=100,
-        ),
+        repositories.page_quality.summary(org_id, days),
         workflow_read,
         _integration_health(repositories, database, org_id),
         _scheduler_status(repositories, org_id),
@@ -349,7 +333,9 @@ async def build_overview_snapshot(application: Any, org_id: str, days: int) -> d
     data_sources_connected, integration_issues = integration_health
     agent_count, agents_online = agent_health
 
-    evaluation, failed_evaluations, evaluations_status = _evaluation_summary(evaluations)
+    evaluation, failed_evaluations, evaluations_status = _page_quality_evaluation_summary(
+        page_quality
+    )
     workflow_summary, active_workflows = _workflow_snapshot(workflows)
     now = datetime.now(UTC)
     activity = _empty_activity(days, now)
