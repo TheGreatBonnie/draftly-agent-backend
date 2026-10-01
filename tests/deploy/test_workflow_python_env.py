@@ -112,8 +112,9 @@ def test_github_app_private_key_is_mapped_from_secrets():
     """
     text = (REPO_ROOT / ".github/workflows/rq-worker.yml").read_text()
     assert "$GITHUB_APP_PRIVATE_KEY" in text, "expected the PEM to be materialized"
-    assert "GITHUB_APP_PRIVATE_KEY: ${{ secrets.GITHUB_APP_PRIVATE_KEY }}" in text, (
-        "GITHUB_APP_PRIVATE_KEY must be mapped from secrets into the step env"
+    assert "GITHUB_APP_PRIVATE_KEY: ${{ secrets.DRAFTLY_GITHUB_APP_PRIVATE_KEY }}" in text, (
+        "GITHUB_APP_PRIVATE_KEY must be mapped from a secret into the step env "
+        "(secret name carries the DRAFTLY_ prefix because GitHub reserves GITHUB_)"
     )
 
 
@@ -127,8 +128,52 @@ def test_requesty_key_is_not_required_by_the_worker():
 
 
 def test_every_referenced_secret_is_declared_in_the_docs():
-    """Each secrets.* reference must be documented in the deployment guide."""
+    """Each secrets.* reference must be documented in the deployment guide.
+
+    Compared on the suffix without the DRAFTLY_ prefix, because the guide
+    documents the env var names the application reads.
+    """
     guide = (REPO_ROOT / "docs/deployment/render.md").read_text()
     for path in WORKFLOWS:
         for name in set(re.findall(r"secrets\.([A-Z_0-9]+)", path.read_text())):
-            assert name in guide, f"{name} (used by {path.name}) is undocumented"
+            assert name.removeprefix("DRAFTLY_") in guide, (
+                f"{name} (used by {path.name}) is undocumented"
+            )
+
+
+def test_no_secret_name_uses_the_reserved_github_prefix():
+    """GitHub rejects secret names starting with `GITHUB_`.
+
+    The prefix is reserved for GitHub's own context variables, so a secret
+    named `GITHUB_TOKEN` can never be created -- the UI refuses with
+    "Secret names must not start with GITHUB_." and any `secrets.GITHUB_*`
+    reference silently resolves to an empty string at runtime.
+
+    The application still needs those *environment variable* names, so the
+    workflow maps a `DRAFTLY_`-prefixed secret onto the expected env var.
+    """
+    offenders = {
+        path.name: sorted(
+            {n for n in re.findall(r"secrets\.([A-Z_0-9]+)", path.read_text())
+             if n.startswith("GITHUB_")}
+        )
+        for path in WORKFLOWS
+    }
+    for filename, names in offenders.items():
+        assert not names, (
+            f"{filename} references uncreatable secrets {names}. GitHub reserves "
+            f"the GITHUB_ prefix; use DRAFTLY_-prefixed secret names mapped onto "
+            f"the env vars the app reads."
+        )
+
+
+@pytest.mark.parametrize(
+    "env_var",
+    ["GITHUB_TOKEN", "GITHUB_APP_ID", "GITHUB_APP_SLUG", "GITHUB_APP_PRIVATE_KEY"],
+)
+def test_github_env_vars_are_supplied_by_draftly_prefixed_secrets(env_var: str):
+    """The app reads GITHUB_* from the environment; the secret must be renamed."""
+    text = (REPO_ROOT / ".github/workflows/rq-worker.yml").read_text()
+    assert f"{env_var}: ${{{{ secrets.DRAFTLY_{env_var} }}}}" in text, (
+        f"{env_var} must be mapped from secrets.DRAFTLY_{env_var}"
+    )

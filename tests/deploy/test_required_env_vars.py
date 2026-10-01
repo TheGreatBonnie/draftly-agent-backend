@@ -74,9 +74,13 @@ def test_mandatory_vars_are_not_hardcoded(blueprint: str):
 
 
 def test_worker_declares_github_token():
-    """The worker builds the same app, so it needs GITHUB_TOKEN too."""
+    """The worker builds the same app, so it needs GITHUB_TOKEN too.
+
+    The secret is DRAFTLY_-prefixed because GitHub reserves the GITHUB_
+    prefix and refuses to create such secrets; the env var keeps its name.
+    """
     workflow = (REPO_ROOT / ".github/workflows/rq-worker.yml").read_text()
-    assert "GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}" in workflow, (
+    assert "GITHUB_TOKEN: ${{ secrets.DRAFTLY_GITHUB_TOKEN }}" in workflow, (
         "rq-worker.yml must pass GITHUB_TOKEN; the worker calls "
         "create_application() and exits without it"
     )

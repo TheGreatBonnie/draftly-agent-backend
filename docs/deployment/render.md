@@ -306,14 +306,14 @@ Add these under Settings → Secrets and variables → Actions:
 | --- | --- |
 | `DATABASE_URL` | Neon connection string (same value as on Render) |
 | `REDIS_URL` | Render `draftly-kv` **external** connection string (`rediss://...`) |
-| `GITHUB_APP_ID` | GitHub App settings |
-| `GITHUB_APP_SLUG` | GitHub App settings |
-| `GITHUB_APP_PRIVATE_KEY` | Full PEM including `BEGIN`/`END` lines |
+| `DRAFTLY_GITHUB_APP_ID` | GitHub App settings |
+| `DRAFTLY_GITHUB_APP_SLUG` | GitHub App settings |
+| `DRAFTLY_GITHUB_APP_PRIVATE_KEY` | Full PEM including `BEGIN`/`END` lines |
 | `MANTLE_API_KEY` | Mantle — serves both `mantle` and `mantle-openai` |
 | `ORCAROUTER_API_KEY` | OrcaRouter |
 | `NVIDIA_API_KEY` | NVIDIA |
 | `OPENROUTER_API_KEY` | OpenRouter |
-| `GITHUB_TOKEN` | Required — a GitHub personal access token; startup fails without it (7.2) |
+| `DRAFTLY_GITHUB_TOKEN` | Required — a GitHub personal access token; startup fails without it (7.2) |
 
 The provider keys are required here for the same reason they are required
 on the Render web service: the worker runs the queued jobs, so a job that calls
@@ -353,6 +353,16 @@ return as soon as every queue is empty rather than blocking forever.
 GitHub automatically disables scheduled workflows in public repositories after
 60 days without repository activity. Re-enable by running the workflow once
 manually.
+
+**GitHub-reserved secret names.** GitHub refuses to create a secret whose name
+starts with `GITHUB_` ("Secret names must not start with GITHUB_"), and a
+`secrets.GITHUB_*` reference silently resolves to an empty string. The GitHub
+App credentials are therefore stored as `DRAFTLY_GITHUB_TOKEN`,
+`DRAFTLY_GITHUB_APP_ID`, `DRAFTLY_GITHUB_APP_SLUG`, and
+`DRAFTLY_GITHUB_APP_PRIVATE_KEY`; the workflow maps each onto the env var name
+the application reads (`GITHUB_TOKEN`, `GITHUB_APP_ID`, ...). This applies to
+Actions only — Render has no such restriction, so the variables there keep
+their plain names.
 
 #### The workflows must exist on the default branch
 
