@@ -100,3 +100,35 @@ def test_worker_workflow_uses_uv_run():
         "rq-worker.yml must invoke the worker through `uv run` or it fails "
         "with the same ModuleNotFoundError as migrate.yml"
     )
+
+
+def test_github_app_private_key_is_mapped_from_secrets():
+    """The PEM must be mapped into env explicitly.
+
+    A bare `$GITHUB_APP_PRIVATE_KEY` in a `run:` block is NOT populated from
+    repository secrets -- only `${{ secrets.X }}` interpolation is. Without the
+    mapping the workflow silently writes an empty .pem and every GitHub App
+    operation fails later with a confusing error.
+    """
+    text = (REPO_ROOT / ".github/workflows/rq-worker.yml").read_text()
+    assert "$GITHUB_APP_PRIVATE_KEY" in text, "expected the PEM to be materialized"
+    assert "GITHUB_APP_PRIVATE_KEY: ${{ secrets.GITHUB_APP_PRIVATE_KEY }}" in text, (
+        "GITHUB_APP_PRIVATE_KEY must be mapped from secrets into the step env"
+    )
+
+
+def test_requesty_key_is_not_required_by_the_worker():
+    """Requesty is optional; the allowlist fallback covers the stage models."""
+    text = (REPO_ROOT / ".github/workflows/rq-worker.yml").read_text()
+    assert "REQUESTY_API_KEY" not in text, (
+        "rq-worker.yml should not require REQUESTY_API_KEY; resolve_model falls "
+        "back by capability when Requesty is disabled"
+    )
+
+
+def test_every_referenced_secret_is_declared_in_the_docs():
+    """Each secrets.* reference must be documented in the deployment guide."""
+    guide = (REPO_ROOT / "docs/deployment/render.md").read_text()
+    for path in WORKFLOWS:
+        for name in set(re.findall(r"secrets\.([A-Z_0-9]+)", path.read_text())):
+            assert name in guide, f"{name} (used by {path.name}) is undocumented"

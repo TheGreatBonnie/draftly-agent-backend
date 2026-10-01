@@ -54,9 +54,6 @@ jobs:
       ORCAROUTER_API_KEY: ${{ secrets.ORCAROUTER_API_KEY }}
       NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
       OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-      # requesty MUST stay in DRAFTLY_ENABLED_PROVIDERS: factory.py hardcodes
-      # provider="requesty" for stage-research/stage-review/stage-rubric-grader.
-      REQUESTY_API_KEY: ${{ secrets.REQUESTY_API_KEY }}
     steps:
       # MUST pin the ref. For `schedule`, GITHUB_SHA is the last commit on the
       # DEFAULT branch (master), which does not contain resolve_burst_mode().
@@ -80,7 +77,12 @@ jobs:
       # The worker expects a PEM file on disk at this path (it reads the
       # same value Render mounts as a secret file). It must be written at
       # runtime: .dockerignore and the public repo both rule out committing it.
+      # The secret MUST be mapped into env explicitly -- a bare
+      # $GITHUB_APP_PRIVATE_KEY is not populated from secrets automatically and
+      # would silently write an empty file.
       - name: Materialize GitHub App private key
+        env:
+          GITHUB_APP_PRIVATE_KEY: ${{ secrets.GITHUB_APP_PRIVATE_KEY }}
         run: |
           mkdir -p /etc/secrets
           printf '%s\n' "$GITHUB_APP_PRIVATE_KEY" > /etc/secrets/github-app-private-key.pem
