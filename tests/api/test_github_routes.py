@@ -32,17 +32,20 @@ def app():
 @pytest.fixture()
 def pinned_settings(monkeypatch):
     monkeypatch.setattr(github.settings, "github_app_slug", "draftly")
-    monkeypatch.setattr(github.settings, "github_client_id", "client_1")
-    monkeypatch.setattr(github.settings, "github_client_secret", "secret_1")
+    monkeypatch.setattr(github.settings, "frontend_url", "https://app.example.com")
 
 
-def test_install_url_uses_server_side_one_time_state(app, pinned_settings):
+def test_install_url_sets_return_to_cookie_and_returns_direct_github_url(app, pinned_settings):
     with TestClient(app) as client:
-        response = client.get("/github/install-url?return_to=/integrations/github")
+        response = client.get("/github/install-url?return_to=/onboarding/github")
     assert response.status_code == 200
-    assert "/github/setup-start?state=" in response.json()["install_url"]
-    db = app.state.draftly.dependencies.integrations.database
-    assert db.execute.await_args.args[3:6] == ("org_1", "user_1", "/integrations/github")
+    # Pre-0ac50e8 contract: the install URL points straight at github.com, so the
+    # return-to cookie is planted on the caller's own origin and GitHub's
+    # setup-callback (registered on that same origin) receives it.
+    assert response.json()["install_url"] == "https://github.com/apps/draftly/installations/new"
+    assert 'gh_install_return_to="/onboarding/github"' in response.headers["set-cookie"]
+    assert "HttpOnly" in response.headers["set-cookie"]
+    assert "Path=/api" in response.headers["set-cookie"]
 
 
 def test_install_url_rejects_external_return_path(app, pinned_settings):
@@ -51,39 +54,44 @@ def test_install_url_rejects_external_return_path(app, pinned_settings):
     assert response.status_code == 400
 
 
-def test_setup_start_sets_backend_cookie(app, pinned_settings):
+def test_setup_callback_redirects_with_return_to_cookie(app, pinned_settings):
     with TestClient(app) as client:
-        response = client.get("/github/setup-start?state=state_1", follow_redirects=False)
-    assert response.status_code == 307
-    assert response.headers["location"] == "https://github.com/apps/draftly/installations/new"
-    assert "github_setup_state=state_1" in response.headers["set-cookie"]
-    assert "HttpOnly" in response.headers["set-cookie"]
-
-
-def test_setup_callback_rejects_unbound_installation(app, pinned_settings):
-    with TestClient(app) as client:
-        response = client.get(
-            "/github/setup-callback?installation_id=42&setup_action=install",
-            follow_redirects=False,
-        )
-    assert response.status_code == 400
-
-
-def test_setup_callback_requires_user_authorization(app, pinned_settings):
-    with TestClient(app) as client:
-        client.cookies.set("github_setup_state", "state_1")
+        client.cookies.set("gh_install_return_to", "/onboarding/github")
         response = client.get(
             "/github/setup-callback?installation_id=42&setup_action=install",
             follow_redirects=False,
         )
     assert response.status_code == 307
-    assert response.headers["location"].startswith("https://github.com/login/oauth/authorize?")
-    assert "state=state_1" in response.headers["location"]
-    db = app.state.draftly.dependencies.integrations.database
-    db.execute.assert_awaited_with(
-        "UPDATE integration_oauth_states SET installation_id = $1 WHERE nonce = $2",
-        42,
-        "state_1",
+    assert response.headers["location"] == (
+        f"{github.settings.frontend_url}/onboarding/github?installation_id=42"
+    )
+    assert "gh_install_return_to=" in response.headers["set-cookie"]
+
+
+def test_setup_callback_falls_back_without_cookie(app, pinned_settings):
+    """No cookie must still redirect, not 400: the endpoint is GitHub's Setup URL
+    and GitHub will not resend the browser if we reject the request."""
+    with TestClient(app) as client:
+        response = client.get(
+            "/github/setup-callback?installation_id=42&setup_action=install",
+            follow_redirects=False,
+        )
+    assert response.status_code == 307
+    assert response.headers["location"] == (
+        f"{github.settings.frontend_url}/integrations/github?installation_id=42"
+    )
+
+
+def test_setup_callback_rejects_external_return_path(app, pinned_settings):
+    with TestClient(app) as client:
+        client.cookies.set("gh_install_return_to", "https://evil.example")
+        response = client.get(
+            "/github/setup-callback?installation_id=42&setup_action=install",
+            follow_redirects=False,
+        )
+    assert response.status_code == 307
+    assert response.headers["location"] == (
+        f"{github.settings.frontend_url}/integrations/github?installation_id=42"
     )
 
 
