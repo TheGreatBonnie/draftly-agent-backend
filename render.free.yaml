@@ -1,0 +1,88 @@
+# Free-tier Blueprint ($0, no payment card).
+#
+# Differences from render.yaml:
+#   - keyvalue + web run on the `free` plan
+#   - draftly-kv accepts external connections so the GitHub Actions worker
+#     (whose egress IP is not statically assignable) can reach it
+#   - the `worker` service is REMOVED: Render has no free tier for
+#     `type: worker`. The RQ worker runs as a short-lived job in
+#     .github/workflows/rq-worker.yml instead.
+#   - `preDeployCommand` is ABSENT (it is present in render.yaml). Render
+#     states the pre-deploy command is "available for paid web services,
+#     private services, and background workers", so a free web service
+#     silently ignores it and migrations would never run. Migrations run
+#     from .github/workflows/migrate.yml instead.
+#   - `persistenceMode` is ABSENT: free Key Value is in-memory only.
+#
+# Security note: ipAllowList 0.0.0.0/0 exposes the queue to the internet,
+# protected only by the instance password. It holds queued job IDs only.
+# Revert to [] after the demo if the worker moves to a static egress IP.
+
+services:
+  - type: keyvalue
+    name: draftly-kv
+    region: oregon
+    plan: free
+    maxmemoryPolicy: noeviction
+    ipAllowList:
+      - source: 0.0.0.0/0
+        description: github-actions-runners
+
+  - type: web
+    name: draftly-api
+    runtime: docker
+    region: oregon
+    plan: free
+    branch: render-deployment
+    autoDeployTrigger: commit
+    dockerfilePath: ./docker/Dockerfile.render
+    dockerContext: .
+    dockerCommand: /bin/sh -c 'exec uvicorn draftly.app.api.app:app --host 0.0.0.0 --port "${PORT:-10000}"'
+    healthCheckPath: /health
+    maxShutdownDelaySeconds: 120
+    envVars:
+      - key: ENVIRONMENT
+        value: production
+      - key: LOG_LEVEL
+        value: INFO
+      - key: RQ_ENABLED
+        value: "true"
+      - key: STRANDS_SESSION_STORAGE
+        value: database
+      - key: DATABASE_URL
+        sync: false
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: draftly-kv
+          property: connectionString
+      - key: DRAFTLY_ENABLED_PROVIDERS
+        sync: false
+      - key: FRONTEND_URL
+        sync: false
+      - key: ALLOWED_ORIGINS
+        sync: false
+      - key: PUBLIC_API_URL
+        sync: false
+      - key: APP_URL
+        sync: false
+      - key: REVIEW_DASHBOARD_URL
+        sync: false
+      - key: CLERK_PUBLISHABLE_KEY
+        sync: false
+      - key: CLERK_SECRET_KEY
+        sync: false
+      - key: CLERK_SIGNING_SECRET
+        sync: false
+      - key: GITHUB_APP_ID
+        sync: false
+      - key: GITHUB_APP_SLUG
+        sync: false
+      - key: GITHUB_CLIENT_ID
+        sync: false
+      - key: GITHUB_CLIENT_SECRET
+        sync: false
+      - key: GITHUB_WEBHOOK_SECRET
+        sync: false
+      - key: GITHUB_PRIVATE_KEY_PATH
+        value: /etc/secrets/github-app-private-key.pem
