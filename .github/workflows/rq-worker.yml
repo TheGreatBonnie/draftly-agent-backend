@@ -90,8 +90,11 @@ jobs:
       # are empty -- no SIGTERM needed. `timeout 330` is only a backstop
       # for a job that hangs. Do NOT add `--max-idle-time`: that is an `rq`
       # CLI flag, and workers/rq_worker.py does not parse argv.
+      # `uv run` picks up the project environment from the `uv sync` step; a
+      # bare `python` would use the runner's system interpreter and fail with
+      # "ModuleNotFoundError: No module named 'dotenv'".
       - name: Drain the queues
-        run: timeout 330 python -m workers.rq_worker
+        run: timeout 330 uv run python -m workers.rq_worker
         env:
           GITHUB_PRIVATE_KEY_PATH: /etc/secrets/github-app-private-key.pem
           GITHUB_APP_ID: ${{ secrets.GITHUB_APP_ID }}
