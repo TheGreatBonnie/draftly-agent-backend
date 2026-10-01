@@ -45,4 +45,8 @@ jobs:
         run: uv sync --frozen --no-dev
 
       - name: Run migrations
-        run: python scripts/bootstrap.py
+        # `uv run` resolves the project environment created by the `uv sync`
+        # step above. A bare `python` uses the runner's system interpreter,
+        # which has none of the project's dependencies and dies with
+        # "ModuleNotFoundError: No module named 'dotenv'".
+        run: uv run python scripts/bootstrap.py
