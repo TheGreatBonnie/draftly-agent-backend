@@ -42,7 +42,16 @@ jobs:
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
       REDIS_URL: ${{ secrets.REDIS_URL }}
     steps:
+      # MUST pin the ref. For `schedule`, GITHUB_SHA is the last commit on the
+      # DEFAULT branch (master), which does not contain resolve_burst_mode().
+      # Checking out master would run worker.work() with burst=False, block on
+      # BLPOP forever, and get SIGKILLed by `timeout 330` on every run.
+      # This is also what lets the workflow file live on master (required for
+      # schedule/workflow_dispatch to fire at all) while running the code from
+      # render-deployment that actually has the burst gate.
       - uses: actions/checkout@v4
+        with:
+          ref: render-deployment
 
       - name: Install uv
         uses: astral-sh/setup-uv@v5

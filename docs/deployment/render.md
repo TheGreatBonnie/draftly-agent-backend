@@ -217,6 +217,28 @@ GitHub automatically disables scheduled workflows in public repositories after
 60 days without repository activity. Re-enable by running the workflow once
 manually.
 
+#### The workflows must exist on the default branch
+
+`draftly-agent-backend`'s default branch is **`master`**, not
+`render-deployment`. GitHub's documentation states that for the `schedule`
+event "Scheduled workflows will only run on the default branch", and for
+`workflow_dispatch` that "This event will only trigger a workflow run if the
+workflow file exists on the default branch."
+
+**If `.github/workflows/rq-worker.yml` is not present on `master`, the schedule
+will never fire and the "Run workflow" button will not appear.** Copy both
+workflow files onto `master` to activate them.
+
+Because of that constraint the worker workflow pins its checkout to
+`ref: render-deployment`. For a `schedule` run, `GITHUB_SHA` is the last commit
+on the default branch, and `master` does not contain `resolve_burst_mode()`;
+without the pin it would call `worker.work(burst=False)`, block on `BLPOP`
+forever, and be killed by the 330-minute timeout on every run.
+
+The `migrate` workflow is triggered by `push` to `render-deployment` rather
+than by a schedule, so it does not depend on which branch holds the file — a
+push event is evaluated against the pushed ref.
+
 ### 7.5 Verify
 
 1. Actions tab shows a green `rq-worker` run
