@@ -10,7 +10,9 @@ Usage:
 
 from __future__ import annotations
 
+import os
 import signal
+from collections.abc import Mapping
 from typing import Any
 
 import structlog
@@ -25,6 +27,18 @@ from draftly.observability.logging import configure_logging
 from draftly.workflows.documentation.reconciliation import reconcile_stale_on_boot
 
 ONBOARDING_INIT_TASK = "onboarding.initialize"
+
+
+def resolve_burst_mode(env: Mapping[str, str] | None = None) -> bool:
+    """Return True when the worker should drain-and-exit instead of blocking.
+
+    GitHub Actions runs the worker as a short-lived job, so it must exit once
+    the queues are empty instead of blocking on BLPOP forever. Only the exact
+    string "1" enables it, so a typo never silently changes worker lifetime
+    in either direction.
+    """
+    source = os.environ if env is None else env
+    return source.get("RQ_BURST") == "1"
 
 
 class InitLockAwareWorker(SimpleWorker):
@@ -117,8 +131,16 @@ def main() -> None:
     signal.signal(signal.SIGINT, shutdown)
     signal.signal(signal.SIGTERM, shutdown)
 
+    burst = resolve_burst_mode()
+    log.info(
+        "RQ worker work loop starting",
+        queues=queue_names,
+        prefix=settings.rq_queue_prefix,
+        burst=burst,
+    )
+
     try:
-        worker.work()
+        worker.work(burst=burst)
     except KeyboardInterrupt:
         log.info("RQ worker interrupted")
     except Exception:
