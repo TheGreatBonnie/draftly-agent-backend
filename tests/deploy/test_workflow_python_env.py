@@ -12,7 +12,8 @@ dependencies installed:
 present in `.venv` -- only the wrong interpreter is being used. Note this does
 not affect Render, where the Dockerfile sets `ENV PATH="/app/.venv/bin:..."`.
 
-Both workflows were affected: `migrate.yml` and `rq-worker.yml`.
+The migration workflow was affected. The RQ worker is deployed by Modal and
+executes inside the application image, whose Dockerfile sets the venv PATH.
 
 The fix is to invoke Python through `uv run`, which resolves and activates the
 project environment for the command.
@@ -93,47 +94,17 @@ def test_migrate_workflow_uses_uv_run():
     assert "uv run python scripts/bootstrap.py" in text
 
 
-def test_worker_workflow_uses_uv_run():
-    """The worker executes queued jobs and needs the same fix."""
-    text = (REPO_ROOT / ".github/workflows/rq-worker.yml").read_text()
-    assert "uv run python -m workers.rq_worker" in text, (
-        "rq-worker.yml must invoke the worker through `uv run` or it fails "
-        "with the same ModuleNotFoundError as migrate.yml"
-    )
-
-
-def test_github_app_private_key_is_mapped_from_secrets():
-    """The PEM must be mapped into env explicitly.
-
-    A bare `$GITHUB_APP_PRIVATE_KEY` in a `run:` block is NOT populated from
-    repository secrets -- only `${{ secrets.X }}` interpolation is. Without the
-    mapping the workflow silently writes an empty .pem and every GitHub App
-    operation fails later with a confusing error.
-    """
-    text = (REPO_ROOT / ".github/workflows/rq-worker.yml").read_text()
-    assert "$GITHUB_APP_PRIVATE_KEY" in text, "expected the PEM to be materialized"
-    assert "GITHUB_APP_PRIVATE_KEY: ${{ secrets.DRAFTLY_GITHUB_APP_PRIVATE_KEY }}" in text, (
-        "GITHUB_APP_PRIVATE_KEY must be mapped from a secret into the step env "
-        "(secret name carries the DRAFTLY_ prefix because GitHub reserves GITHUB_)"
-    )
-
-
-def test_requesty_key_is_not_required_by_the_worker():
-    """Requesty is optional; the allowlist fallback covers the stage models."""
-    text = (REPO_ROOT / ".github/workflows/rq-worker.yml").read_text()
-    assert "REQUESTY_API_KEY" not in text, (
-        "rq-worker.yml should not require REQUESTY_API_KEY; resolve_model falls "
-        "back by capability when Requesty is disabled"
-    )
-
-
 def test_every_referenced_secret_is_declared_in_the_docs():
     """Each secrets.* reference must be documented in the deployment guide.
 
     Compared on the suffix without the DRAFTLY_ prefix, because the guide
     documents the env var names the application reads.
     """
-    guide = (REPO_ROOT / "docs/deployment/render.md").read_text()
+    guide = "\n".join(
+        (REPO_ROOT / path).read_text()
+        for path in ("docs/deployment/render.md", "docs/deployment/modal.md")
+        if (REPO_ROOT / path).exists()
+    )
     for path in WORKFLOWS:
         for name in set(re.findall(r"secrets\.([A-Z_0-9]+)", path.read_text())):
             assert name.removeprefix("DRAFTLY_") in guide, (
@@ -165,15 +136,3 @@ def test_no_secret_name_uses_the_reserved_github_prefix():
             f"the GITHUB_ prefix; use DRAFTLY_-prefixed secret names mapped onto "
             f"the env vars the app reads."
         )
-
-
-@pytest.mark.parametrize(
-    "env_var",
-    ["GITHUB_TOKEN", "GITHUB_APP_ID", "GITHUB_APP_SLUG", "GITHUB_APP_PRIVATE_KEY"],
-)
-def test_github_env_vars_are_supplied_by_draftly_prefixed_secrets(env_var: str):
-    """The app reads GITHUB_* from the environment; the secret must be renamed."""
-    text = (REPO_ROOT / ".github/workflows/rq-worker.yml").read_text()
-    assert f"{env_var}: ${{{{ secrets.DRAFTLY_{env_var} }}}}" in text, (
-        f"{env_var} must be mapped from secrets.DRAFTLY_{env_var}"
-    )

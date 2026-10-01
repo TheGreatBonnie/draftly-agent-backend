@@ -2,11 +2,9 @@
 #
 # Differences from render.yaml:
 #   - keyvalue + web run on the `free` plan
-#   - draftly-kv accepts external connections so the GitHub Actions worker
-#     (whose egress IP is not statically assignable) can reach it
+#   - draftly-kv accepts external connections so the Modal worker can reach it
 #   - the `worker` service is REMOVED: Render has no free tier for
-#     `type: worker`. The RQ worker runs as a short-lived job in
-#     .github/workflows/rq-worker.yml instead.
+#     `type: worker`. The RQ worker runs as a scheduled burst function on Modal.
 #   - `preDeployCommand` is ABSENT (it is present in render.yaml). Render
 #     states the pre-deploy command is "available for paid web services,
 #     private services, and background workers", so a free web service
@@ -26,14 +24,14 @@ services:
     maxmemoryPolicy: noeviction
     ipAllowList:
       - source: 0.0.0.0/0
-        description: github-actions-runners
+        description: modal-worker
 
   - type: web
     name: draftly-api
     runtime: docker
     region: oregon
     plan: free
-    branch: render-deployment
+    branch: modal-deployment
     autoDeployTrigger: commit
     dockerfilePath: ./docker/Dockerfile.render
     dockerContext: .

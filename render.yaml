@@ -12,7 +12,7 @@ services:
     runtime: docker
     region: oregon
     plan: 1c-2g
-    branch: render-deployment
+    branch: modal-deployment
     autoDeployTrigger: commit
     dockerfilePath: ./docker/Dockerfile.render
     dockerContext: .
@@ -85,47 +85,5 @@ services:
       # GITHUB_PRIVATE_KEY_PATH alone left generate_jwt() raising FileNotFoundError
       # and every GitHub App call returned HTTP 500. app_auth._load_private_key()
       # reads GITHUB_APP_PRIVATE_KEY first and falls back to the path.
-      - key: GITHUB_APP_PRIVATE_KEY
-        sync: false
-
-  - type: worker
-    name: draftly-worker
-    runtime: docker
-    region: oregon
-    plan: 1c-2g
-    branch: render-deployment
-    autoDeployTrigger: commit
-    dockerfilePath: ./docker/Dockerfile.render
-    dockerContext: .
-    dockerCommand: python -m workers.rq_worker
-    maxShutdownDelaySeconds: 300
-    envVars:
-      - key: ENVIRONMENT
-        value: production
-      - key: LOG_LEVEL
-        value: INFO
-      - key: RQ_ENABLED
-        value: "true"
-      - key: STRANDS_SESSION_STORAGE
-        value: database
-      - key: DATABASE_URL
-        sync: false
-      - key: REDIS_URL
-        fromService:
-          type: keyvalue
-          name: draftly-kv
-          property: connectionString
-      - key: DRAFTLY_ENABLED_PROVIDERS
-        sync: false
-      # Same startup requirement as the web service: the worker calls
-      # create_application() and so constructs GitHubAuth().
-      - key: GITHUB_TOKEN
-        sync: false
-      - key: GITHUB_APP_ID
-        sync: false
-      - key: GITHUB_APP_SLUG
-        sync: false
-      # Same as the web service: PEM text via GITHUB_APP_PRIVATE_KEY. The RQ
-      # worker calls the GitHub App API too, so it needs a working key.
       - key: GITHUB_APP_PRIVATE_KEY
         sync: false

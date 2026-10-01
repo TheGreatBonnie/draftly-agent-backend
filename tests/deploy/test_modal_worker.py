@@ -106,3 +106,32 @@ def test_modal_deployment_uses_locked_dependencies_and_rolling_strategy() -> Non
         "uv run modal deploy --strategy rolling infra/modal/rq_worker.py"
         in commands
     )
+
+
+def test_legacy_github_worker_is_removed() -> None:
+    """Modal must be the only deployed queue consumer."""
+    legacy_workflow = REPO_ROOT / ".github/workflows/rq-worker.yml"
+
+    assert not legacy_workflow.exists()
+
+
+def test_render_blueprints_do_not_deploy_a_worker() -> None:
+    """Modal must be the only hosted RQ worker on this branch."""
+    for filename in ("render.yaml", "render.free.yaml"):
+        blueprint = yaml.safe_load((REPO_ROOT / filename).read_text())
+
+        assert all(service["type"] != "worker" for service in blueprint["services"])
+
+
+def test_render_api_tracks_the_modal_deployment_branch() -> None:
+    """The supporting API must deploy the same application revision."""
+    for filename in ("render.yaml", "render.free.yaml"):
+        blueprint = yaml.safe_load((REPO_ROOT / filename).read_text())
+        web_services = [
+            service for service in blueprint["services"] if service["type"] == "web"
+        ]
+
+        assert web_services
+        assert all(
+            service["branch"] == "modal-deployment" for service in web_services
+        )

@@ -93,33 +93,6 @@ def test_application_services_receive_the_github_app_key_inline(blueprint: str):
         )
 
 
-def test_worker_declares_github_token():
-    """The worker builds the same app, so it needs GITHUB_TOKEN too.
-
-    The secret is DRAFTLY_-prefixed because GitHub reserves the GITHUB_
-    prefix and refuses to create such secrets; the env var keeps its name.
-    """
-    workflow = (REPO_ROOT / ".github/workflows/rq-worker.yml").read_text()
-    assert "GITHUB_TOKEN: ${{ secrets.DRAFTLY_GITHUB_TOKEN }}" in workflow, (
-        "rq-worker.yml must pass GITHUB_TOKEN; the worker calls "
-        "create_application() and exits without it"
-    )
-
-
-def test_worker_declares_provider_keys():
-    """Provider keys must reach the worker, which executes the queued jobs."""
-    workflow = (REPO_ROOT / ".github/workflows/rq-worker.yml").read_text()
-    for key in (
-        "MANTLE_API_KEY",
-        "ORCAROUTER_API_KEY",
-        "NVIDIA_API_KEY",
-        "OPENROUTER_API_KEY",
-    ):
-        assert f"{key}: ${{{{ secrets.{key} }}}}" in workflow, (
-            f"rq-worker.yml must pass {key}; without it queued jobs fail with "
-            f"'{key} is not configured.'"
-        )
-
 def test_requesty_is_optional():
     """Requesty must NOT be required: the stage models fall back.
 

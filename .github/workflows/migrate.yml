@@ -14,7 +14,7 @@ name: migrate
 on:
   push:
     branches:
-      - render-deployment
+      - modal-deployment
   workflow_dispatch:
 
 # Never let two migration runs overlap.
