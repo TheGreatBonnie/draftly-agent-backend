@@ -424,6 +424,10 @@ jobs:
       REDIS_URL: ${{ secrets.REDIS_URL }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          # MUST pin: for `schedule`, GITHUB_SHA is the last commit on the
+          # default branch (master), which lacks resolve_burst_mode().
+          ref: render-deployment
 
       - name: Install uv
         uses: astral-sh/setup-uv@v5
@@ -466,6 +470,39 @@ jobs:
 Notes on choices that look odd:
 - `cancel-in-progress: false` — a cancelled worker drops the job it was running. Queue drains must finish.
 - `contents: read` — least privilege; the worker only reads the repo.
+- **Checkout is pinned to `ref: render-deployment`** (added during execution).
+  For a `schedule` run `GITHUB_SHA` is the last commit on the **default branch**
+  (`master`), which does not have `resolve_burst_mode()`. Without the pin the
+  job would run `worker.work(burst=False)`, block on BLPOP forever, and be
+  SIGKILLed by `timeout 330` on every single run.
+
+### Task 3b: Workflows must be copied onto the default branch (BLOCKER)
+
+**Discovered during execution, verified verbatim against GitHub's docs.**
+
+The backend's default branch is `master`. GitHub's `schedule` documentation
+states "Scheduled workflows will only run on the default branch", and
+`workflow_dispatch` states "This event will only trigger a workflow run if the
+workflow file exists on the default branch."
+
+`.github/workflows/` does not exist on `master`. Therefore, **as committed on
+`render-deployment`, neither workflow will ever run** — no 5-minute drain, no
+migrations, and no "Run workflow" button.
+
+This is not fixable from `render-deployment` alone. It requires a decision
+about `master`:
+
+- **Option A** — cherry-pick the two workflow files onto `master`. Minimal,
+  but leaves two copies to keep in sync.
+- **Option B** — merge `render-deployment` into `master`. Single source of
+  truth, but ships the Blueprint and Docker changes to `master` too.
+
+The pin added in Task 3 (`ref: render-deployment`) is what makes Option A
+viable: the workflow file can live on `master` while running code from
+`render-deployment`.
+
+`migrate.yml` is unaffected in the push case — a push event is evaluated
+against the pushed ref, where the file does exist.
 - The artifact upload is `if-no-files-found: ignore` because the worker does not write `/tmp/*.log` by default; it avoids a red X on routine failures.
 - `timeout` returns exit code 124. That is expected on a full-window drain and is not a failure to page on.
 
@@ -645,10 +682,12 @@ git status --porcelain
 
 ### Manual steps the user must do (cannot be automated)
 
-1. Create the Render Blueprint from `render.free.yaml`
-2. Add the five GitHub Actions secrets
-3. Verify the KV external URL is used for `REDIS_URL`
-4. Run the workflow manually once to confirm
+1. **Put the workflow files on `master`** — see Task 3b. Until this happens the
+   worker never runs.
+2. Create the Render Blueprint from `render.free.yaml`
+3. Add the five GitHub Actions secrets
+4. Verify the KV external URL is used for `REDIS_URL`
+5. Run the workflow manually once to confirm
 
 ### Not doing, and why
 
