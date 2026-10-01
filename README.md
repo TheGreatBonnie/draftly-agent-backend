@@ -389,7 +389,9 @@ Keep environment-specific procedures outside this entry-point README:
 
 - [Deploy to Amazon Bedrock AgentCore Runtime](docs/deployment/agentcore.md)
 - [Run, rebuild, and troubleshoot Redis and RQ workers](docs/deployment/redis.md#11-compose-and-rq-worker-alternatives)
-- [Deploy the API and worker to Render](docs/deployment/render.md)
+- [Deploy the API and worker to Render](docs/deployment/render.md), including a
+  [$0 no-payment-card path](docs/deployment/render.md#7-free-tier-deployment-no-payment-card)
+  that runs the worker on GitHub Actions
 - [Prepare a production deployment](docs/deployment/production.md)
 
 ## Deploy to Amazon Bedrock AgentCore Runtime

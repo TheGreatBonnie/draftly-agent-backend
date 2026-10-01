@@ -131,3 +131,112 @@ to retain the same-origin path. Never point preview builds at production data.
 
 To roll back, select the previous Render deployment. To move SSE back through
 Vercel, remove `NEXT_PUBLIC_API_URL` and redeploy the UI.
+
+## 7. Free-tier deployment (no payment card)
+
+Sections 1-6 cover the paid Blueprint. Render's Background Worker has **no free
+tier**, so that path cannot be used without a card. The free path keeps the API
+and queue on Render's free tier and moves both the RQ worker and migrations to
+GitHub Actions.
+
+| Component | Where | Cost |
+| --- | --- | --- |
+| FastAPI | Render free Web Service (`draftly-api`) | $0 |
+| Queue and event bus | Render free Key Value (`draftly-kv`, Valkey 8) | $0 |
+| RQ worker | GitHub Actions, burst job | $0 (public repo) |
+| PostgreSQL | Neon | $0 |
+
+Why GitHub Actions: standard GitHub-hosted runner minutes are free in public
+repositories, and a burst worker costs minutes rather than billing
+continuously by the second. Render, Railway, and Modal all either bill a
+polling worker per second or offer no free worker tier.
+
+### 7.1 Deploy the API and queue
+
+Create a Blueprint from `render.free.yaml` instead of `render.yaml`
+(New → Blueprint → select branch `render-deployment` → set the Blueprint path
+to `render.free.yaml`). Set the same `sync: false` secrets as sections 3 and 4.
+
+Four differences from the paid Blueprint:
+
+- both services run on the `free` plan;
+- `draftly-kv` opens its external connection to `0.0.0.0/0` so the Actions
+  runner can reach it (GitHub's egress ranges are too large and too shifting
+  to allowlist individually);
+- there is no `draftly-worker` service; and
+- **there is no `preDeployCommand`.** Render states the pre-deploy command is
+  "available for paid web services, private services, and background workers",
+  so a free web service silently ignores it. Migrations must run from the
+  `migrate` workflow instead — see 7.3. This is the single easiest mistake to
+  make here: without it the API boots against an unmigrated schema and fails
+  with a generic database error.
+
+Free Key Value is **25 MB, single-instance, and in-memory only**. Queued jobs
+are lost whenever the instance restarts, which Render may do at any time.
+
+### 7.2 Configure the GitHub Actions secrets
+
+Add these under Settings → Secrets and variables → Actions:
+
+| Secret | Source |
+| --- | --- |
+| `DATABASE_URL` | Neon connection string (same value as on Render) |
+| `REDIS_URL` | Render `draftly-kv` **external** connection string (`rediss://...`) |
+| `GITHUB_APP_ID` | GitHub App settings |
+| `GITHUB_APP_SLUG` | GitHub App settings |
+| `GITHUB_APP_PRIVATE_KEY` | Full PEM including `BEGIN`/`END` lines |
+
+`REDIS_URL` must be the **external** URL. The internal URL resolves only over
+Render's private network and will not work from a runner. Copy it from the
+Key Value instance's Connect menu. The API keeps using the internal URL via
+`fromService`, which Render documents as supported: free web services "can't
+_receive_ private network traffic" but "can _send_ private network requests to
+your data stores ... in the same region".
+
+`GITHUB_APP_PRIVATE_KEY` is written to
+`/etc/secrets/github-app-private-key.pem` at runtime to satisfy
+`GITHUB_PRIVATE_KEY_PATH`. Paste the whole PEM, delimiters included.
+
+### 7.3 Run migrations
+
+`scripts/bootstrap.py` is idempotent — it skips statements that fail with
+"already exists" / "duplicate" — so it is safe to re-run. The `migrate`
+workflow runs it automatically on every push to `render-deployment`, and you
+can trigger it manually from the Actions tab.
+
+Run it **before** the first API deploy if you are deploying to a fresh Neon
+database. It needs only `DATABASE_URL`, which the workflow already reads.
+
+### 7.4 Trigger the worker
+
+Scheduled runs fire every 5 minutes. For a demo, run it on demand from the
+Actions tab instead of waiting. The worker sets `RQ_BURST=1`, which makes RQ
+return as soon as every queue is empty rather than blocking forever.
+
+GitHub automatically disables scheduled workflows in public repositories after
+60 days without repository activity. Re-enable by running the workflow once
+manually.
+
+### 7.5 Verify
+
+1. Actions tab shows a green `rq-worker` run
+2. Run log contains `RQ worker work loop starting` with `burst=true`
+3. Enqueue a job from the UI; it is picked up within 5 minutes, or immediately
+   after a manual dispatch
+4. `draftly-api` logs show no Redis or database connection errors
+5. `GET /health` returns `200` after a deploy
+
+### 7.6 Known limits
+
+- **Free web services can be suspended for outbound traffic.** Render may
+  suspend a free web service that "initiates an uncommonly high volume of
+  traffic over the public internet", explicitly including accessing an
+  external database and invoking external APIs — which is exactly this
+  workload's profile. Restoring it requires moving to a paid plan.
+- Queue latency is up to 5 minutes on the scheduled path.
+- A job still running when the 330-minute timeout fires is killed and
+  recovered on the next boot by `reconcile_stale_on_boot`.
+- `draftly-kv` is in-memory: a restart drops queued jobs.
+- The free web service spins down after 15 minutes idle, which can drop a
+  long-lived SSE dashboard stream.
+- 0.1 CPU / 512 MB may be tight for the PDF and agent workloads.
