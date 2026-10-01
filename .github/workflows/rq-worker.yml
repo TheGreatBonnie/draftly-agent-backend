@@ -41,6 +41,14 @@ jobs:
       STRANDS_SESSION_STORAGE: database
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
       REDIS_URL: ${{ secrets.REDIS_URL }}
+      # Provider credentials. The worker executes the queued jobs, so it needs
+      # these to call any model; without them every job raises
+      # "MANTLE_API_KEY is not configured." Keep in sync with the provider keys
+      # on the Render web service.
+      MANTLE_API_KEY: ${{ secrets.MANTLE_API_KEY }}
+      ORCAROUTER_API_KEY: ${{ secrets.ORCAROUTER_API_KEY }}
+      NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
+      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
     steps:
       # MUST pin the ref. For `schedule`, GITHUB_SHA is the last commit on the
       # DEFAULT branch (master), which does not contain resolve_burst_mode().
