@@ -39,7 +39,11 @@ services:
     dockerContext: .
     dockerCommand: /bin/sh -c 'exec uvicorn draftly.app.api.app:app --host 0.0.0.0 --port "${PORT:-10000}"'
     healthCheckPath: /health
-    maxShutdownDelaySeconds: 120
+    # No maxShutdownDelaySeconds: Render rejects it for free tier services
+    # ("max shutdown delay is not supported for free tier services"), even
+    # though the Blueprint schema allows the key. Free services are killed on
+    # Render's schedule rather than drained, so in-flight requests on a
+    # spin-down or deploy can drop. Keep this on the paid render.yaml only.
     envVars:
       - key: ENVIRONMENT
         value: production
