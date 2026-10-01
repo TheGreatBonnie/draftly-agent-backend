@@ -29,8 +29,6 @@ from __future__ import annotations
 import os
 from unittest.mock import patch
 
-import pytest
-
 from draftly.models.policies import KNOWN_PROVIDERS
 
 
@@ -104,19 +102,27 @@ def test_provider_config_enabled_defaults_true_for_direct_construction():
 
     assert ProviderConfig(name="x", api_key=None, base_url=None).enabled is True
 
-def test_resolve_model_rejects_a_disabled_provider():
-    """`resolve_model` must honour the allowlist too.
+def test_resolve_model_never_instantiates_a_disabled_provider():
+    """A disabled pinned provider must not be instantiated.
 
-    `build_models` resolves stage models by name via `resolve_model`, which
-    consults provider health but used to skip the `is_enabled()` check. A model
-    pinned to a disabled provider therefore instantiated anyway and killed
-    startup with "REQUESTY_API_KEY is not configured." even though Requesty was
-    excluded from DRAFTLY_ENABLED_PROVIDERS.
+    `build_models` resolves the stage models by name, and factory.py pins all
+    three to `provider="requesty"`. The lookup must not reach `create_model()`
+    on a disabled provider, otherwise startup dies with "REQUESTY_API_KEY is
+    not configured." even though Requesty was excluded.
+
+    mantle supplies the `research` capability, so it is the only enabled
+    candidate here and the fallback must land on it.
     """
-    router = _build_router({"openrouter"})
+    with patch.dict(os.environ, {"MANTLE_API_KEY": "sk-test"}, clear=False):
+        router = _build_router({"mantle", "openrouter"})
 
-    with pytest.raises(RuntimeError, match="disabled by DRAFTLY_ENABLED_PROVIDERS"):
-        router.resolve_model("stage-research")
+        model = router.resolve_model("stage-research")
+
+    assert model is not None
+    assert not router.registry.get_provider("requesty").is_enabled(), (
+        "requesty must be disabled in this configuration, so stage-research "
+        "must have been served by the capability fallback"
+    )
 
 
 def test_resolve_model_allows_an_enabled_provider():
@@ -130,4 +136,44 @@ def test_resolve_model_allows_an_enabled_provider():
 
         model = router.resolve_model("stage-research")
 
+    assert model is not None
+
+
+def test_resolve_model_falls_back_when_pinned_provider_is_disabled():
+    """A disabled pinned provider must fall back to a capability match.
+
+    `build_models` resolves the three stage models by name, and factory.py
+    pins all three to `provider="requesty"`. With Requesty excluded from
+    DRAFTLY_ENABLED_PROVIDERS that lookup has no enabled candidate, so the
+    router must select by the model's declared capabilities instead of raising
+    -- otherwise a provider the operator disabled takes the whole deploy down.
+
+    Every capability involved is covered without Requesty: `research` by
+    mantle, `verification` by orcarouter/mantle, `evaluation` by orcarouter.
+    """
+    keys = {
+        "MANTLE_API_KEY": "sk-test",
+        "ORCAROUTER_API_KEY": "sk-test",
+        "NVIDIA_API_KEY": "sk-test",
+        "OPENROUTER_API_KEY": "sk-test",
+    }
+    with patch.dict(os.environ, keys, clear=False):
+        router = _build_router(
+            {"mantle", "mantle-openai", "orcarouter", "nvidia", "openrouter"}
+        )
+
+    for stage in ("stage-research", "stage-review", "stage-rubric-grader"):
+        model = router.resolve_model(stage)
+        assert model is not None, f"{stage} should fall back to an enabled provider"
+        assert "requesty" not in repr(model).lower()
+
+
+def test_resolve_model_prefers_the_pinned_provider_when_enabled():
+    """Back-compat: with requesty enabled the pinned model still wins."""
+    with patch.dict(os.environ, {"REQUESTY_API_KEY": "sk-test"}, clear=False):
+        router = _build_router({"openrouter", "requesty"})
+        model = router.resolve_model("stage-research")
+
+    config = router.registry.get_model("stage-research")
+    assert router.registry.get_provider(config.provider).is_enabled()
     assert model is not None

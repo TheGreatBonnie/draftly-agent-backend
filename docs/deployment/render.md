@@ -246,13 +246,23 @@ so verify the `enabled_providers_unknown` startup log line.
 Four provider keys cover five enabled providers: `mantle-openai` reuses
 `MANTLE_API_KEY` and differs only by endpoint.
 
-**`requesty` must stay in `DRAFTLY_ENABLED_PROVIDERS`.** `factory.py` hardcodes
-`provider="requesty"` for the three stage models (`stage-research`,
-`stage-review`, `stage-rubric-grader`). `RESEARCH_MODEL`, `REVIEW_MODEL`, and
-`RUBRIC_GRADER_MODEL` override only the model *id*, never the provider. The
-allowlist is enforced by `ModelRouter.is_enabled()`, so omitting Requesty makes
-startup raise `Provider 'requesty' is disabled by DRAFTLY_ENABLED_PROVIDERS`
-and the deploy crash-loops. `REQUESTY_API_KEY` is therefore mandatory too.
+**Requesty is optional.** `factory.py` pins `provider="requesty"` for the three
+stage models (`stage-research`, `stage-review`, `stage-rubric-grader`), and
+`RESEARCH_MODEL` / `REVIEW_MODEL` / `RUBRIC_GRADER_MODEL` override only the
+model *id*, never the provider. If Requesty is excluded from
+`DRAFTLY_ENABLED_PROVIDERS`, `ModelRouter.resolve_model` falls back to selecting
+by the model's declared capabilities, and every one is covered without it:
+
+| Stage model | Capability | Served by |
+| --- | --- | --- |
+| `stage-research` | `research` | `mantle` (kimi-k2-5, kimi-k2-thinking, minimax-m2, qwen3-coder-next) |
+| `stage-review` | `verification` | `orcarouter` (`review-orca`) or `mantle` |
+| `stage-rubric-grader` | `evaluation` | `orcarouter` (`grader-orca`) |
+
+So you can set `DRAFTLY_ENABLED_PROVIDERS` to exactly your five providers and
+omit `REQUESTY_API_KEY` entirely. Research and grading will then run on Mantle
+and OrcaRouter instead of Requesty — a behavioural change to which models grade
+your output, so pick deliberately.
 
 `GITHUB_TOKEN` is also mandatory and is easy to miss: `build_integrations()`
 constructs `GitHubClient` unconditionally, and with no per-workflow
@@ -303,7 +313,6 @@ Add these under Settings → Secrets and variables → Actions:
 | `ORCAROUTER_API_KEY` | OrcaRouter |
 | `NVIDIA_API_KEY` | NVIDIA |
 | `OPENROUTER_API_KEY` | OpenRouter |
-| `REQUESTY_API_KEY` | Required — the stage models are pinned to the requesty provider (7.2) |
 | `GITHUB_TOKEN` | Required — a GitHub personal access token; startup fails without it (7.2) |
 
 The provider keys are required here for the same reason they are required

@@ -271,14 +271,25 @@ class ModelRouter:
 
         provider = self.registry.get_provider(config.provider)
 
-        # Honour DRAFTLY_ENABLED_PROVIDERS. Without this check a model pinned to a
-        # provider outside the allowlist is instantiated anyway, and startup dies
-        # with "REQUESTY_API_KEY is not configured." even though Requesty was
-        # explicitly disabled.
+        # Honour DRAFTLY_ENABLED_PROVIDERS. When the model is pinned to a provider the
+        # operator disabled, fall back to selecting by the model's declared
+        # capabilities rather than failing. factory.py pins the three stage
+        # models to provider="requesty", so without this fallback, excluding
+        # Requesty from DRAFTLY_ENABLED_PROVIDERS makes startup raise and takes
+        # the whole deploy down. Every capability involved is covered by the
+        # remaining providers (research by mantle, verification by orcarouter or
+        # mantle, evaluation by orcarouter).
         if not provider.is_enabled():
-            raise RuntimeError(
-                f"Provider '{config.provider}' is disabled by "
-                f"DRAFTLY_ENABLED_PROVIDERS, but model '{model_name}' resolves to it."
+            logger.info(
+                "resolve_model_provider_disabled provider=%s model=%s falling back to capability",
+                config.provider,
+                model_name,
+            )
+            return self.resolve(
+                RoutingPolicy(
+                    required_capabilities=config.capabilities,
+                    allow_fallback=True,
+                )
             )
 
         return provider.create_model(config)

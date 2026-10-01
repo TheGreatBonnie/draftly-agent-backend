@@ -67,16 +67,6 @@ services:
           property: connectionString
       - key: DRAFTLY_ENABLED_PROVIDERS
         sync: false
-      # requesty MUST stay in this list. factory.py hardcodes
-      # provider="requesty" for the three stage models (stage-research,
-      # stage-review, stage-rubric-grader) and others; RESEARCH_MODEL /
-      # REVIEW_MODEL / RUBRIC_GRADER_MODEL override only the model id, never
-      # the provider. Dropping requesty makes startup raise
-      # "Provider 'requesty' is disabled by DRAFTLY_ENABLED_PROVIDERS".
-      # The allowlist is enforced by ModelRouter.is_enabled(), so an omitted
-      # provider is a hard startup failure, not a soft preference.
-      - key: REQUESTY_API_KEY
-        sync: false
       - key: FRONTEND_URL
         sync: false
       - key: ALLOWED_ORIGINS

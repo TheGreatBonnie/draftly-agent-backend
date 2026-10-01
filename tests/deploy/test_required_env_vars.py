@@ -96,21 +96,20 @@ def test_worker_declares_provider_keys():
             f"'{key} is not configured.'"
         )
 
-def test_requesty_key_is_declared_everywhere():
-    """factory.py hardcodes provider="requesty" for the stage models.
+def test_requesty_is_optional():
+    """Requesty must NOT be required: the stage models fall back.
 
-    `RESEARCH_MODEL` / `REVIEW_MODEL` / `RUBRIC_GRADER_MODEL` override only the
-    model *id*; the provider is a literal in factory.py. Since the allowlist is
-    now enforced by `ModelRouter.is_enabled()`, omitting Requesty raises
-    "Provider 'requesty' is disabled by DRAFTLY_ENABLED_PROVIDERS" at startup.
+    factory.py pins stage-research/stage-review/stage-rubric-grader to
+    provider="requesty". When Requesty is excluded from
+    DRAFTLY_ENABLED_PROVIDERS, ModelRouter.resolve_model now selects by the
+    model's capabilities instead of raising, so an operator can run without
+    Requesty. This test locks that the Blueprints do not reintroduce the key as
+    a hard requirement.
     """
     for blueprint in ("render.yaml", "render.free.yaml"):
         for service in _web_services(blueprint):
             declared = {e["key"] for e in service.get("envVars", [])}
-            assert "REQUESTY_API_KEY" in declared, (
-                f"{blueprint}/{service['name']}: REQUESTY_API_KEY is required "
-                f"because the stage models are pinned to the requesty provider"
+            assert "REQUESTY_API_KEY" not in declared, (
+                f"{blueprint}/{service['name']}: REQUESTY_API_KEY should not be "
+                f"required now that resolve_model falls back by capability"
             )
-
-    workflow = (REPO_ROOT / ".github/workflows/rq-worker.yml").read_text()
-    assert "REQUESTY_API_KEY: ${{ secrets.REQUESTY_API_KEY }}" in workflow

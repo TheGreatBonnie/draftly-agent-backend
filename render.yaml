@@ -43,11 +43,6 @@ services:
           property: connectionString
       - key: DRAFTLY_ENABLED_PROVIDERS
         sync: false
-      # requesty MUST stay in this list: factory.py hardcodes
-      # provider="requesty" for stage-research/stage-review/stage-rubric-grader,
-      # and the *_MODEL env vars override only the model id, not the provider.
-      - key: REQUESTY_API_KEY
-        sync: false
       - key: FRONTEND_URL
         sync: false
       - key: ALLOWED_ORIGINS
