@@ -314,6 +314,10 @@ class Settings(BaseSettings):
     # ------------------------------------------------------------------
 
     log_level: str = "INFO"
+    # When true, agents inherit Strands' default PrintingCallbackHandler and
+    # model reasoning/response text is printed to stdout. Off by default: that
+    # text must not reach a log sink. See observability/agent_callbacks.py.
+    log_model_text: bool = False
 
     # ------------------------------------------------------------------
     # Token Cost Management

@@ -11,6 +11,7 @@ disabled; on a disabled runtime the steering handler is a defensive no-op.
 from __future__ import annotations
 
 from collections.abc import Iterable
+from functools import lru_cache
 from typing import Any
 
 from strands import Agent
@@ -25,6 +26,20 @@ from draftly.steering.handler import (
 )
 from draftly.steering.policy import RolePolicy, policy_for
 from draftly.steering.tool_registry_guard import ToolRegistryGuard
+
+
+@lru_cache(maxsize=1)
+def _model_text_logging_enabled() -> bool:
+    """Read ``LOG_MODEL_TEXT`` once per process.
+
+    ``get_settings()`` constructs a fresh ``Settings()`` on every call (it is
+    not cached), which would re-read the environment for every agent built.
+    The import is deferred because this module participates in an import cycle
+    with ``agents.documentation``.
+    """
+    from draftly.app.config import get_settings
+
+    return get_settings().log_model_text
 
 
 def _optional_judge(
@@ -86,25 +101,28 @@ def build_draftly_agent(
         role=policy.role,
     )
     agent_options.setdefault("agent_id", agent_id)
-    # Reverted (b662209, "A. Silence stdout"): the agent now inherits Strands'
-    # default ``PrintingCallbackHandler``, so reasoning deltas, text deltas and
-    # ``Tool #N:`` lines stream to the worker log again.
-    #
-    # b662209 disabled this because the handler print()s to the same fd as
-    # structlog -- run d76e2490 produced 2,242 raw lines and 65,520 ``<unk>``
-    # tokens and the failing node became unreadable *in a rich console*. That
-    # cost is volume, not corruption, and it is worth paying to see reasoning.
-    # Two things did change since, and neither is a reason to re-disable:
-    # ``observability/logging.py`` now uses ``RichTracebackFormatter`` with
-    # ``show_locals=False``, so tracebacks no longer render 31,330 lines of
-    # frame locals, and these are plain text lines, not rich-console frames.
-    #
-    # SSE is unaffected either way: it reads ``graph.stream_async``.
-    #
     # Imported here, not at module scope: the plugin reaches into
     # ``agents.documentation``, whose package ``__init__`` builds agents and so
     # imports this module back. A module-level import would be a cycle.
+    from draftly.observability.agent_callbacks import resolve_callback_handler
     from draftly.steering.repo_read_cache_plugin import RepoReadCachePlugin
+
+    # Model reasoning and response text are never logged: Strands' default
+    # ``PrintingCallbackHandler`` print()s both to the same fd as structlog,
+    # and reasoning deltas arrive with ``end=""`` so they concatenate into one
+    # unbounded line -- run d76e2490 produced 2,242 raw lines and 65,520
+    # ``<unk>`` tokens. The tool trace is kept, as a structured event, so the
+    # diagnostic that b662209's revert was protecting is not lost.
+    # ``LOG_MODEL_TEXT=1`` restores the previous behaviour; see
+    # ``observability/agent_callbacks.py``. SSE is unaffected either way: it
+    # reads ``graph.stream_async``.
+    #
+    # A caller-supplied handler wins, so an explicit ``callback_handler`` in
+    # ``agent_options`` is neither clobbered nor passed twice.
+    callback_handler = agent_options.pop(
+        "callback_handler",
+        resolve_callback_handler(log_model_text=_model_text_logging_enabled()),
+    )
 
     return Agent(
         model=model,
@@ -123,5 +141,6 @@ def build_draftly_agent(
         ],
         structured_output_model=structured_output_model,
         interventions=[*(interventions or ()), ToolRegistryGuard(), *([budget] if budget else [])],
+        callback_handler=callback_handler,
         **agent_options,
     )
