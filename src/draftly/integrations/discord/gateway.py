@@ -20,6 +20,7 @@ GATEWAY_URL = "wss://gateway.discord.gg/?v=10&encoding=json"
 HEARTBEAT_INTERVAL_BUFFER = 5  # seconds to subtract from heartbeat interval
 INITIAL_RECONNECT_DELAY = 5  # seconds
 MAX_RECONNECT_DELAY = 60  # seconds
+DISCORD_GATEWAY_INTENTS = 1 | 512 | 32768  # GUILDS | GUILD_MESSAGES | MESSAGE_CONTENT
 
 
 class DiscordGateway:
@@ -136,7 +137,7 @@ class DiscordGateway:
                     "browser": "draftly",
                     "device": "draftly",
                 },
-                "intents": 513,  # GUILDS (1) + GUILD_MESSAGES (512)
+                "intents": DISCORD_GATEWAY_INTENTS,
             },
         }
         await ws.send(json.dumps(identify))

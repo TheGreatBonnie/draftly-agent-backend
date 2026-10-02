@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import json
 
 from websockets.exceptions import ConnectionClosedError
 from websockets.frames import Close
 from websockets.protocol import CloseCode
 
+from draftly.integrations.discord import gateway as gateway_module
 from draftly.integrations.discord.gateway import DiscordGateway
 
 
@@ -22,6 +24,24 @@ class _ClosedSocket:
         raise ConnectionClosedError(
             None, Close(CloseCode.INTERNAL_ERROR, "keepalive ping timeout"), None
         )
+
+
+class _RecordingSocket:
+    def __init__(self) -> None:
+        self.sent: list[str] = []
+
+    async def send(self, payload: str) -> None:
+        self.sent.append(payload)
+
+
+async def test_identify_requests_message_content_needed_by_support_handler(monkeypatch) -> None:
+    monkeypatch.setattr(gateway_module.settings, "discord_bot_token", "bot-token")
+    socket = _RecordingSocket()
+
+    await DiscordGateway()._send_identify(socket)
+
+    payload = json.loads(socket.sent[0])
+    assert payload["d"]["intents"] == (1 | 512 | 32768)
 
 
 async def test_heartbeat_loop_survives_a_closed_socket() -> None:

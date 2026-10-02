@@ -99,6 +99,15 @@ flowchart TD
     F -->|no| H[HTTP webhooks]
 ```
 
+OAuth begins at `GET /api/slack/install-url`. The optional `return_to`
+parameter accepts only the provider dashboard route or
+`/onboarding/integrations`; it is stored with organization-bound, one-time
+state. The callback persists the installation before returning the browser, so
+the destination page can verify the connection through
+`GET /api/slack/installations`. The default bot scopes cover app mentions,
+public/private channel and DM history, channel discovery, message delivery,
+and reactions.
+
 **Key files:**
 - `app.py` — `build_slack_app` factory, `register_handlers` for event/action handlers, message dispatch with dedup guard
 - `auth.py` — `SlackAuth` configuration (bot token)
@@ -148,7 +157,14 @@ flowchart TD
 
 ### 4.2 Gateway Protocol
 
-`DiscordGateway` maintains a persistent WebSocket connection to `wss://gateway.discord.gg/?v=10&encoding=json`. It handles Discord's opcode-based protocol: op 10 (Hello) triggers the heartbeat loop and Identify payload; op 0 (Dispatch) routes events by type; op 1 (Heartbeat request) sends immediate heartbeats; op 7 (Reconnect) and op 9 (Invalid Session) trigger reconnection with exponential backoff (5s to 60s). The Identify payload requests GUILDS + GUILD_MESSAGES intents (513).
+`DiscordGateway` maintains a persistent WebSocket connection to `wss://gateway.discord.gg/?v=10&encoding=json`. It handles Discord's opcode-based protocol: op 10 (Hello) triggers the heartbeat loop and Identify payload; op 0 (Dispatch) routes events by type; op 1 (Heartbeat request) sends immediate heartbeats; op 7 (Reconnect) and op 9 (Invalid Session) trigger reconnection with exponential backoff (5s to 60s). The Identify payload requests GUILDS, GUILD_MESSAGES, and MESSAGE_CONTENT intents (33281). The Message Content privileged intent must also be enabled in the Discord developer portal.
+
+OAuth begins at `GET /api/discord/invite-url`. The generated permission mask
+allows channel visibility, history, messages, threads, reactions, embeds, and
+attachments. The callback consumes organization-bound state, verifies the
+authorizing user's administrator permission and the bot's guild membership,
+then stores `organizations.discord_guild_id` before returning to the initiating
+dashboard or onboarding route.
 
 ### 4.3 Message Processing
 

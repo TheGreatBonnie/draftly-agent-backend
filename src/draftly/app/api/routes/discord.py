@@ -12,7 +12,11 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from pydantic import BaseModel
 
 from draftly.app.api.auth import get_verified_token, require_admin_role, require_workflow_editor
-from draftly.app.api.integration_oauth import consume_state, create_state
+from draftly.app.api.integration_oauth import (
+    consume_state,
+    create_state,
+    validate_integration_return_to,
+)
 from draftly.app.config import get_settings
 
 logger = structlog.get_logger(__name__)
@@ -23,6 +27,25 @@ router = APIRouter(
 )
 
 settings = get_settings()
+
+DISCORD_ADD_REACTIONS = 1 << 6
+DISCORD_VIEW_CHANNEL = 1 << 10
+DISCORD_SEND_MESSAGES = 1 << 11
+DISCORD_EMBED_LINKS = 1 << 14
+DISCORD_ATTACH_FILES = 1 << 15
+DISCORD_READ_MESSAGE_HISTORY = 1 << 16
+DISCORD_CREATE_PUBLIC_THREADS = 1 << 35
+DISCORD_SEND_MESSAGES_IN_THREADS = 1 << 38
+DISCORD_BOT_PERMISSIONS = (
+    DISCORD_ADD_REACTIONS
+    | DISCORD_VIEW_CHANNEL
+    | DISCORD_SEND_MESSAGES
+    | DISCORD_EMBED_LINKS
+    | DISCORD_ATTACH_FILES
+    | DISCORD_READ_MESSAGE_HISTORY
+    | DISCORD_CREATE_PUBLIC_THREADS
+    | DISCORD_SEND_MESSAGES_IN_THREADS
+)
 
 ACTION_MAP = {
     "discord_approve": "approved",
@@ -42,6 +65,11 @@ STATUS_LABEL = {
     "rejected": "Rejected",
     "needs_changes": "Changes Requested",
 }
+
+
+def _oauth_result_url(return_to: str, status: str) -> str:
+    query = urlencode({"oauth_provider": "discord", "oauth_status": status})
+    return f"{settings.frontend_url}{return_to}?{query}"
 
 
 def _verify_signature(body: bytes, timestamp: str, signature: str) -> bool:
@@ -181,6 +209,7 @@ class TriggerChannelsRequest(BaseModel):
 @router.get("/invite-url")
 async def discord_invite_url(
     request: Request,
+    return_to: str | None = None,
     token: dict = Depends(require_admin_role),
 ) -> dict:
     """Return the Discord bot invite URL with required permissions."""
@@ -193,13 +222,15 @@ async def discord_invite_url(
     if not org_id:
         raise HTTPException(status_code=400, detail="No organization selected")
     db = request.app.state.draftly.dependencies.integrations.database
-    nonce = await create_state(db, "discord", org_id, token["user_id"], "/integrations/discord")
-    # Permissions: View Channels + Send Messages + Send Messages in Threads + Add Reactions
-    permissions = 4 + 2048 + 32768 + 64 + 2048  # 36932
+    safe_return_to = validate_integration_return_to(
+        return_to,
+        default="/integrations/discord",
+    )
+    nonce = await create_state(db, "discord", org_id, token["user_id"], safe_return_to)
     invite_url = "https://discord.com/oauth2/authorize?" + urlencode(
         {
             "client_id": app_id,
-            "permissions": permissions,
+            "permissions": DISCORD_BOT_PERMISSIONS,
             "scope": "bot identify guilds",
             "response_type": "code",
             "redirect_uri": f"{settings.public_api_url.rstrip('/')}/api/discord/oauth/callback",
@@ -212,72 +243,82 @@ async def discord_invite_url(
 @router.get("/oauth/callback")
 async def discord_oauth_callback(
     request: Request,
-    code: str,
-    state: str,
-    guild_id: str,
+    code: str | None = None,
+    state: str = "",
+    guild_id: str | None = None,
+    error: str | None = None,
 ) -> RedirectResponse:
     db = request.app.state.draftly.dependencies.integrations.database
-    pending = await db.fetch_one(
-        """SELECT nonce FROM integration_oauth_states
-           WHERE nonce = $1 AND provider = 'discord' AND expires_at > now()""",
-        state,
-    )
-    if not pending:
-        raise HTTPException(status_code=400, detail="Invalid Discord authorization state")
-    redirect_uri = f"{settings.public_api_url.rstrip('/')}/api/discord/oauth/callback"
-    async with httpx.AsyncClient(timeout=10) as client:
-        response = await client.post(
-            "https://discord.com/api/v10/oauth2/token",
-            data={
-                "client_id": settings.discord_app_id,
-                "client_secret": settings.discord_client_secret,
-                "grant_type": "authorization_code",
-                "code": code,
-                "redirect_uri": redirect_uri,
-            },
-        )
-        response.raise_for_status()
-        access_token = response.json().get("access_token")
-        if not access_token:
-            raise HTTPException(status_code=400, detail="Discord authorization failed")
-        guilds_response = await client.get(
-            "https://discord.com/api/v10/users/@me/guilds",
-            headers={"Authorization": f"Bearer {access_token}"},
-        )
-        guilds_response.raise_for_status()
-        allowed = any(
-            str(guild.get("id")) == guild_id and int(guild.get("permissions") or 0) & 8
-            for guild in guilds_response.json()
-        )
-        if not allowed:
-            raise HTTPException(
-                status_code=403, detail="Discord server administrator permission required"
-            )
-        bot_response = await client.get(
-            f"https://discord.com/api/v10/guilds/{guild_id}",
-            headers={"Authorization": f"Bot {settings.discord_bot_token}"},
-        )
-        if bot_response.status_code != 200:
-            raise HTTPException(status_code=403, detail="Draftly bot is not in this server")
     oauth_state = await consume_state(db, "discord", state)
-    claimed = await db.fetch_one(
-        "SELECT clerk_org_id FROM organizations WHERE discord_guild_id = $1 AND clerk_org_id <> $2",
-        guild_id,
-        oauth_state["org_id"],
+    return_to = validate_integration_return_to(
+        oauth_state.get("return_to"),
+        default="/integrations/discord",
     )
-    if claimed:
-        raise HTTPException(
-            status_code=409, detail="Discord server is connected to another organization"
+    if error:
+        status = "cancelled" if error == "access_denied" else "failed"
+        return RedirectResponse(url=_oauth_result_url(return_to, status))
+    if not code or not guild_id:
+        return RedirectResponse(url=_oauth_result_url(return_to, "failed"))
+
+    redirect_uri = f"{settings.public_api_url.rstrip('/')}/api/discord/oauth/callback"
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            response = await client.post(
+                "https://discord.com/api/v10/oauth2/token",
+                data={
+                    "client_id": settings.discord_app_id,
+                    "client_secret": settings.discord_client_secret,
+                    "grant_type": "authorization_code",
+                    "code": code,
+                    "redirect_uri": redirect_uri,
+                },
+            )
+            response.raise_for_status()
+            access_token = response.json().get("access_token")
+            if not access_token:
+                raise RuntimeError("Discord returned no OAuth access token")
+            guilds_response = await client.get(
+                "https://discord.com/api/v10/users/@me/guilds",
+                headers={"Authorization": f"Bearer {access_token}"},
+            )
+            guilds_response.raise_for_status()
+            allowed = any(
+                str(guild.get("id")) == guild_id and int(guild.get("permissions") or 0) & 8
+                for guild in guilds_response.json()
+            )
+            if not allowed:
+                raise RuntimeError("Discord server administrator permission required")
+            bot_response = await client.get(
+                f"https://discord.com/api/v10/guilds/{guild_id}",
+                headers={"Authorization": f"Bot {settings.discord_bot_token}"},
+            )
+            if bot_response.status_code != 200:
+                raise RuntimeError("Draftly bot is not in the selected Discord server")
+        claimed = await db.fetch_one(
+            "SELECT clerk_org_id FROM organizations "
+            "WHERE discord_guild_id = $1 AND clerk_org_id <> $2",
+            guild_id,
+            oauth_state["org_id"],
         )
-    await db.execute(
-        "UPDATE organizations SET discord_guild_id = $1 WHERE clerk_org_id = $2",
-        guild_id,
-        oauth_state["org_id"],
-    )
-    bus = getattr(request.app.state, "dashboard_broadcaster", None)
-    if bus is not None:
-        await bus.broadcast(oauth_state["org_id"], "integration:changed", {"provider": "discord"})
-    return RedirectResponse(url=f"{settings.frontend_url}{oauth_state['return_to']}")
+        if claimed:
+            raise RuntimeError("Discord server already belongs to another organization")
+        await db.execute(
+            "UPDATE organizations SET discord_guild_id = $1 WHERE clerk_org_id = $2",
+            guild_id,
+            oauth_state["org_id"],
+        )
+        bus = getattr(request.app.state, "dashboard_broadcaster", None)
+        if bus is not None:
+            await bus.broadcast(
+                oauth_state["org_id"],
+                "integration:changed",
+                {"provider": "discord"},
+            )
+    except Exception:
+        logger.exception("discord_oauth_callback_failed", org_id=oauth_state["org_id"])
+        return RedirectResponse(url=_oauth_result_url(return_to, "failed"))
+
+    return RedirectResponse(url=_oauth_result_url(return_to, "connected"))
 
 
 @router.post("/link")

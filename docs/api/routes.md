@@ -42,9 +42,9 @@ All responses use JSON unless otherwise noted. Errors follow the standard FastAP
 
 | Method | Endpoint | Auth | Purpose |
 |--------|----------|------|---------|
-| `GET` | `/api/slack/install-url` | JWT | Returns the Slack OAuth authorize URL with required scopes |
+| `GET` | `/api/slack/install-url` | Admin JWT | Returns the Slack OAuth authorize URL. Optional query: `return_to=/onboarding/integrations` |
 | `POST` | `/api/slack/link` | JWT | Links a Slack workspace to the current Clerk organization. Body: `{"team_id": str}` |
-| `GET` | `/api/slack/installations` | JWT | Lists all Slack installations |
+| `GET` | `/api/slack/installations` | JWT | Lists Slack installations owned by the current organization |
 | `DELETE` | `/api/slack/installations/{team_id}` | JWT | Removes a Slack installation link |
 | `GET` | `/api/slack/oauth/callback` | None | Slack OAuth callback — exchanges authorization code for tokens, saves installation, redirects to frontend |
 | `POST` | `/api/slack/events` | None | Slack Events API webhook — handled via Bolt's `AsyncSlackRequestHandler` |
@@ -53,11 +53,12 @@ All responses use JSON unless otherwise noted. Errors follow the standard FastAP
 **Operational contract for Slack:**
 
 - **OAuth installation** begins at `/api/slack/install-url`, which returns a
-  scoped authorize URL (`chat:write`, channel history/read scopes). Completing
+  scoped authorize URL for mentions, channel/DM history, posting, discovery,
+  and reactions. Completing
   OAuth hits `/api/slack/oauth/callback`, which stores the workspace bot token
   in the Slack installation store and redirects the browser back to the
-  frontend. A workspace is only routable once its `team_id` is linked to a
-  Clerk org via `/api/slack/link`.
+  frontend. `return_to` is restricted to exact Draftly routes; OAuth state is
+  organization-bound, expires after ten minutes, and is consumed once.
 - **Ingress** arrives on `/api/slack/events`. The Bolt handler normalizes each
   message (adding an 👀 reaction to acknowledge), then calls
   `enrich_support_event` to resolve `team_id` → Clerk org. Unlinked workspaces
@@ -72,7 +73,7 @@ All responses use JSON unless otherwise noted. Errors follow the standard FastAP
 
 | Method | Endpoint | Auth | Purpose |
 |--------|----------|------|---------|
-| `GET` | `/api/discord/invite-url` | None | Returns the Discord bot invite URL with required permissions (View Channels, Send Messages, etc.) |
+| `GET` | `/api/discord/invite-url` | Admin JWT | Returns the Discord bot invite URL. Optional query: `return_to=/onboarding/integrations` |
 | `POST` | `/api/discord/link` | JWT | Links a Discord guild to the current Clerk organization. Body: `{"guild_id": str}` |
 | `GET` | `/api/discord/status` | JWT | Returns Discord connection status and guild ID for the current org |
 | `GET` | `/api/discord/channels` | JWT | Fetches text channels from the linked Discord guild |
@@ -83,9 +84,11 @@ All responses use JSON unless otherwise noted. Errors follow the standard FastAP
 
 **Operational contract for Discord:**
 
-- **Guild linking** is a two-step flow: the bot is added to a guild via the
-  invite URL, then the guild is linked to a Clerk org via `/api/discord/link`.
-  Trigger channels restrict which channels the bot answers in.
+- **Guild linking** adds the bot through OAuth, verifies that the authorizing
+  user administers the selected guild, and stores that guild against the Clerk
+  organization carried by one-time OAuth state. `POST /api/discord/link`
+  remains a compatibility check for already-authorized guilds. Trigger
+  channels restrict which channels the bot answers in.
 - **Ingress** arrives on `/api/discord/interactions` (message-create). The
   normalizer runs, `enrich_support_event` resolves `guild_id` → Clerk org, and
   the event is dispatched through the durable worker path.

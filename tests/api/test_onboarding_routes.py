@@ -34,6 +34,7 @@ def client() -> TestClient:
     repos.repository_config.get = AsyncMock(return_value=None)
     repos.repository_config.upsert = AsyncMock(return_value={})
     repos.repository_config.list_by_org = AsyncMock(return_value=[])
+    state.dependencies.integrations.database.fetch_one = AsyncMock(return_value=None)
     state.worker = MagicMock()
     state.worker.task_runner.has_task = MagicMock(return_value=True)
     state.worker.run_task = AsyncMock(
@@ -157,6 +158,59 @@ class TestOnboardingRoutes:
             json={"name": "My Workspace", "description": "Test"},
         )
         assert response.status_code == 200
+
+    def test_integrations_derive_connection_truth_from_persistence(
+        self,
+        client: TestClient,
+    ) -> None:
+        repos = client.app.state.draftly.dependencies.repositories
+        repos.onboarding.get.return_value = {
+            "org_id": "test-org",
+            "state": "DOCUMENTATION_DISCOVERED",
+            "selected_repository": {"full_name": "acme/api"},
+        }
+        db = client.app.state.draftly.dependencies.integrations.database
+        db.fetch_one.side_effect = [
+            {"team_id": "T1"},
+            {"discord_guild_id": None},
+        ]
+
+        response = client.post(
+            "/onboarding/integrations",
+            json={"slack": False, "discord": True},
+        )
+
+        assert response.status_code == 200
+        assert response.json() == {
+            "state": "INTEGRATIONS_CONFIGURED",
+            "integrations": {"slack": True, "discord": False},
+        }
+        persisted = repos.onboarding.upsert.await_args.kwargs
+        assert persisted["selected_repository"]["integrations"] == {
+            "slack": True,
+            "discord": False,
+        }
+
+    def test_integrations_can_advance_with_no_connections(
+        self,
+        client: TestClient,
+    ) -> None:
+        repos = client.app.state.draftly.dependencies.repositories
+        repos.onboarding.get.return_value = {
+            "org_id": "test-org",
+            "state": "DOCUMENTATION_DISCOVERED",
+            "selected_repository": {"full_name": "acme/api"},
+        }
+        db = client.app.state.draftly.dependencies.integrations.database
+        db.fetch_one.side_effect = [None, None]
+
+        response = client.post("/onboarding/integrations", json={})
+
+        assert response.status_code == 200
+        assert response.json()["integrations"] == {
+            "slack": False,
+            "discord": False,
+        }
 
     def test_workspace_provisions_missing_org(
         self, client: TestClient, provision_org: AsyncMock

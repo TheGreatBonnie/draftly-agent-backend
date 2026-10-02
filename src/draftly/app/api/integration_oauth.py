@@ -6,6 +6,22 @@ import secrets
 
 from fastapi import HTTPException
 
+ALLOWED_INTEGRATION_RETURN_TO = frozenset(
+    {
+        "/onboarding/integrations",
+        "/integrations/slack",
+        "/integrations/discord",
+    }
+)
+
+
+def validate_integration_return_to(return_to: str | None, *, default: str) -> str:
+    """Resolve an OAuth return path without allowing an external redirect."""
+    candidate = return_to or default
+    if candidate not in ALLOWED_INTEGRATION_RETURN_TO:
+        raise HTTPException(status_code=400, detail="Invalid return_to path")
+    return candidate
+
 
 async def create_state(db, provider: str, org_id: str, user_id: str, return_to: str) -> str:
     nonce = secrets.token_urlsafe(32)

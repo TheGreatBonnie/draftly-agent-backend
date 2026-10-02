@@ -60,6 +60,23 @@ def _settings(request: Request) -> Any:
     return getattr(draftly, "settings", None)
 
 
+async def _verified_integration_status(request: Request, org_id: str) -> dict[str, bool]:
+    """Read provider connection truth from organization-owned persistence."""
+    db = request.app.state.draftly.dependencies.integrations.database
+    slack = await db.fetch_one(
+        "SELECT team_id FROM slack_installations WHERE org_id = $1 LIMIT 1",
+        org_id,
+    )
+    discord = await db.fetch_one(
+        "SELECT discord_guild_id FROM organizations WHERE clerk_org_id = $1",
+        org_id,
+    )
+    return {
+        "slack": bool(slack),
+        "discord": bool(discord and discord.get("discord_guild_id")),
+    }
+
+
 def _public_ingestion_enabled(request: Request) -> bool:
     settings = _settings(request)
     return bool(
@@ -537,16 +554,17 @@ async def configure_integrations(
     repos = _repos(request)
     current = await repos.onboarding.get(org_id)
     _require_transition(current, "INTEGRATIONS_CONFIGURED", "configure integrations")
+    integrations = await _verified_integration_status(request, org_id)
     await repos.onboarding.upsert(
         org_id,
         state="INTEGRATIONS_CONFIGURED",
         selected_repository={
             **_selected(current),
-            "integrations": {"slack": body.slack, "discord": body.discord},
+            "integrations": integrations,
         },
     )
     await repos.onboarding.mark_step(org_id, "integrations")
-    return {"state": "INTEGRATIONS_CONFIGURED"}
+    return {"state": "INTEGRATIONS_CONFIGURED", "integrations": integrations}
 
 
 @router.post("/preferences")
