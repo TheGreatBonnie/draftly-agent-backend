@@ -59,12 +59,53 @@ def test_worker_process_uses_the_container_user_and_entrypoint(monkeypatch) -> N
     modal_worker.run_worker_process()
 
     assert recorded == {
-        "command": ["python", "-m", "workers.rq_worker"],
+        "command": [modal_worker.VENV_PYTHON, "-m", "workers.rq_worker"],
         "cwd": "/app",
         "check": True,
         "user": "draftly",
         "group": "render-secrets",
     }
+    # A PATH-resolved "python" would let Modal's image post-processing redirect
+    # the worker to an interpreter that does not have the project dependencies.
+    assert Path(modal_worker.VENV_PYTHON).is_absolute()
+
+
+def test_modal_image_does_not_shadow_the_system_python() -> None:
+    """The Modal image must not put the venv ahead of /usr/local on PATH.
+
+    Modal installs its runtime dependencies (grpclib, aiohttp, ...) into
+    /usr/local and imports them with whatever `python` resolves to. If the uv
+    venv is first on PATH that interpreter cannot see /usr/local and the
+    container dies with "ModuleNotFoundError: No module named 'grpclib'" from
+    /pkg/modal before any application code runs.
+    """
+    dockerfile = (REPO_ROOT / "docker/Dockerfile.modal").read_text()
+
+    assert 'PATH="/app/.venv/bin:${PATH}"' not in dockerfile
+    # The venv must still be built and still be usable by absolute path.
+    assert "uv sync --frozen" in dockerfile
+    assert Path(modal_worker.VENV_PYTHON).is_absolute()
+
+
+def test_repo_root_survive_modals_flat_remote_module_path() -> None:
+    """Modal imports the module from /root/rq_worker.py, not its repo path.
+
+    Walking parents[2] unconditionally raised IndexError at import time on
+    every container start, so the scheduled function crash-looped once a minute
+    while the deploy itself still succeeded, because the same line resolves
+    correctly on the client.
+    """
+    remote_parents = Path("/root/rq_worker.py").resolve().parents
+
+    assert len(remote_parents) < 3, "remote layout is no longer shallow"
+    assert modal_worker.REPO_ROOT == REPO_ROOT
+
+
+def test_render_image_is_untouched_by_the_modal_path_change() -> None:
+    """Render still needs the venv first on PATH for uvicorn and bootstrap."""
+    dockerfile = (REPO_ROOT / "docker/Dockerfile.render").read_text()
+
+    assert 'PATH="/app/.venv/bin:${PATH}"' in dockerfile
 
 
 def test_overlapping_schedule_input_skips_a_duplicate_drain(monkeypatch) -> None:
@@ -87,7 +128,7 @@ def test_modal_deployment_tracks_the_modal_branch() -> None:
     assert workflow["on"]["push"]["branches"] == ["modal-deployment"]
     assert workflow["on"]["push"]["paths"] == [
         "infra/modal/**",
-        "docker/Dockerfile.render",
+        "docker/Dockerfile.modal",
         ".dockerignore",
         "README.md",
         "pyproject.toml",

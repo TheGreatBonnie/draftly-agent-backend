@@ -6,7 +6,7 @@ on:
       - modal-deployment
     paths:
       - infra/modal/**
-      - docker/Dockerfile.render
+      - docker/Dockerfile.modal
       - .dockerignore
       - README.md
       - pyproject.toml

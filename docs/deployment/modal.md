@@ -11,7 +11,11 @@ workflow is intentionally absent.
 ## Runtime design
 
 The deployment wrapper is `infra/modal/rq_worker.py`. It builds
-`docker/Dockerfile.render`, so Modal and Render use the same application image.
+`docker/Dockerfile.modal`, a Modal-specific variant of `docker/Dockerfile.render`.
+The two differ only in `PATH`: the Modal image omits the uv venv, because Modal
+installs its runtime dependencies into `/usr/local` and imports them with whatever
+`python` resolves to. The worker still runs under the venv via an absolute
+interpreter path. Render continues to build `docker/Dockerfile.render` unchanged.
 The worker runs with:
 
 - cron schedule `* * * * *`;

@@ -28,11 +28,24 @@ RUNTIME_ENV = {
     "STRANDS_SESSION_STORAGE": "database",
 }
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
+# Modal imports this module from /root/rq_worker.py, not from its repo path, so
+# parents[2] exists only in the local checkout and raised IndexError on every
+# container start. Image.from_dockerfile() reads the Dockerfile lazily inside a
+# build closure, so the remote import never opens it and only needs a value that
+# does not raise. /app is the real remote repo root: Dockerfile.modal sets
+# WORKDIR /app and copies src/ and workers/ there.
+_MODULE_PARENTS = Path(__file__).resolve().parents
+REPO_ROOT = _MODULE_PARENTS[2] if len(_MODULE_PARENTS) > 2 else Path("/app")
+
+# Absolute path to the uv venv built by docker/Dockerfile.modal. Resolving
+# `python` through PATH would make this depend on whatever Modal prepends when
+# it post-processes the image, so a Python without the project dependencies
+# could win and the worker would fail at import time instead of build time.
+VENV_PYTHON = "/app/.venv/bin/python"
 
 app = modal.App(APP_NAME)
 image = modal.Image.from_dockerfile(
-    REPO_ROOT / "docker/Dockerfile.render",
+    REPO_ROOT / "docker/Dockerfile.modal",
     context_dir=REPO_ROOT,
 )
 worker_secret = modal.Secret.from_name(SECRET_NAME)
@@ -41,7 +54,7 @@ worker_secret = modal.Secret.from_name(SECRET_NAME)
 def run_worker_process() -> None:
     """Run the existing worker entrypoint as the image's unprivileged user."""
     subprocess.run(
-        ["python", "-m", "workers.rq_worker"],
+        [VENV_PYTHON, "-m", "workers.rq_worker"],
         cwd="/app",
         check=True,
         user="draftly",

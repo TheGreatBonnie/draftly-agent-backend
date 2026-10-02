@@ -1,0 +1,54 @@
+ARG PYTHON_VERSION=3.11
+ARG UV_VERSION=0.12.10
+
+# Modal-specific variant of docker/Dockerfile.render. Render keeps using that
+# file unchanged; the two differ only in how the uv venv is exposed.
+
+FROM ghcr.io/astral-sh/uv:${UV_VERSION} AS uv
+
+FROM python:${PYTHON_VERSION}-slim-bookworm AS builder
+
+ENV UV_COMPILE_BYTECODE=1 \
+    UV_LINK_MODE=copy
+
+COPY --from=uv /uv /uvx /usr/local/bin/
+
+WORKDIR /app
+
+COPY pyproject.toml uv.lock README.md ./
+RUN uv sync --frozen --no-dev --no-install-project
+
+FROM python:${PYTHON_VERSION}-slim-bookworm AS runtime
+
+# The venv is deliberately NOT placed on PATH here, unlike in
+# docker/Dockerfile.render. Modal post-processes this image, installs its own
+# runtime dependencies (grpclib, aiohttp, ...) into /usr/local, and then
+# imports them using whatever `python` resolves to. With /app/.venv/bin first
+# that interpreter cannot see /usr/local, and the container dies with
+# "ModuleNotFoundError: No module named 'grpclib'" from /pkg/modal before any
+# application code runs.
+#
+# The venv is still built and still used: infra/modal/rq_worker.py invokes
+# /app/.venv/bin/python by absolute path, so the worker keeps its dependencies
+# without shadowing Modal's runtime.
+ENV PYTHONPATH="/app/src" \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+# Modal always runs containers as root and ignores USER, but the worker
+# subprocess drops privileges explicitly via subprocess user=/group=, so the
+# account still has to exist.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates git \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd --gid 1000 render-secrets \
+    && useradd --uid 10001 --gid render-secrets --create-home draftly
+
+WORKDIR /app
+
+COPY --from=builder --chown=draftly:render-secrets /app/.venv ./.venv
+COPY --chown=draftly:render-secrets src ./src
+COPY --chown=draftly:render-secrets workers ./workers
+COPY --chown=draftly:render-secrets scripts/bootstrap.py ./scripts/bootstrap.py
+
+CMD ["sleep", "infinity"]
