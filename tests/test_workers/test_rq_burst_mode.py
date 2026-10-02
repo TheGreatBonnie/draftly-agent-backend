@@ -63,5 +63,7 @@ def test_unexpected_worker_loop_failure_is_propagated() -> None:
     worker = Mock()
     worker.work.side_effect = RuntimeError("redis connection lost")
 
+    # queue_names is required so drain_complete can read the depths it reports;
+    # empty here because this test is about propagation, not the summary.
     with pytest.raises(RuntimeError, match="redis connection lost"):
-        run_worker_loop(worker, burst=True, log=Mock())
+        run_worker_loop(worker, burst=True, log=Mock(), queue_names=[])

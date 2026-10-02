@@ -12,11 +12,12 @@ from __future__ import annotations
 
 import os
 import signal
-from collections.abc import Mapping
+import time
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 import structlog
-from rq import SimpleWorker
+from rq import Queue, SimpleWorker
 
 from draftly.app.composition.rq_jobs import build_rq_queues
 from draftly.app.config import get_settings
@@ -41,8 +42,42 @@ def resolve_burst_mode(env: Mapping[str, str] | None = None) -> bool:
     return source.get("RQ_BURST") == "1"
 
 
-def run_worker_loop(worker: Any, *, burst: bool, log: Any) -> None:
+def log_drain_complete(
+    worker: Any,
+    *,
+    queue_names: Sequence[str],
+    log: Any,
+    elapsed_s: float,
+) -> None:
+    """Emit one terminal event per drain.
+
+    RQ reports a job only when there is one to report -- ``Job OK`` on success,
+    ``Job failed`` on failure -- so an empty drain is silent and otherwise
+    indistinguishable from a productive one. This carries the job count and the
+    depths left behind, which is the whole signal. Without it, activity is
+    inferable only from the gap between "work loop starting" and "done,
+    quitting" (observed 2s idle vs 49s busy).
+    """
+    depths = {
+        name: Queue(name, connection=worker.connection).count for name in queue_names
+    }
+    log.info(
+        "drain_complete",
+        jobs_processed=getattr(worker, "jobs_processed", 0),
+        elapsed_ms=int(elapsed_s * 1000),
+        queue_depths=depths,
+    )
+
+
+def run_worker_loop(
+    worker: Any,
+    *,
+    burst: bool,
+    log: Any,
+    queue_names: Sequence[str],
+) -> None:
     """Run RQ and preserve failures for the hosting platform to observe."""
+    started = time.monotonic()
     try:
         worker.work(burst=burst)
     except KeyboardInterrupt:
@@ -50,6 +85,13 @@ def run_worker_loop(worker: Any, *, burst: bool, log: Any) -> None:
     except Exception:
         log.exception("RQ worker failed")
         raise
+    finally:
+        log_drain_complete(
+            worker,
+            queue_names=queue_names,
+            log=log,
+            elapsed_s=time.monotonic() - started,
+        )
 
 
 class InitLockAwareWorker(SimpleWorker):
@@ -62,10 +104,18 @@ class InitLockAwareWorker(SimpleWorker):
     a successful run, blocking re-initialization for up to two hours.
     """
 
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.jobs_processed = 0
+
     def perform_job(self, job: Any, queue: Any) -> bool:
         try:
             return super().perform_job(job, queue)
         finally:
+            # Counted in the finally block so a raising job still counts as
+            # attempted work -- otherwise a drain of nothing but failures would
+            # report jobs_processed=0 and read as idle.
+            self.jobs_processed += 1
             self._release_onboarding_lock(job)
 
     def _release_onboarding_lock(self, job: Any) -> None:
@@ -151,7 +201,9 @@ def main() -> None:
     )
 
     try:
-        run_worker_loop(worker, burst=burst, log=log)
+        run_worker_loop(
+            worker, burst=burst, log=log, queue_names=queue_names
+        )
     finally:
         conn.close()
 
