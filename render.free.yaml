@@ -88,6 +88,30 @@ services:
         sync: false
       - key: CLERK_SIGNING_SECRET
         sync: false
+      # Slack OAuth and integration configuration
+      - key: SLACK_CLIENT_ID
+        sync: false
+      - key: SLACK_CLIENT_SECRET
+        sync: false
+      - key: SLACK_SIGNING_SECRET
+        sync: false
+      - key: SLACK_BOT_TOKEN
+        sync: false
+      - key: SLACK_REDIRECT_URI
+        sync: false
+      - key: SLACK_SCOPES
+        sync: false
+      # Discord integration configuration
+      - key: DISCORD_BOT_TOKEN
+        sync: false
+      - key: DISCORD_PUBLIC_KEY
+        sync: false
+      - key: DISCORD_APP_ID
+        sync: false
+      - key: DISCORD_CLIENT_SECRET
+        sync: false
+      - key: DISCORD_GUILD_ID
+        sync: false
       # GITHUB_TOKEN is mandatory, not optional: build_integrations() constructs
       # GitHubClient unconditionally, and with no per-workflow installation id
       # set at startup the client builds GitHubAuth(), which raises

@@ -230,7 +230,20 @@ async def connect_github(
     from draftly.persistence.repositories.github import store_github_installation
     from draftly.persistence.repositories.organizations import update_org_github
 
-    info = await get_installation_info(body.installation_id)
+    try:
+        info = await get_installation_info(body.installation_id)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        # Never let an upstream GitHub failure or a misconfigured App key
+        # surface as an opaque 500: this route runs during onboarding, where the
+        # error text is the only diagnostic the operator gets.
+        logger.exception("github_install_info_failed", installation_id=body.installation_id)
+        raise HTTPException(
+            status_code=502,
+            detail="Could not verify the GitHub installation. The GitHub App credentials "
+            "or installation_id may be invalid.",
+        ) from exc
     account = info.get("account")
     github_org = account.get("login") if isinstance(account, dict) else None
     if not isinstance(github_org, str) or not github_org:
