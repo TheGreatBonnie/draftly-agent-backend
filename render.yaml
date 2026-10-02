@@ -64,6 +64,30 @@ services:
         sync: false
       - key: CLERK_SIGNING_SECRET
         sync: false
+      # Slack OAuth and integration configuration
+      - key: SLACK_CLIENT_ID
+        sync: false
+      - key: SLACK_CLIENT_SECRET
+        sync: false
+      - key: SLACK_SIGNING_SECRET
+        sync: false
+      - key: SLACK_BOT_TOKEN
+        sync: false
+      - key: SLACK_REDIRECT_URI
+        sync: false
+      - key: SLACK_SCOPES
+        sync: false
+      # Discord integration configuration
+      - key: DISCORD_BOT_TOKEN
+        sync: false
+      - key: DISCORD_PUBLIC_KEY
+        sync: false
+      - key: DISCORD_APP_ID
+        sync: false
+      - key: DISCORD_CLIENT_SECRET
+        sync: false
+      - key: DISCORD_GUILD_ID
+        sync: false
       # GITHUB_TOKEN is mandatory: build_integrations() constructs
       # GitHubClient unconditionally, and with no per-workflow installation id
       # at startup the client builds GitHubAuth(), which raises
@@ -111,6 +135,34 @@ services:
           name: draftly-kv
           property: connectionString
       - key: DRAFTLY_ENABLED_PROVIDERS
+        sync: false
+      # The worker runs the same startup() as the web service, and that path
+      # starts the Discord Gateway and the Slack socket-mode handler, so these
+      # are required here too. Both are gated on presence (lifecycle.py
+      # checks discord_bot_token, and should_use_socket_mode() checks
+      # slack_app_token), so a missing value degrades to a logged no-op
+      # rather than a boot failure.
+      - key: SLACK_CLIENT_ID
+        sync: false
+      - key: SLACK_CLIENT_SECRET
+        sync: false
+      - key: SLACK_SIGNING_SECRET
+        sync: false
+      - key: SLACK_BOT_TOKEN
+        sync: false
+      - key: SLACK_REDIRECT_URI
+        sync: false
+      - key: SLACK_SCOPES
+        sync: false
+      - key: DISCORD_BOT_TOKEN
+        sync: false
+      - key: DISCORD_PUBLIC_KEY
+        sync: false
+      - key: DISCORD_APP_ID
+        sync: false
+      - key: DISCORD_CLIENT_SECRET
+        sync: false
+      - key: DISCORD_GUILD_ID
         sync: false
       # Same startup requirement as the web service: the worker calls
       # create_application() and so constructs GitHubAuth().
