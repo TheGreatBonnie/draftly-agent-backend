@@ -67,3 +67,51 @@ def test_foreign_stdlib_entry_gets_same_formatting(capsys):
     assert parsed["event"] == "foreign hello"
     assert parsed["level"] == "warning"
     assert parsed["logger"] == "third.party"
+
+
+def test_rq_logger_is_filtered_to_warning():
+    configure_logging(_settings("production"))
+
+    assert logging.getLogger("rq").level == logging.WARNING
+
+
+def test_rq_info_is_suppressed_but_errors_survive(caplog):
+    """The filter must drop RQ's per-tick chatter without hiding failures.
+
+    ``caplog.set_level`` (no logger argument) lowers the *root* logger and the
+    capturing handler only. It must not name "rq", because that would overwrite
+    the very filter under test and make this pass vacuously.
+    """
+    configure_logging(_settings("production"))
+
+    rq_logger = logging.getLogger("rq")
+    caplog.set_level(logging.DEBUG)
+
+    rq_logger.info("*** Listening on draftly:webhooks...")
+    rq_logger.error("Job failed")
+
+    levels = [r.levelno for r in caplog.records]
+    assert logging.INFO not in levels
+    assert logging.ERROR in levels
+
+
+def test_rq_job_description_dumps_are_not_emitted(capsys):
+    """RQ renders ``job.description`` -- kwargs included -- twice per job.
+
+    ``Job.description`` is ``get_call_string(func_name, args, kwargs,
+    max_length=75)`` (rq/job.py:1462), logged on both dequeue
+    (rq/worker/base.py:1136) and success (base.py:1512) at INFO. For
+    pull_request and issue_comment events that truncated string carries PR
+    titles, branch names and comment bodies.
+    """
+    configure_logging(_settings("production"))
+
+    logging.getLogger("rq").info(
+        "Worker %s: %s: %s (%s)",
+        "modal-worker",
+        "draftly:webhooks",
+        "github_pr.enqueue(event={'pull_request': {'title': 'SECRET TITLE'}})",
+        "abc123",
+    )
+
+    assert "SECRET TITLE" not in capsys.readouterr().out

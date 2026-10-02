@@ -113,6 +113,18 @@ def configure_logging(settings: Settings) -> None:
     # Suppress non-actionable reasoningContent warnings from multi-turn
     # conversations (OpenAI Chat Completions API limitation, not a bug).
     logging.getLogger("strands.models.openai").setLevel(logging.ERROR)
+    # RQ logs six lines per drain (started/subscribing/Listening/cleaning×3/
+    # done/unsubscribing) and renders ``job.description`` twice per job. That
+    # description is ``get_call_string(func_name, args, kwargs, max_length=75)``
+    # (rq/job.py:1462), logged on dequeue and on success -- so for
+    # pull_request and issue_comment events it carries truncated PR titles,
+    # branch names, comment bodies and author logins, twice per job.
+    #
+    # Job failures still surface: RQ emits those at error level, which survives
+    # this filter. The per-drain summary that replaces the lost "Job OK" line is
+    # emitted by the worker itself as ``drain_complete``
+    # (workers/rq_worker.py).
+    logging.getLogger("rq").setLevel(logging.WARNING)
 
     structlog.configure(
         processors=_shared_processors()
